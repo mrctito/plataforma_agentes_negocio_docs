@@ -1,0 +1,9 @@
+flowchart LR
+  E["Copilot executa mudança"] --> S["Suite oficial"]
+  S --> P{"Passou?"}
+  P -- sim --> R["Registrar tarefa"]
+  P -- nao --> T["Telemetria"]
+  T --> L["Logs por etapa"]
+  L --> D["Diagnostico"]
+  D --> C["Correcao"]
+  C --> S

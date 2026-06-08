@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant U as Usuario
+    participant API as whatsapp_provision_router
+    participant DIR as ClientDirectory
+    participant MGR as MultiTenantWhatsAppManager
+    participant META as WhatsAppProvisionerAsync
+
+    U->>API: POST /start
+    API->>DIR: list_client_codes_by_tenant + get_client_profile
+    API->>MGR: start_provision(client_code, profile)
+    MGR->>META: register_phone + request_verification
+    META-->>MGR: phone_number_id
+    MGR-->>API: pending_verification
+    API->>DIR: register_whatsapp_phone(status=pending)
+    API-->>U: success + phone_number_id
+
+    U->>API: POST /verify
+    API->>DIR: get_whatsapp_phone_by_e164
+    API->>MGR: finalize_provision(...)
+    MGR->>META: verify_code + activate_number + configure_webhook + create_template
+    META-->>MGR: active
+    MGR-->>API: payload final
+    API->>DIR: register_whatsapp_phone(status=active)
+    API-->>U: webhook_configured/template_created

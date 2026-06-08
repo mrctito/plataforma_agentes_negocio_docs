@@ -1,0 +1,20 @@
+flowchart TB
+  subgraph Entry
+    E1["workflow_router"]
+  end
+  subgraph Orchestration
+    O1["WorkflowExecutionService"]
+    O2["WorkflowOrchestrator"]
+  end
+  subgraph Graph
+    G1["AgentWorkflow"]
+    G2["StateGraph"]
+  end
+  subgraph Contracts
+    C1["WorkflowState"]
+    C2["WorkflowConfigResolver"]
+  end
+
+  E1 --> O1 --> O2 --> G1 --> G2
+  G1 --> C1
+  G1 --> C2

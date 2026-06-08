@@ -1,0 +1,10 @@
+flowchart TD
+  A["json_file_paths no IngestionRequest"] --> B["ContentTypeDispatcher registra step content_type:json"]
+  B --> C["LocalContentFamily.process_json"]
+  C --> D["_process_files_with_pipeline e FilePipelineBatchCoordinator"]
+  D --> E["JsonFileClient busca StorageDocument no FileSystemDataSource"]
+  E --> F["JsonMetadataBuilder resolve contrato YAML e valida bytes"]
+  F --> G["TextDocument JSON com metadados estruturais"]
+  G --> H["JsonContentProcessor seleciona perfil e normaliza o payload"]
+  H --> I["Chunking JSON-aware e domain processing opcional"]
+  I --> J["Finalizacao do arquivo e indexacao dos chunks"]

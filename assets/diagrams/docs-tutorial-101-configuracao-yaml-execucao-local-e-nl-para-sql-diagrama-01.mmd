@@ -1,0 +1,17 @@
+flowchart TD
+    A["Requisição ou payload"] --> B{"Origem do YAML"}
+    B -->|"encrypted_data"| C["decrypt_yaml_and_keys"]
+    B -->|"yaml_inline_content"| D["ConfigurationFactory.create_from_payload"]
+    B -->|"yaml_config_path"| E["ConfigurationFactory.create_from_yaml"]
+    C --> D
+    D --> F["ConfigurationFactory._inject_tools_library"]
+    E --> F
+    F --> G["normalize_yaml_config"]
+    G --> H["resolve_yaml_configuration injeta security_keys"]
+    H --> I{"Ferramenta usada em runtime"}
+    I -->|"dyn_sql ou proc_sql"| J["ToolLoader parse_parameterized_tool"]
+    J --> K["DynamicSqlToolFactory ou StoredProcedureFactory"]
+    K --> L["Banco configurado em tools_config.sql_dynamic"]
+    I -->|"schema_rag_sql"| M["SqlSchemaRagToolFactory"]
+    M --> N["Busca schema metadata no vector store"]
+    N --> O["LLM gera SQL"]

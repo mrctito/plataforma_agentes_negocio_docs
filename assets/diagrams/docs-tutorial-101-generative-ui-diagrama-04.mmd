@@ -1,0 +1,33 @@
+flowchart LR
+    UIHub["ui-admin-plataforma-ag-ui-varejo-demo.html"]
+    Vendas["ui-admin-plataforma-ag-ui-vendas-cockpit.html"]
+    Checkout["ui-admin-plataforma-ag-ui-checkout-radar.html"]
+    Catalogo["ui-admin-plataforma-ag-ui-catalogo-central.html"]
+    Dashboard["ui-admin-plataforma-ag-ui-dashboard-dinamico.html"]
+    Client["ag-ui-client.js"]
+    Sidecar["ag-ui-sidecar-chat.js"]
+    Store["ag-ui-state-store.js"]
+    Router["ag_ui_router.py"]
+    Orchestrator["ag_ui_run_orchestrator.py"]
+    Adapter["ag_ui_retail_demo_adapter.py"]
+    Materializer["ag_ui_dashboard_materialization.py"]
+    Schemas["ag_ui_models.py + ag_ui_dashboard_models.py"]
+    Yaml["ag-ui-pdv-vendas-demo.yaml"]
+
+    UIHub --> Vendas
+    UIHub --> Checkout
+    UIHub --> Catalogo
+    UIHub --> Dashboard
+    Vendas --> Client
+    Checkout --> Client
+    Catalogo --> Client
+    Dashboard --> Client
+    Client --> Sidecar
+    Sidecar --> Store
+    Client --> Router
+    Router --> Orchestrator
+    Orchestrator --> Adapter
+    Adapter --> Materializer
+    Adapter --> Schemas
+    Materializer --> Schemas
+    Adapter --> Yaml

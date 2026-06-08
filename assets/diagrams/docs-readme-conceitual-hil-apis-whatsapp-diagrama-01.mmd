@@ -1,0 +1,15 @@
+flowchart TD
+    A["Cliente chama /agent/execute"] --> B{"Runtime pausou por HIL?"}
+    B -- Não --> C["Fluxo segue normal"]
+    B -- Sim --> D["API devolve thread_id, correlation_id e envelope hil"]
+    D --> E{"HIL assíncrono habilitado?"}
+    E -- Não --> F["Cliente responde por /agent/continue"]
+    E -- Sim --> G["Pedido durável criado no banco"]
+    G --> H["Notificação enviada por WhatsApp ou e-mail"]
+    H --> I{"Decisão vem por API ou canal"}
+    I -- API --> J["/agent/hil/decisions"]
+    I -- Canal --> K["/channels/{channel_id}/messages"]
+    J --> L["Serviço resolve o pedido e continua a thread"]
+    K --> L
+    F --> L
+    L --> M["Execução retoma ou falha de forma auditável"]

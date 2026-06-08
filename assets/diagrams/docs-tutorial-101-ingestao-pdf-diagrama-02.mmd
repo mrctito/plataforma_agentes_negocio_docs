@@ -1,0 +1,20 @@
+sequenceDiagram
+  participant P as PDFContentProcessor
+  participant R as PdfRuntimeCoordinator
+  participant O as Document OCR
+  participant D as Engine deterministica
+  participant E as Engine concreta
+  participant T as Pipeline textual
+  participant M as Multimodal ou Chunking
+
+  P->>R: Inicializa runtime PDF
+  R-->>P: Serviços e engine principal
+  P->>O: Avalia OCR documental
+  O-->>P: Bytes originais ou regravados
+  P->>D: Executa ParseViaEngineStage
+  D->>E: Tenta engine da fila
+  E-->>D: Resultado canonico ou falha
+  D-->>P: Melhor resultado valido
+  P->>T: Limpa e normaliza texto
+  P->>M: Decide multimodal ou chunking
+  M-->>P: Chunks finais e status operacional

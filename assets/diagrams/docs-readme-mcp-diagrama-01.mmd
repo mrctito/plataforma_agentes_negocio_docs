@@ -1,0 +1,11 @@
+flowchart TD
+    A["YAML com MCP"] --> B["MCPConfigResolver"]
+    B --> C["Merge de camadas por escopo"]
+    C --> D["MCPToolsResolver"]
+    D --> E{"Cache por tenant existe?"}
+    E -- Sim --> F["Reaproveita catalogo MCP"]
+    E -- Nao --> G["Carrega tools via cliente MCP"]
+    F --> H["MCPToolsMerger"]
+    G --> H
+    H --> I["Merge com tools locais"]
+    I --> J["Agente ou workflow recebe lista final"]

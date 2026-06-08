@@ -1,0 +1,10 @@
+flowchart LR
+    A["Intenção do usuário ou do agente"] --> B{"Objetivo"}
+    B -->|"Enviar mensagem"| C["WhatsApp ou Instagram DM"]
+    B -->|"Publicar conteúdo"| D["Instagram Publish"]
+    B -->|"Operar atendimento"| E["Chatwoot"]
+    B -->|"Escutar canal"| F["Twitter/X"]
+    C --> G["Resposta normalizada"]
+    D --> G
+    E --> G
+    F --> G

@@ -1,0 +1,31 @@
+sequenceDiagram
+  participant U as Usuario
+  participant API as rag_router
+  participant SVC as IngestionService
+  participant ORCH as ContentIngestionOrchestrator
+  participant DISP as ContentTypeDispatcher
+  participant LOC as LocalContentFamilyService
+  participant CONF as ConfluenceContentFamilyService
+  participant REM as RemoteContentFamilyService
+  participant DYN as DynamicDataContentFamilyService
+
+  U->>API: POST /rag/ingest
+  API->>SVC: execute(...)
+  SVC->>ORCH: ingest_content(request)
+  ORCH->>DISP: _execute_content_processing_pipeline
+  alt markdown, texto, docx, pdf, json, ppt, imagem
+    DISP->>LOC: processar familia local
+  end
+  alt confluence_page_ids
+    DISP->>CONF: processar paginas e anexos
+  end
+  alt web, youtube, google drive, azure blob, s3, minio
+    DISP->>REM: processar familia remota
+  end
+  alt dynamic_data_sources
+    DISP->>DYN: executar fonte dinamica
+  end
+  DISP-->>ORCH: resultado consolidado
+  ORCH-->>SVC: métricas e status
+  SVC-->>API: resposta
+  API-->>U: 200 ou 202

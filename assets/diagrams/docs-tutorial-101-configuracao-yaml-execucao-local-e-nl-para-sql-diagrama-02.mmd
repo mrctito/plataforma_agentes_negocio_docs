@@ -1,0 +1,32 @@
+sequenceDiagram
+    actor U as Usuário
+    participant API as FastAPI
+    participant R as resolve_yaml_configuration
+    participant F as ConfigurationFactory
+    participant T as ToolLoader
+    participant D as dyn_sql ou proc_sql
+    participant S as schema_rag_sql
+    participant V as Vector Store
+    participant L as LLM
+    participant DB as Banco
+
+    U->>API: envia request com YAML por path, inline ou encrypted_data
+    API->>R: resolve_yaml_configuration(...)
+    R->>F: create_from_yaml ou create_from_payload
+    F->>F: valida security_keys, injeta tools_library, normaliza YAML
+    R-->>API: ResolvedConfig
+    API->>T: carrega tools do supervisor ou workflow ativo
+    alt tool parametrizada
+        T->>D: parse dyn_sql<query_id> ou proc_sql<procedure_id>
+        D->>DB: executa SQL ou procedure pré-configurada
+        DB-->>D: resultados
+        D-->>API: resposta estruturada
+    else geração real de SQL
+        T->>S: materializa schema_rag_sql
+        S->>V: busca metadados relevantes do schema
+        V-->>S: documentos de schema
+        S->>L: prompt com contexto de schema + pergunta
+        L-->>S: SQL gerado
+        S-->>API: SQL em texto
+    end
+    API-->>U: resposta

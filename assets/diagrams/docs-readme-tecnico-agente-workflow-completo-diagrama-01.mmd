@@ -1,0 +1,16 @@
+flowchart TD
+    A["workflows no YAML"] --> B["WorkflowParser"]
+    B --> C["WorkflowCompiler"]
+    C --> D["WorkflowSemanticValidator"]
+    D --> E["WorkflowConfigResolver"]
+    E --> F["Workflowagent.initialize"]
+    F --> G{"edges presentes?"}
+    G -- sim --> H["EdgeCompiler"]
+    G -- nao --> I["Node-driven transitions"]
+    H --> J["StateGraph compilado"]
+    I --> J
+    J --> K["WorkflowOrchestrator"]
+    K --> L["/workflow/execute"]
+    K --> M["Background execution runtime"]
+    J --> N["interrupt"]
+    N --> O["/workflow/continue"]

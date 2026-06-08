@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant U as Usuário ou sistema chamador
+    participant API as workflow_router
+    participant ORQ as WorkflowOrchestrator
+    participant RT as Workflowagent
+    participant CP as Checkpointer
+    participant BGR as Background runtime
+
+    U->>API: POST /workflow/execute
+    API->>ORQ: execute(message, thread_id)
+    ORQ->>RT: initialize()
+    RT->>RT: resolve workflow ativo e valida integridade
+    RT->>CP: usa thread_id e checkpoint
+    RT->>RT: ainvoke(StateGraph)
+    RT-->>ORQ: final_response ou interrupt
+    ORQ-->>API: payload normalizado
+    API-->>U: resposta ou task async
+
+    U->>API: POST /workflow/continue
+    API->>ORQ: continue_execution(thread_id, human_response)
+    ORQ->>RT: ainvoke(Command resume)
+    RT-->>ORQ: continuação concluída
+    ORQ-->>API: resposta final
+
+    U->>BGR: agenda target_type workflow
+    BGR->>ORQ: execute(message, thread_id)
+    ORQ-->>BGR: resultado terminal ou erro de waiting_hil

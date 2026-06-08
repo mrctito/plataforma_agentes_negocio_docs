@@ -1,0 +1,9 @@
+flowchart TD
+    A["Request HTTP"] --> B["Middleware chama enforce_endpoint_permission"]
+    B --> C["Decorador da rota fornece permission e mode"]
+    C --> D["resolve_access_key_from_request_sources"]
+    D --> E["ClientDirectory.get_access_key_record"]
+    E --> F["_validate_permission"]
+    F -->|"OK"| G["user_data em request.state"]
+    F -->|"Falha"| H["401 ou 403"]
+    G --> I["Endpoint executa"]

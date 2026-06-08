@@ -1,0 +1,25 @@
+sequenceDiagram
+  participant U as Cliente
+  participant API as agent_router
+  participant ORCH as AgentOrchestrator
+  participant SUP as AgentSupervisor
+  participant RT as LangGraph Runtime
+
+  U->>API: /agent/execute
+  API->>ORCH: execute(...)
+  ORCH->>SUP: initialize + run(message, thread_id)
+  SUP->>RT: invoke agente
+
+  alt exige intervencao humana
+    RT-->>SUP: __interrupt__
+    SUP-->>ORCH: pausado + thread_id
+    ORCH-->>API: resposta de pausa
+    U->>API: /agent/continue (mesmo thread_id)
+    API->>SUP: run(Command(resume=...), thread_id)
+    SUP->>RT: resume checkpoint
+  end
+
+  RT-->>SUP: resultado final
+  SUP-->>ORCH: final_response + metrics
+  ORCH-->>API: AgentResponse
+  API-->>U: resposta final

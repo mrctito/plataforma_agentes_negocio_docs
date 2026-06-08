@@ -1,0 +1,59 @@
+flowchart LR
+    subgraph EntryPoints
+        EP1["/rag/ingest"]
+        EP2["/crypto/session-key"]
+        EP3["Console admin PDF"]
+    end
+
+    subgraph Contracts
+        C1["RagIngestionRequest"]
+        C2["encrypted_data"]
+        C3["ingestion.content_profiles.type_specific.pdf"]
+    end
+
+    subgraph Orchestration
+        O1["IngestionJobExecutor"]
+        O2["IngestionRequestBuilder"]
+        O3["ContentIngestionOrchestrator"]
+    end
+
+    subgraph GraphsAndProcessors
+        G1["PDFContentProcessor"]
+        G2["PdfRuntimeCoordinator"]
+        G3["PdfRichProcessingApplicationService"]
+        G4["PdfMultimodalApplicationService"]
+    end
+
+    subgraph ToolsAndEngines
+        T1["PdfDocumentOcrService"]
+        T2["DeterministicLegoPdfParsingEngine"]
+        T3["PymupdfPdfParsingEngine"]
+        T4["PdfChunkingService"]
+    end
+
+    subgraph DataAndTelemetry
+        D1["PDF local"]
+        D2["Execution manifest"]
+        D3["Logs por correlation_id"]
+    end
+
+    EP1 --> C1
+    EP2 --> C2
+    EP3 --> C2
+    C1 --> O1
+    C2 --> O1
+    C3 --> O2
+    O1 --> O2
+    O2 --> O3
+    O3 --> G1
+    G1 --> G2
+    G1 --> G3
+    G3 --> G4
+    G2 --> T1
+    G2 --> T2
+    T2 --> T3
+    G3 --> T4
+    D1 --> G1
+    G4 --> D2
+    O1 --> D3
+    G1 --> D3

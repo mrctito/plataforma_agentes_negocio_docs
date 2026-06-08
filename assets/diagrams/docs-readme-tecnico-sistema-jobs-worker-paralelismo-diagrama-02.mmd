@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant PROD as Produtor
+    participant PORT as AsyncJobQueuePort
+    participant MQ as RabbitMQ
+    participant ACT as Actor Dramatiq
+    participant BR as Bridge
+    participant CORE as JobCoreExecutor
+    participant PAY as AsyncJobPayloadExecutor
+    participant DOM as Handler de domínio
+    participant DB as PostgresJobRunStore
+
+    PROD->>PORT: publica QueuedJobEnvelope
+    PORT->>MQ: publica payload versionado
+    MQ->>ACT: entrega mensagem
+    ACT->>ACT: valida schema, version e role
+    ACT->>BR: delega payload
+    BR->>CORE: execute(envelope)
+    CORE->>DB: create_run + append_event
+    CORE->>PAY: chama bridge registrado
+    PAY->>DOM: executa comando tipado
+    DOM-->>PAY: retorna ou falha
+    CORE->>DB: transition_status + event terminal

@@ -1,0 +1,18 @@
+flowchart TD
+    A["Operador registra o canal"] --> B["Onboarding ativa ou importa o numero"]
+    B --> C["Meta valida o webhook GET do canal"]
+    C --> D["Usuario envia mensagem no WhatsApp"]
+    D --> E["POST /channels/{channel_id}/messages"]
+    E --> F["Router normaliza evento e resolve yaml_path pelo diretorio"]
+    F --> G["Assinatura HMAC e politicas do canal"]
+    G --> H["Processor constroi IncomingMessage e persiste o bruto"]
+    H --> I{"execution_mode"}
+    I -- ask --> J["QuestionService"]
+    I -- agent --> K["AgentOrchestrator"]
+    I -- workflow --> L["WorkflowOrchestrator"]
+    J --> M["OutgoingMessage"]
+    K --> M
+    L --> M
+    M --> N["WhatsAppResponder monta payload Meta"]
+    N --> O["MetaWhatsAppClient envia lote"]
+    O --> P["Usuario recebe resposta no WhatsApp"]

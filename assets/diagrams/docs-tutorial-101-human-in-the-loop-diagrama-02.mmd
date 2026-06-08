@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant U as Usuario
+    participant WC as WebChat
+    participant API as agent_router
+    participant CFG as config_resolution + auth
+    participant SUP as DeepAgentSupervisor
+    participant REG as normalize_hil_contract
+    participant H as Humano
+
+    U->>WC: envia pergunta
+    WC->>API: POST /agent/execute
+    API->>CFG: resolve_yaml_configuration + authenticate_with_yaml_config
+    CFG-->>API: yaml_config + contexto autenticado
+    API->>SUP: run(task, thread)
+    SUP-->>API: resultado pausado + interrupts
+    API->>REG: normalize_hil_interrupts / normalize_hil_contract
+    REG-->>API: envelope hil + thread_id + resume_endpoint
+    API-->>WC: response com hil.pending=true
+    WC->>WC: HilContract.normalizeResponse
+    WC-->>H: HilReviewPanel.create(...)
+    H->>WC: approve |"edit"| reject
+    WC->>WC: buildResumePayload(contract,...)
+    WC->>API: POST resume_endpoint
+    API->>SUP: run(Command(resume=...), mesmo thread_id)
+    SUP-->>API: resposta final
+    API-->>WC: execucao retomada
+    WC-->>U: mensagem final

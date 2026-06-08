@@ -1,0 +1,29 @@
+sequenceDiagram
+    participant U as Usuario
+    participant API as FastAPI
+    participant Q as RabbitMQ
+    participant W as Worker
+    participant IS as IngestionService
+    participant IO as ContentIngestionOrchestrator
+    participant VS as Stores do Acervo
+    participant QS as QuestionService
+    participant QA as QAQuestionProcessor
+    participant IR as IntelligentRAGOrchestrator
+    participant GE as GenerationEngine
+
+    U->>API: POST /rag/ingest
+    API->>Q: publica job de ingestao
+    API-->>U: 202 + task_id + URLs de status
+    Q->>W: entrega mensagem
+    W->>IS: execute()
+    IS->>IO: ingest_content()
+    IO->>VS: persiste documentos, chunks e indices
+
+    U->>API: POST /rag/execute operation=ask
+    API->>QS: execute(question)
+    QS->>QA: ask_question()
+    QA->>IR: intelligent_retrieve()
+    IR->>VS: recupera contexto
+    IR->>GE: generate_intelligent_answer()
+    GE-->>API: answer + sources + metadata
+    API-->>U: resposta final

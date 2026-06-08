@@ -1,0 +1,28 @@
+flowchart TD
+  subgraph R1["Raia 1 - API"]
+    A["Cliente envia POST /rag/ingest"]
+    B["API compoe YAML, user_email e document_parallelism"]
+    C["API publica job pai prepared_yaml"]
+  end
+
+  subgraph R2["Raia 2 - Worker pai"]
+    D["Worker pai consome envelope do lote"]
+    E{"Fan-out documental e elegivel?"}
+    F["Segue em lote simples"]
+    G["Inventaria documentos e publica envelopes filhos"]
+  end
+
+  subgraph R3["Raia 3 - Execucao documental"]
+    H["Execucao simples recebe o documento"]
+    I["Worker filho consome documento do fan-out"]
+    J["Gate do fan-out valida cancelamento e estado do pai"]
+    K["Pipeline PDF extrai, enriquece e gera chunks"]
+  end
+
+  subgraph R4["Raia 4 - Acervo"]
+    L["Indexacao e persistencia final"]
+  end
+
+  A --> B --> C --> D --> E
+  E -- nao --> F --> H --> K --> L
+  E -- sim --> G --> I --> J --> K

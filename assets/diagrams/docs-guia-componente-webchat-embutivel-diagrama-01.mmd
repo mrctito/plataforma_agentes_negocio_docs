@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant H as Host page
+    participant C as Componente embutivel
+    participant X as layout-mestre-api.js
+    participant K as PayloadCrypto
+    participant API as Backend
+
+    H->>C: definirYaml / setUserEmail / setApiKey / setMode
+    C->>X: enviar(modo, conteudo)
+    X->>K: buildEncryptedData(yaml)
+    K->>API: POST /crypto/session-key
+    API-->>K: session_id + public_key_pem
+    K-->>X: encrypted_data
+    X->>API: POST /rag|"/agent"|/workflow/execute (X-API-Key, encrypted_data)
+    API-->>X: 200 sincrono ou 202 assincrono + X-Correlation-Id
+    alt assincrono
+        loop ate status terminal
+            X->>API: GET /api/v1/status/{task_id} (X-API-Key)
+            API-->>X: status, percentage, result?, error?
+        end
+    end
+    X-->>C: resultado normalizado + correlation_id
+    C-->>H: evento response-received / error

@@ -1,0 +1,21 @@
+sequenceDiagram
+    actor H as Humano
+    participant A as analisar-log
+    participant C as corrigir-erros-com-log
+    participant S as suíte de testes
+    participant L as log (raio-X)
+
+    H->>A: /analisar-log (correlation_id)
+    A->>L: lê por correlation_id (sem varredura cega)
+    A-->>H: onde/como falhou (sem corrigir)
+
+    H->>C: /corrigir-com-log
+    Note over C,L: reconcilia história-do-log × fluxo-do-código<br/>causa raiz · proibido mascarar com fallback
+    C->>C: hipótese → checagem discriminante
+    Note over C: memória de rodada:<br/>não repete hipótese falsificada
+    C->>S: valida a correção
+    alt converge
+        C-->>H: SUCESSO (causa raiz eliminada + teste de regressão)
+    else não converge
+        C-->>H: BLOQUEADA (com evidência objetiva)
+    end

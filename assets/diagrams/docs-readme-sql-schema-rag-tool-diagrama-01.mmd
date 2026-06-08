@@ -1,0 +1,16 @@
+flowchart TD
+    A["Pergunta do operador"] --> B["Tool direta ou endpoint dedicado"]
+    B --> C["Resolver YAML e correlation_id"]
+    C --> D["Validar user_session, vectorstore_id e sql_dialect"]
+    D --> E["Construir vector store"]
+    E --> F["Buscar top_k documentos semanticamente próximos"]
+    F --> G["Filtrar apenas document_type schema_metadata"]
+    G --> H["Formatar contexto por tabela"]
+    H --> I["Aplicar truncamento operacional"]
+    I --> J["Chamar LLM com dialeto explícito"]
+    J --> K["Extrair SQL da resposta"]
+    K --> L{"Superfície usada"}
+    L -->|"Tool direta"| M["Retornar string SQL ou aviso"]
+    L -->|"Endpoint dedicado"| N["Aplicar SqlReadOnlyGuardrail"]
+    N -->|"bloqueada"| O["Retornar success=false com diagnostics"]
+    N -->|"permitida"| P["Retornar success=true com SQL revisável"]

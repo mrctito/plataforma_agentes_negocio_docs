@@ -1,0 +1,15 @@
+flowchart LR
+    A["Operador abre tela AG-UI"] --> B["Pagina monta contexto visual e operacional"]
+    B --> C["Sidecar ou botao rapido monta payload"]
+    C --> D["POST /ag-ui/runs"]
+    D --> E["Router valida permissao e fonte de configuracao"]
+    E --> F["AgUiRunOrchestrator emite RUN_STARTED"]
+    F --> G["RetailDemoAgUiAdapter decide o caminho"]
+    G --> H1["Capability fixa com dyn_sql aprovado"]
+    G --> H2["dashboard_dynamic com DashboardSpec"]
+    H1 --> I1["Eventos de tool, snapshot e mensagem"]
+    H2 --> I2["Eventos de materializacao, deltas e render ready"]
+    I1 --> J["Cliente SSE aplica eventos no store"]
+    I2 --> J
+    J --> K["Sidecar atualiza timeline e correlacao"]
+    J --> L["Pagina atualiza resultado ou canvas"]

@@ -1,0 +1,11 @@
+flowchart TD
+    A["Cliente chama /agent/execute"] --> B["agent_router resolve contexto"]
+    B --> C["resolve_yaml_configuration"]
+    C --> D["injeta security_keys + placeholders"]
+    D --> E["authenticate_with_yaml_config"]
+    E --> F["_resolve_supervisor_mode"]
+    F -->|"agent"| G["AgentSupervisor.initialize + run"]
+    F -->|"deepagent"| H["DeepAgentSupervisor.initialize + run"]
+    G --> I["ToolsFactory resolve tools"]
+    H --> I
+    I --> J["Resposta AgentResponse"]

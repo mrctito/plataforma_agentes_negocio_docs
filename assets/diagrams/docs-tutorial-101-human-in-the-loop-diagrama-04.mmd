@@ -1,0 +1,29 @@
+flowchart LR
+    C1["docs/README-HUMAN-IN-THE-LOOP.md"]
+    C2["src/api/routers/agent_router.py"]
+    C3["src/agentic_layer/supervisor/deep_agent_supervisor.py"]
+    C4["src/config/agentic_assembly/ast/deepagent.py"]
+    C5["src/config/agentic_assembly/validators/deepagent_semantic_validator.py"]
+    C6["src/agentic_layer/tools/system_tools/human_input.py"]
+    C7["src/api/routers/workflow_router.py"]
+    C8["src/agentic_layer/workflow/nodes/base.py"]
+    C9["app/ui/static/js/shared/ui-webchat-hil-contract.js"]
+    C10["app/ui/static/js/shared/hil-review-panel.js"]
+    C11["app/ui/static/js/admin-webchat/app.js"]
+    C12["app/ui/static/js/ui-webchat-v3.js"]
+    C13["tests/integration/hil/test_hil_deepagent_flow.py"]
+    C14["tests/frontend/ui_webchat_hil_contract.test.js"]
+
+    C1 --> C2
+    C1 --> C3
+    C2 --> C3
+    C3 --> C4
+    C3 --> C5
+    C7 --> C8
+    C6 --> C8
+    C2 --> C9
+    C9 --> C10
+    C10 --> C11
+    C10 --> C12
+    C2 --> C13
+    C9 --> C14

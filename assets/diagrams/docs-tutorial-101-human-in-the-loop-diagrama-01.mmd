@@ -1,0 +1,24 @@
+flowchart TD
+    U["Usuario ou Operador"] --> API{"Entrada HTTP"}
+    API -->|"DeepAgent"| EXEC["/POST /agent/execute/"]
+    API -->|"Workflow"| WEXEC["/POST /workflow/execute/"]
+    API -->|"AG-UI"| AGEXEC["/POST /ag-ui/runs/"]
+    EXEC --> CFG["Resolucao de YAML e autenticacao"]
+    WEXEC --> CFG
+    AGEXEC --> AGCFG["Resolucao AG-UI + SSE"]
+    CFG --> RT{"Runtime"}
+    AGCFG --> AGRT{"Adapter AG-UI"}
+    RT -->|"Tool sensivel"| DA["DeepAgentSupervisor"]
+    RT -->|"Node ou tool humana"| WF["WorkflowOrchestrator e nodes"]
+    AGRT -->|"outcome interrupt"| AGPAUSE["RUN_FINISHED com interrupts"]
+    DA --> PAUSE["Pause HIL e envelope hil"]
+    WF --> WPAUSE["Pause HIL em workflow"]
+    PAUSE --> HUMAN["Humano revisa"]
+    WPAUSE --> HUMAN
+    AGPAUSE --> HUMAN
+    HUMAN -->|"DeepAgent"| CONT["/POST /agent/continue/"]
+    HUMAN -->|"Workflow"| WCONT["/POST /workflow/continue/"]
+    HUMAN -->|"AG-UI host faz a ponte"| CONT
+    CONT --> RESUME["Retomada com thread_id e decisao"]
+    WCONT --> RESUME
+    RESUME --> FINAL["Execucao finaliza ou rejeita"]

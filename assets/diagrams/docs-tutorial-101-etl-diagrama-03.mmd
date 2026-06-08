@@ -1,0 +1,17 @@
+flowchart TB
+  subgraph Entry
+    E["rag_router /rag/etl"]
+  end
+  subgraph Service
+    S["etl_service"]
+  end
+  subgraph Orchestration
+    O["etl_layer.orchestrator"]
+  end
+  subgraph Providers
+    P1["apify providers"]
+    P2["schema metadata processor"]
+  end
+
+  E --> S --> O --> P1
+  O --> P2

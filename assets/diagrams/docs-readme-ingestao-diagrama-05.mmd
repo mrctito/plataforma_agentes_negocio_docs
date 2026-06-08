@@ -1,0 +1,13 @@
+flowchart TD
+  A["Boundary aceita o pedido"] --> B["IngestionService resolve contexto e paralelismo"]
+  B --> C["Resolvers montam IngestionRequest"]
+  C --> D{"Fan-out documental?"}
+  D -->|"Sim"| E["Coordenacao pai-filhos"]
+  D -->|"Nao"| F["ContentIngestionOrchestrator"]
+  E --> F
+  F --> G["Resolucao da familia de fonte"]
+  G --> H["Materializacao canonica quando necessaria"]
+  H --> I["Processor especifico por tipo"]
+  I --> J["Chunking e enriquecimento"]
+  J --> K["Persistencia e indexacao"]
+  K --> L["Telemetria e fechamento operacional"]

@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant U as Usuario
+    participant R as Runtime da interacao
+    participant T as Recorder ou Processor
+    participant M as InteractionTelemetryManager
+    participant W as BatchWriter PostgreSQL
+    participant DB as interaction_runs
+    participant API as interaction_runs_router
+
+    U->>R: envia pergunta ou mensagem
+    R-->>U: devolve resposta principal
+    R->>T: entrega payload da execucao
+    T->>M: build_record e enqueue
+    M->>W: flush_batch em lote
+    W->>DB: INSERT em interaction_runs
+    U->>API: consulta registros ou atualiza observacoes
+    API->>DB: SELECT ou UPDATE

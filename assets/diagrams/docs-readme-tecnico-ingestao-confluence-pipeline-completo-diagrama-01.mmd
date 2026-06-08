@@ -1,0 +1,18 @@
+sequenceDiagram
+    participant YAML as YAML
+    participant Resolver as Source Resolver
+    participant Family as Confluence Family
+    participant DS as ConfluenceDataSource
+    participant Proc as Confluence Processor
+    participant Pipe as Esteira comum
+
+    YAML->>Resolver: pages e recursion_level
+    Resolver->>Family: page_ids resolvidos
+    Family->>DS: resolver alcance real
+    DS->>DS: discovery, visibilidade e filhos
+    Family->>DS: fetch completo por página
+    DS->>DS: autorização e metadados de attachment
+    DS->>Proc: StorageDocument
+    Proc->>Proc: html para markdown, qualidade, attachments, multimodal
+    Proc->>Pipe: chunks textuais e de imagem
+    Pipe->>Pipe: persistência e indexação

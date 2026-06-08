@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant Cliente
+    participant API
+    participant Logging
+    participant Provider
+    participant Reader
+    participant Analyzer
+
+    Cliente->>API: Requisicao com ou sem X-Correlation-Id
+    API->>Logging: Resolve e fixa correlation_id
+    Logging-->>API: Logger correlacionado
+    API-->>Cliente: Resposta com X-Correlation-Id
+    Cliente->>Provider: Solicita investigacao usando correlation_id
+    Provider->>Reader: Entrega fonte local ou materializada
+    Reader->>Analyzer: Familia de logs da execucao
+    Analyzer-->>Cliente: Relatorio estruturado de diagnostico

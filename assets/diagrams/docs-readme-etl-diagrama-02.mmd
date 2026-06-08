@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant O as Operador
+    participant API as Boundary ETL
+    participant Queue as RabbitMQ
+    participant Worker as Worker Dramatiq
+    participant SVC as ETL Service
+    participant ORCH as ETL Orchestrator
+    participant SM as Schema Metadata
+    participant CAT as Catalogo dbschemas
+    participant NL as schema_rag_sql
+
+    O->>API: Solicita ETL
+    API->>Queue: Publica job
+    Queue->>Worker: Entrega mensagem
+    Worker->>SVC: execute
+    SVC->>ORCH: run
+    ORCH->>SM: Executa schema metadata
+    SM->>CAT: Grava banco, schema, tabelas, colunas, PKs e FKs
+    CAT-->>SM: Catalogo atualizado
+    SM-->>ORCH: Estatisticas e metadata
+    ORCH-->>SVC: Resultado consolidado
+    SVC-->>API: Estado final monitoravel
+    NL->>NL: Usa documentos schema_metadata indexados em vector store

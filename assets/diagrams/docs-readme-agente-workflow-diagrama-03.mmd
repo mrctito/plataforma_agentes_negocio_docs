@@ -1,0 +1,31 @@
+sequenceDiagram
+  participant U as Cliente
+  participant API as workflow_router (/workflow/execute)
+  participant ORCH as WorkflowOrchestrator
+  participant AW as AgentWorkflow
+  participant N as Node (agent/executor)
+  participant H as Humano Aprovador
+
+  U->>API: /workflow/execute com thread_id=T1
+  API->>ORCH: execute(..., thread_id=T1)
+  ORCH->>AW: run(message, thread_id=T1)
+  AW->>N: executa node com human_approval
+  N-->>AW: __interrupt__ (payload JSON)
+  AW-->>ORCH: estado pausado (thread_id=T1)
+  ORCH-->>API: resposta com interrupção
+  API-->>H: solicita decisão humana
+
+  H->>API: /workflow/continue (thread_id=T1, human_response)
+  API->>ORCH: continue_execution(thread_id=T1)
+  ORCH->>AW: invoke(Command(resume=...), thread_id=T1)
+
+  alt approve
+    AW-->>ORCH: sucesso + metadata.human_approvals
+    ORCH-->>API: status=success
+  else reject
+    AW-->>ORCH: bloqueio + auditoria
+    ORCH-->>API: erro controlado
+  else edit
+    AW-->>ORCH: sucesso com decisão editada
+    ORCH-->>API: status=success + decision_type=edited
+  end

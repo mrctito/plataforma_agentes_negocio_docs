@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant Operador as Operador
+    participant Launcher as run.sh
+    participant API as Runner API
+    participant Worker as Runner Worker
+    participant Scheduler as Runner Scheduler
+    participant HTTP as FastAPI
+    participant Config as Resolução YAML
+
+    Operador->>Launcher: escolhe +a +w +s
+    Launcher->>API: inicia processo API
+    Launcher->>Worker: inicia processo worker
+    Launcher->>Scheduler: inicia processo scheduler
+    API->>API: valida infraestrutura
+    API->>HTTP: sobe boundary HTTP
+    Worker->>Worker: valida infraestrutura
+    Worker->>Worker: executa bootstrap e runtime assíncrono
+    Scheduler->>Scheduler: valida infraestrutura
+    Scheduler->>Scheduler: executa bootstrap temporal
+    HTTP->>Config: resolve YAML e injeta tools builtin quando necessário

@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant Resolver as Source Resolver
+    participant Dispatcher as ContentTypeDispatcher
+    participant Remote as RemoteContentFamilyService
+    participant Client as WebScraping Client
+    participant Pipeline as File Pipeline
+    participant Processor as WebContentProcessor
+
+    Resolver->>Dispatcher: web_scraping_urls
+    Dispatcher->>Remote: process_web_scraping
+    Remote->>Client: get_documents_for_pipeline(urls)
+    Client-->>Remote: páginas + anexos + metadata
+    Remote->>Pipeline: _process_files_with_pipeline(urls, prefetched_documents)
+    Pipeline->>Pipeline: resolve_prefetched_document
+    Pipeline->>Processor: build_from_storage + chunking
+    Processor-->>Pipeline: chunks web

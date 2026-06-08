@@ -1,0 +1,27 @@
+flowchart LR
+    subgraph L1["Raia 1 - Cliente e UI"]
+        S1["Usuario envia pedido"]
+        S2["UI detecta hil.pending"]
+        S3["Humano decide"]
+    end
+
+    subgraph L2["Raia 2 - API"]
+        S4["Router resolve YAML e auth"]
+        S5["API devolve thread_id e envelope hil"]
+        S6["API recebe continue"]
+    end
+
+    subgraph L3["Raia 3 - Runtime"]
+        S7["DeepAgent pausa tool-call"]
+        S8["Workflow pausa node ou human_gate"]
+        S9["Runtime retoma com decisao"]
+    end
+
+    subgraph L4["Raia 4 - Persistencia"]
+        S10["Checkpointer salva estado"]
+        S11["Registro HIL duravel opcional"]
+    end
+
+    S1 --> S4 --> S7 --> S10 --> S5 --> S2 --> S3 --> S6 --> S9
+    S4 --> S8 --> S10
+    S5 --> S11

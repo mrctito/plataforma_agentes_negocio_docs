@@ -1,0 +1,13 @@
+flowchart TD
+    A["Definir caso de uso"] --> B{"Cabe em kind existente?"}
+    B -- Sim --> C["Definir dispatch_mode e envelope"]
+    B -- Nao --> D["Expandir JobKind, config e filas"]
+    C --> E["Adicionar comando tipado na factory"]
+    D --> E
+    E --> F["Criar handler de mensagem e handler de domínio"]
+    F --> G["Registrar bridge no executor do transporte"]
+    G --> H{"Precisa papel de fila dedicado?"}
+    H -- Sim --> I["Adicionar actor e topologia"]
+    H -- Nao --> J["Reusar papel existente"]
+    I --> K["Adicionar observabilidade e testes"]
+    J --> K

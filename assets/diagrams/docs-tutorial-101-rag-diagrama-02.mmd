@@ -1,0 +1,26 @@
+sequenceDiagram
+    participant U as Usuario
+    participant API as /rag/execute
+    participant Compat as rag_runtime_operations_compat
+    participant QS as QuestionService
+    participant Cache as PipelineCacheManager
+    participant QA as ContentQASystem
+    participant Assembly as QARuntimeAssembly
+    participant Processor as QAQuestionProcessor
+    participant Orch as IntelligentRAGOrchestrator
+
+    U->>API: POST /rag/execute com operation=ask
+    API->>Compat: execute_rag_operation
+    Compat->>Compat: resolve YAML + auth + execution mode
+    Compat->>QS: ask_question()
+    QS->>Cache: get_cached_system()
+    Cache-->>QS: pipeline existente ou vazio
+    QS->>QA: inicializa ContentQASystem se necessario
+    QA->>Assembly: valida runtime moderno
+    QS->>QA: ask_question(...)
+    QA->>Processor: ask_question(...)
+    Processor->>Orch: intelligent_retrieve(...)
+    Orch-->>Processor: answer + documents + diagnostics
+    Processor-->>QS: payload normalizado
+    QS-->>Compat: RagQuestionResponse
+    Compat-->>U: 200 sync ou 202 async

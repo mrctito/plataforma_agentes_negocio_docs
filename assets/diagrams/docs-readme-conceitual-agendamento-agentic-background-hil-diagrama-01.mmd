@@ -1,0 +1,17 @@
+flowchart TD
+    U["Usuario pede algo em linguagem natural"] --> T["Tool interna cria solicitacao background"]
+    T --> RQ["agent_background.background_execution_requests"]
+    T --> SJ["scheduler.scheduled_jobs"]
+    SJ --> SD["Scheduler-only com dispatcher universal"]
+    SD --> EX["scheduler.job_executions"]
+    SD --> W["Worker oficial"]
+    W --> RUN["agent_background.background_execution_runs"]
+    W --> RT["Runtime agentic oficial"]
+    RT --> OK["completed ou failed"]
+    RT --> HIL["waiting_hil"]
+    HIL --> AP["agent_background.agent_hil_approval_requests"]
+    AP --> D1["POST seguro de decisao"]
+    AP --> D2["Canal com bridge HIL"]
+    D1 --> CONT["Retomada da mesma thread"]
+    D2 --> CONT
+    CONT --> RUN

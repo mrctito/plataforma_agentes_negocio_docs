@@ -1,0 +1,25 @@
+flowchart TD
+    start(["Tenho uma tarefa"]) --> q0{"Já existe um<br/>erro real com<br/>correlation_id?"}
+
+    q0 -->|"Sim, e quero só entender o log"| analisar["/analisar-log/"]
+    q0 -->|"Sim, e quero corrigir o bug"| corrigir["/corrigir-com-log/"]
+    q0 -->|"Não"| q1{"Preciso mudar<br/>código/comportamento?"}
+
+    q1 -->|"Não, só entender o estado atual"| investigar["/investigar/"]
+    q1 -->|"Sim"| q2{"Já tenho investigação<br/>e plano prontos?"}
+
+    q2 -->|"Não tenho investigação"| investigar
+    q2 -->|"Tenho investigação, falta plano"| planejar["/planejar/"]
+    q2 -->|"Tenho plano aprovado"| implementar["/implementar/"]
+
+    implementar --> validar["/validar-entrega/"]
+
+    q1 -->|"É só rodar/estabilizar testes"| testes["/executar-testes/"]
+    q1 -->|"É criar cobertura nova"| criartestes["/criar-testes/"]
+
+    style investigar fill:#cfe8ff
+    style planejar fill:#d8f5d0
+    style implementar fill:#ffe7c2
+    style validar fill:#f5d0d0
+    style analisar fill:#e8e0ff
+    style corrigir fill:#e8e0ff

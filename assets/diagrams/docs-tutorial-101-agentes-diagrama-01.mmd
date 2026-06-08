@@ -1,0 +1,11 @@
+flowchart LR
+  U["Cliente"] --> R["/POST /agent/execute\nagent_router/"]
+  R --> C["resolve_yaml_configuration"]
+  R --> A["authenticate_with_yaml_config"]
+  R --> I["invoke_agent"]
+  I --> O["AgentOrchestrator.execute"]
+  O --> S["AgentSupervisor.initialize/run"]
+  S --> T["ToolsFactory"]
+  S --> L["LLM + tools"]
+  L --> P["Resposta final"]
+  P --> U

@@ -1,0 +1,17 @@
+flowchart TB
+    C1["service_api"]
+    C2["instagram_provision_router"]
+    C3["PermissionKeys.PROVISION_INSTAGRAM"]
+    C4["InstagramProvisionerAsync"]
+    C5["ClientDirectory"]
+    C6["channel_router instagram messages/send"]
+    C7["test_instagram_provision_router"]
+    C8["test_instagram_onboarding"]
+
+    C1 --> C2
+    C2 --> C3
+    C2 --> C4
+    C2 --> C5
+    C2 --> C6
+    C2 --> C7
+    C4 --> C8

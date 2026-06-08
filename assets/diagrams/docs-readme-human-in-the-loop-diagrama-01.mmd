@@ -1,0 +1,11 @@
+flowchart TD
+    A["Cliente chama /agent/execute"] --> B["Backend resolve YAML, usuario e supervisor"]
+    B --> C["Runtime encontra tool ou etapa sensivel"]
+    C --> D["Execucao pausa e estado fica ancorado no checkpointer"]
+    D --> E["Router publica thread_id, metrics paused e envelope hil"]
+    E --> F["UI monta painel de revisao com action_requests e review_configs"]
+    F --> G["Operador aprova, edita ou rejeita"]
+    G --> H["Cliente chama /agent/continue"]
+    H --> I["Backend valida pausa registrada e decisoes permitidas"]
+    I --> J["Supervisor recebe Command resume na mesma thread"]
+    J --> K["Execucao conclui ou pausa novamente"]

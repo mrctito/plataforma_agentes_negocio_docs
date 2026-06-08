@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant P as Parceiro UCP
+    participant API as API Plataforma de Agentes de IA
+    participant PDV as PDV HTTP
+    participant FB as Fallback Banco
+    participant WH as Webhook Pedido
+
+    P->>API: GET /.well-known/ucp
+    API-->>P: Business Profile
+
+    P->>API: POST /ucp/v1/checkout-sessions
+    alt PDV configurado
+        API->>PDV: create checkout
+        PDV-->>API: checkout calculado
+    else fallback ativo
+        API->>FB: montar checkout no schema varejo
+        FB-->>API: checkout reconstruido
+    end
+    API-->>P: resposta UCP
+
+    P->>API: POST /ucp/v1/order-events
+    API->>WH: dispatch webhook
+    WH-->>API: 2xx
+    API-->>P: 202 Accepted

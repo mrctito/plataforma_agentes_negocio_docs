@@ -1,0 +1,20 @@
+sequenceDiagram
+  participant U as Usuario
+  participant API as workflow_router
+  participant SVC as WorkflowExecutionService
+  participant ORCH as WorkflowOrchestrator
+  participant AW as AgentWorkflow
+  participant G as StateGraph
+
+  U->>API: POST /workflow/execute
+  API->>API: resolve_yaml_configuration + auth
+  API->>SVC: execute_sync ou schedule_async
+  SVC->>ORCH: execute(message,thread)
+  ORCH->>AW: initialize()
+  AW->>G: add_node/add_edge + compile
+  ORCH->>AW: run(...)
+  AW->>G: ainvoke(initial_state)
+  G-->>AW: result state
+  AW-->>ORCH: final_response
+  ORCH-->>API: payload
+  API-->>U: 200/202

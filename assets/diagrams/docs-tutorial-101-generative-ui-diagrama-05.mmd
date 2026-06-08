@@ -1,0 +1,34 @@
+flowchart LR
+    subgraph Operador
+        O1["Abre a tela"]
+        O2["Preenche periodo, prompt e contexto"]
+        O3["Clica em executar"]
+    end
+    subgraph Frontend
+        F1["Controller monta capability e parametros"]
+        F2["Sidecar anexa contexto"]
+        F3["Cliente abre POST SSE"]
+        F4["Store aplica eventos"]
+        F5["Pagina renderiza resultado ou canvas"]
+    end
+    subgraph API
+        A1["Router valida permissao"]
+        A2["Router exige yaml_inline_content ou equivalente"]
+        A3["Router cria correlation id"]
+        A4["Orquestrador emite lifecycle"]
+    end
+    subgraph Runtime
+        R1["Adapter resolve capability"]
+        R2["Dyn SQL aprovado ou DashboardSpec"]
+        R3["Materializacao ou tool result"]
+    end
+    subgraph Governanca
+        G1["YAML define supervisor e tools"]
+        G2["Validador bloqueia HTML, JS e SQL livre"]
+        G3["Browser nao cria correlation id"]
+    end
+
+    O1 --> O2 --> O3 --> F1 --> F2 --> F3 --> A1 --> A2 --> A3 --> A4 --> R1 --> R2 --> R3 --> F4 --> F5
+    G1 --> R1
+    G2 --> R2
+    G3 --> F3

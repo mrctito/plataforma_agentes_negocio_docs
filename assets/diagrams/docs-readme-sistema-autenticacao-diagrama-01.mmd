@@ -1,0 +1,14 @@
+flowchart TD
+    A["Requisição"] --> B{"Entrada"}
+    B -->|"X-API-Key ou YAML access_key"| C["user_auth"]
+    B -->|"Login federado"| D["auth_router"]
+    B -->|"Login local"| D
+    C --> E["ClientDirectory"]
+    D --> E
+    D --> F{"MFA exigido?"}
+    F -->|"Sim"| G["TOTP"]
+    F -->|"Não"| H["Sessão web final"]
+    G --> H
+    E --> I[tenant_id, user_account_id,
+    tenant_user_id, permissoes]
+    H --> I

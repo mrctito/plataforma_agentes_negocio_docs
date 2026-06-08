@@ -1,0 +1,19 @@
+sequenceDiagram
+  participant B as Boundary
+  participant S as IngestionService
+  participant R as Source Resolvers
+  participant O as Orchestrator
+  participant P as Processor do Tipo
+  participant V as Vector Store e Persistencia
+  participant T as Telemetria
+
+  B->>S: Pedido de ingestao
+  S->>R: Resolve fontes e monta IngestionRequest
+  R-->>S: Fontes agregadas
+  S->>O: Executa lote direto ou fan-out
+  O->>P: Materializa e processa por tipo
+  P-->>O: Conteudo estruturado e chunks
+  O->>V: Persiste e indexa
+  O->>T: Atualiza estado operacional
+  O-->>S: Resultado consolidado
+  S-->>B: Aceite e retorno operacional

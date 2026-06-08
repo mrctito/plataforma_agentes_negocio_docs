@@ -1,0 +1,8 @@
+flowchart TD
+    A["YAML atual"] --> B["Parse para AST oficial"]
+    B --> C["Montagem do ast_payload"]
+    C --> D["confirm force=true"]
+    D --> E["Recomposição do YAML governado"]
+    E --> F["Stamp de governed_hashes"]
+    F --> G["Preview ou gravação"]
+    G --> H["Runtime recalcula e compara o hash"]

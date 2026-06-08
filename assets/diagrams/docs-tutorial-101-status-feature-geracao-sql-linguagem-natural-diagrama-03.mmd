@@ -1,0 +1,33 @@
+flowchart LR
+    subgraph L1["Entry Points"]
+        EP1["src/api/routers/agent_router.py"]
+        EP2["src/api/routers/schema_metadata_router.py"]
+    end
+
+    subgraph L2["Orchestration"]
+        OR1["src/orchestrators/agent_orchestrator.py"]
+        OR2["src/agentic_layer/supervisor/agent_supervisor.py"]
+        OR3["src/agentic_layer/supervisor/tools_factory.py"]
+    end
+
+    subgraph L3["Agents e Tools"]
+        AG1["src/agentic_layer/tools/domain_tools/dynamic_sql_tools/dynamic_sql_factory.py"]
+        AG2["src/agentic_layer/tools/domain_tools/schema_rag_tools/sql_schema_rag_factory.py"]
+        AG3["src/agentic_layer/supervisor/tool_loader.py"]
+    end
+
+    subgraph L4["Dados e Infra"]
+        D1["DB SQL via SQLAlchemy/SQLDatabase"]
+        D2["VectorStoreFactory"]
+        D3["Resource Pool Cache"]
+    end
+
+    subgraph L5["Contracts Config"]
+        C1["app/yaml/system/rag-config-modelo.yaml"]
+        C2["src/config/config_cli/configuration_factory.py"]
+        C3["integrations.builtin_tool_registry"]
+    end
+
+    L1 --> L2 --> L3 --> L4
+    C1 --> C2 --> L2
+    C3 --> L2

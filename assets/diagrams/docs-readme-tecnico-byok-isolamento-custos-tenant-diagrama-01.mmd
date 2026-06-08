@@ -1,0 +1,13 @@
+flowchart TD
+    A["Access key recebida"] --> B["Auth resolve user_data"]
+    B --> C{"tenant_id presente?"}
+    C -- nao --> X["falha cedo"]
+    C -- sim --> D["ClientDirectory enrich_yaml_with_client_context"]
+    D --> E["client_context.client no YAML"]
+    D --> F["load tenant_security_keys"]
+    D --> G["load tenant_secrets"]
+    G --> H["resolve $security_credential"]
+    F --> I["security_keys no YAML"]
+    H --> I
+    I --> J["runtime usa credenciais do tenant"]
+    J --> K["token_billing_event e logs"]

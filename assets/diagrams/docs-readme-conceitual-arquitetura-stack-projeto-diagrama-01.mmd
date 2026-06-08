@@ -1,0 +1,14 @@
+flowchart TD
+    A["Cliente, UI, canal ou sistema externo"] --> B["API FastAPI"]
+    B --> C{"Tipo de operacao"}
+    C -->|"Sincrona"| D["Runtime local da API"]
+    C -->|"Assincrona"| E["Worker"]
+    C -->|"Temporal ou manutencao"| F["Scheduler"]
+    D --> G["YAML, AST e runtime agentic"]
+    E --> G
+    F --> G
+    G --> H["Dados, vector store, tools e integracoes"]
+    H --> I["Resposta, estado persistido ou acao externa"]
+    B --> J["Logs estruturados e correlation_id"]
+    E --> J
+    F --> J

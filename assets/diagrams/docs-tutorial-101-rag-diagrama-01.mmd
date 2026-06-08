@@ -1,0 +1,13 @@
+flowchart LR
+    A["Cliente"] --> B["POST /rag/execute operation=ask"]
+    B --> C["resolve_yaml_configuration"]
+    C --> D["authenticate_with_yaml_config"]
+    D --> E["ask_question compat"]
+    E --> F["QuestionService.execute"]
+    F --> G["ContentQASystem"]
+    G --> H["QARuntimeAssembly"]
+    G --> I["QAQuestionProcessor"]
+    I --> J["IntelligentRAGOrchestrator"]
+    J --> K["Retrieval"]
+    J --> L["Generation"]
+    L --> M["Resposta com answer, sources, analysis e metrics"]

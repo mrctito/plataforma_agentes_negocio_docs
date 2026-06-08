@@ -1,0 +1,46 @@
+flowchart TB
+    subgraph EntryPoints
+        A1["src/api/service_api.py"]
+        A2["src/api/routers/ag_ui_router.py"]
+        A3["app/ui/static/ui-admin-plataforma-ag-ui-*.html"]
+    end
+
+    subgraph Orchestration
+        B1["src/api/services/ag_ui_run_orchestrator.py"]
+        B2["src/api/services/ag_ui_event_encoder.py"]
+    end
+
+    subgraph AgentsAndGraphs
+        C1["app/yaml/ag-ui-pdv-vendas-demo.yaml"]
+        C2["executionKind retail_demo"]
+    end
+
+    subgraph ToolsAndIntegrations
+        D1["src/api/services/ag_ui_retail_demo_adapter.py"]
+        D2["src/agentic_layer/tools/.../dynamic_sql_factory.py"]
+        D3["src/api/services/ag_ui_dashboard_materialization.py"]
+    end
+
+    subgraph Contracts
+        E1["src/api/schemas/ag_ui_models.py"]
+        E2["src/api/schemas/ag_ui_dashboard_models.py"]
+    end
+
+    subgraph DataAndUi
+        F1["DATABASE_VAREJO_DSN e DATABASE_VAREJO_SCHEMA"]
+        F2["app/ui/static/js/shared/ag-ui-client.js"]
+        F3["app/ui/static/js/shared/ag-ui-sidecar-chat.js"]
+        F4["app/ui/static/js/ag-ui-dashboard-dinamico.js"]
+    end
+
+    A1 --> A2 --> B1 --> D1
+    B1 --> B2
+    D1 --> C1
+    D1 --> D2
+    D1 --> D3
+    D1 --> E1
+    D3 --> E2
+    A3 --> F2 --> A2
+    F2 --> F3
+    F3 --> F4
+    D2 --> F1

@@ -1,0 +1,7 @@
+flowchart LR
+  A["rag_router.py"] --> B["execute_etl"]
+  B --> C["ExtractTransformLoadService.execute"]
+  C --> D["_ensure_etl_ready"]
+  C --> E["ExtractTransformLoadOrchestrator.run"]
+  E --> F["Booking/Hotels/Tripadvisor"]
+  E --> G["Schema metadata"]

@@ -1,0 +1,24 @@
+flowchart TB
+    CfgModel["app/yaml/system/rag-config-modelo.yaml"]
+    CfgResolver["src/api/routers/config_resolution.py"]
+    CfgFactory["src/config/config_cli/configuration_factory.py"]
+    Normalizer["src/utils/yaml_schema_normalizer.py"]
+    ApiApp["src/api/service_api.py"]
+    AssemblyRouter["src/api/routers/config_assembly_router.py"]
+    ToolLoader["src/agentic_layer/supervisor/tool_loader.py"]
+    DynSql["src/agentic_layer/tools/domain_tools/dynamic_sql_tools/dynamic_sql_factory.py"]
+    SchemaRag["src/agentic_layer/tools/domain_tools/schema_rag_tools/sql_schema_rag_factory.py"]
+    SchemaRouter["src/api/routers/schema_metadata_router.py"]
+    SchemaCore["src/schema_metadata"]
+
+    CfgModel --> CfgResolver
+    CfgResolver --> CfgFactory
+    CfgFactory --> Normalizer
+    ApiApp --> CfgResolver
+    ApiApp --> AssemblyRouter
+    ApiApp --> SchemaRouter
+    CfgResolver --> ToolLoader
+    ToolLoader --> DynSql
+    ToolLoader --> SchemaRag
+    SchemaRouter --> SchemaCore
+    SchemaCore --> SchemaRag

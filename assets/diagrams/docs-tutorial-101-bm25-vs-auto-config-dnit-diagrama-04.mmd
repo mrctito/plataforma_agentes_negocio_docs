@@ -1,0 +1,27 @@
+flowchart TB
+    C1["bm25_retriever.py\nBM25Retriever"]
+    C2["bm25_index_manager.py\nBM25VocabularySnapshot"]
+    C3["retrieval_engine.py\nmerge_bm25_vocabulary_config"]
+    C4["service.py\n_apply_auto_config_runtime_hints"]
+    C5["query_analyzer.py\n_load_auto_detection_keywords"]
+    C6["intelligent_orchestrator.py\n_apply_vocabulary_to_yaml"]
+    C7["domain_config_repository.py\nupdate_auto_config"]
+    C8["domain_signal_processor.py\naggregate and persist"]
+    D1["(bm25_indexes)"]
+    D2["(ingestion_domain_processors.auto_config)"]
+    D3["(ingestion manifests)"]
+    T1["test_dnit_query_expansion.py"]
+
+    C8 --> D3
+    C8 --> C7
+    C7 --> D2
+    C4 --> D2
+    C4 --> C5
+    C3 --> D1
+    D1 --> C2
+    C2 --> C3
+    C3 --> C1
+    C6 --> C3
+    T1 --> C4
+    T1 --> C5
+    T1 --> C6

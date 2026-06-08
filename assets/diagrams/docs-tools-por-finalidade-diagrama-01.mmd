@@ -1,0 +1,7 @@
+flowchart LR
+    A["Código com @tool e @tool_factory"] --> B["Builder descobre tools"]
+    B --> C["Catálogo builtin persistido"]
+    C --> D["Cache compartilhado"]
+    D --> E["Injeção em tools_library"]
+    E --> F["Resolver de catálogo por escopo"]
+    F --> G["Agente, workflow, supervisor ou AG-UI"]

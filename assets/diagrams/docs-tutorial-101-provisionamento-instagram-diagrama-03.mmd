@@ -1,0 +1,27 @@
+flowchart LR
+    subgraph EntryPoints
+      EP1["src/api/service_api.py"]
+      EP2["src/api/routers/instagram_provision_router.py"]
+    end
+
+    subgraph Orchestration
+      OR1["validação request e permissão"]
+      OR2["montagem metadata e persistência"]
+    end
+
+    subgraph AgentsGraphs
+      AG1["Não encontrado no código"]
+    end
+
+    subgraph ToolsIntegrations
+      TI1["src/channel_layer/services/instagram_onboarding.py"]
+      TI2["Meta Graph API"]
+    end
+
+    subgraph DataLayer
+      DL1["src/security/client_directory.py"]
+      DL2["registro instagram account"]
+    end
+
+    EP1 --> EP2 --> OR1 --> TI1 --> TI2
+    EP2 --> OR2 --> DL1 --> DL2

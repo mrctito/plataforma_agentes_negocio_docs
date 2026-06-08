@@ -1,0 +1,16 @@
+flowchart LR
+  A["Tela corporativa"] --> B["POST /ag-ui/runs"]
+  B --> C["AgUiRunOrchestrator"]
+  C --> D{"runtime resolvido pelo YAML"}
+    D --> F["deepagent"]
+    D --> G["workflow"]
+    D --> H["retail_demo"]
+    H --> I["dyn_sql governado"]
+    H --> J["DashboardSpec segura"]
+    F --> K
+    G --> K
+    I --> K
+    J --> K
+    K --> L["Runtime JS compartilhado"]
+    L --> M["Sidecar"]
+    L --> N["Tela principal"]

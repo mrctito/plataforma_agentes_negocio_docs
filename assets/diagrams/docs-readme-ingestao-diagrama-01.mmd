@@ -1,0 +1,12 @@
+flowchart TD
+  A["web_scraping_urls no IngestionRequest"] --> B["ContentTypeDispatcher registra step content_type:web_scraping"]
+  B --> C["RemoteContentFamily.process_web_scraping"]
+  C --> D["WebScrapingDatasourceMultimodalAdapterClient.get_documents_for_pipeline"]
+  D --> E["Fetch autenticado e escolha de estrategia"]
+  E --> F["Limpeza HTML e montagem do documento web rico"]
+  F --> G["Particao entre paginas, anexos e prefetched_documents"]
+  G --> H["_process_files_with_pipeline com require_prefetched_documents"]
+  H --> I["DataSourceDocumentExecutor reutiliza documento prefetched"]
+  I --> J["WebContentProcessor materializa HTML canônico"]
+  J --> K["Html chunking e domain processing web"]
+  K --> L["Indexacao final e anexacao de attachments"]

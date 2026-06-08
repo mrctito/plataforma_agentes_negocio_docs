@@ -1,0 +1,12 @@
+flowchart TD
+    A["YAML com selected_workflow e workflows"] --> B["WorkflowParser cria AST canônica"]
+    B --> C["WorkflowCompiler normaliza ids e fragmento"]
+    C --> D["WorkflowSemanticValidator valida contrato e integridade"]
+    D --> E["AgentWorkflow carrega contexto e factories"]
+    E --> F{"edges declaradas e válidas?"}
+    F -- Sim --> G["EdgeCompiler monta modo edge-first"]
+    F -- Não --> H["Montagem node-driven"]
+    G --> I["StateGraph compilado"]
+    H --> I
+    I --> J["Run com estado inicial e thread_id"]
+    J --> K["Retorno com final_response, metadata e execution_steps"]

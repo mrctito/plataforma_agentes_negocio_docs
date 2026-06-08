@@ -1,0 +1,12 @@
+flowchart TD
+    A["Origem do YAML"] --> B["ConfigurationFactory"]
+    B --> C["Validação de security_keys"]
+    C --> D["Injeção de tools_library"]
+    D --> E["Expansão de placeholders"]
+    E --> F["YamlSchemaNormalizer"]
+    F --> G["Contratos especializados"]
+    G --> H["Enriquecimento multi-tenant"]
+    H --> I{"Escopo agentic governado?"}
+    I -- Não --> J["YAML pronto para runtime"]
+    I -- Sim --> K["AST + validate + drift + confirm"]
+    K --> L["YAML governado com hash"]

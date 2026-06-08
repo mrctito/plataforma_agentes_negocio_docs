@@ -1,0 +1,24 @@
+sequenceDiagram
+  participant U as Cliente
+  participant API as agent_router (/agent/execute)
+  participant CFG as config_resolution
+  participant AUTH as authenticate_with_yaml_config
+  participant ORCH as AgentOrchestrator
+  participant SUP as AgentSupervisor
+  participant TF as ToolsFactory
+  participant LLM as Modelo/Tools
+
+  U->>API: POST /agent/execute
+  API->>CFG: resolve_yaml_configuration(encrypted_data)
+  CFG-->>API: yaml_config
+  API->>AUTH: validar X-API-Key + permissao
+  AUTH-->>API: user_code
+  API->>ORCH: execute(task, max_iterations)
+  ORCH->>SUP: initialize()
+  SUP->>TF: resolve_agent_tools(agente ativo)
+  TF-->>SUP: tools resolvidas
+  SUP->>LLM: run(message/thread)
+  LLM-->>SUP: output + uso de tools
+  SUP-->>ORCH: payload final_response/metrics
+  ORCH-->>API: AgentResponse
+  API-->>U: 200 (sync) ou 202 (async)

@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant API as API de ingestão
+    participant PROD as Serviço de agendamento
+    participant PAIQ as Fila pai
+    participant PAIW as Worker pai
+    participant FAN as Coordenador de fan-out
+    participant FILAQ as Fila filha
+    participant FILAW as Worker filho
+    participant ING as IngestionService
+    participant PDF as Pipeline PDF
+
+    API->>PROD: prepara YAML e agenda o job pai
+    PROD->>PAIQ: publica envelope prepared_yaml
+    PAIQ->>PAIW: entrega job pai
+    PAIW->>ING: execute_ingestion_async()
+    ING->>FAN: decide entre sequencial e fan-out
+    FAN->>FILAQ: publica document_fanout_child
+    FILAQ->>FILAW: entrega documento filho
+    FILAW->>ING: execute_single_document()
+    ING->>PDF: processa o PDF do documento

@@ -1,0 +1,21 @@
+flowchart TD
+    A["run.sh"] --> B["Runner API"]
+    A --> C["Runner Worker"]
+    A --> D["Runner Scheduler"]
+
+    B --> E["Preflight de infraestrutura"]
+    E --> F["FastAPI boundary HTTP"]
+    F --> G["UI estática e páginas web"]
+    F --> H["Routers de domínio e AG-UI"]
+
+    C --> I["Bootstrap compartilhado"]
+    I --> J["Runtime assíncrono"]
+    J --> K["Plano de controle multicanal"]
+
+    D --> L["Bootstrap compartilhado"]
+    L --> M["Coordenação temporal"]
+
+    N["YAML recebido"] --> O["Resolução de configuração"]
+    O --> P["Injeção de catálogo builtin"]
+    P --> F
+    P --> J

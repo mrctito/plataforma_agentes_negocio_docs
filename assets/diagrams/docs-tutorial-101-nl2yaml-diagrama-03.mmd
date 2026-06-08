@@ -1,0 +1,60 @@
+flowchart TB
+    subgraph EntryPoints
+        A1["UI standalone NL2YAML"]
+        A2["UI admin assembly"]
+        A3["FastAPI router /config/assembly"]
+    end
+
+    subgraph Orchestration
+        B1["AgenticAssemblyService"]
+        B2["TargetScopeResolver"]
+        B3["ToolCatalogResolver"]
+    end
+
+    subgraph AgentsAndDrafts
+        C1["IntentParser"]
+        C2["LlmAstDraftGenerator"]
+        C3["StructuredLlmClient"]
+        C4["AssemblyRepairLoop"]
+    end
+
+    subgraph Contracts
+        D1["Assembly models"]
+        D2["AgenticDocumentAST"]
+        D3["Schema service"]
+    end
+
+    subgraph ValidationAndCompile
+        E1["DocumentSemanticValidator"]
+        E2["DocumentCompiler"]
+        E3["Drift detector"]
+        E4["Diff preview"]
+    end
+
+    subgraph DataAndOutput
+        F1["base_yaml"]
+        F2["final_yaml"]
+        F3["output_path governado"]
+        F4["logs com correlation_id"]
+    end
+
+    A1 --> A3
+    A2 --> A3
+    A3 --> B1
+    B1 --> B2
+    B1 --> B3
+    B1 --> C1
+    B1 --> C2
+    C2 --> C3
+    B1 --> C4
+    B1 --> D1
+    B1 --> D2
+    B1 --> D3
+    B1 --> E1
+    B1 --> E2
+    B1 --> E3
+    B1 --> E4
+    B1 --> F1
+    E2 --> F2
+    B1 --> F3
+    A3 --> F4

@@ -1,0 +1,39 @@
+flowchart LR
+    subgraph Operador
+        A1["Escreve objetivo"]
+        A2["Revisa questions ou preview"]
+        A3["Confirma publicacao"]
+    end
+
+    subgraph UI
+        B1["objective-yaml-studio"]
+        B2["admin-assembly-ast"]
+    end
+
+    subgraph BoundaryHTTP
+        C1["/objective-to-yaml/"]
+        C2["/preflight/"]
+        C3["/draft/"]
+        C4["/validate/"]
+        C5["/confirm/"]
+    end
+
+    subgraph Assembly
+        D1["preflight"]
+        D2["draft"]
+        D3["validate"]
+        D4["confirm dry-run"]
+        D5["confirm persistente"]
+    end
+
+    A1 --> B1
+    A1 --> B2
+    B1 --> C1
+    B2 --> C2 --> D1
+    B2 --> C3 --> D2
+    B2 --> C4 --> D3
+    C1 --> D1 --> D2 --> D3 --> D4
+    D2 --> A2
+    D4 --> A2
+    A3 --> B1 --> C5 --> D5
+    A3 --> B2 --> C5 --> D5

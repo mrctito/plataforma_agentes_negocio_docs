@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant YAML as YAML ativo
+    participant Parser as Parser DeepAgent
+    participant Validator as Validador semântico
+    participant Supervisor as DeepAgentSupervisor
+    participant Store as Store/Backend
+    participant Runtime as Runtime DeepAgent
+
+    YAML->>Parser: multi_agents + execution.type deepagent
+    Parser->>Validator: AST DeepAgent
+    Validator-->>Supervisor: contrato aceito
+    Supervisor->>Store: resolve memory e backend
+    Supervisor->>Runtime: cria ou reutiliza agente governado
+    Runtime-->>Supervisor: resultado ou interrupção HIL
+    Supervisor-->>YAML: envelope com resposta, timeline e tools_usage

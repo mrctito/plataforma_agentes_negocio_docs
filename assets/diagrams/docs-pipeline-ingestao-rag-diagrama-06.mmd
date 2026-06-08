@@ -1,0 +1,31 @@
+flowchart LR
+  subgraph "CACHE LOOKUP"
+    Q["Query"] --> Embed["Embeddings.embed_query"]
+    Embed --> Vector["Query Vector"]
+    Vector --> Redis["Redis HNSW Index"]
+
+    Redis --> Search["Similarity Search"]
+    Search --> Distance{"Distance < threshold?"}
+
+    Distance -->|"Sim"| Hit["CACHE HIT"]
+    Distance -->|"Nao"| Miss["CACHE MISS"]
+  end
+
+  subgraph "CACHE HIT"
+    Hit --> Retrieve["Retrieve Cached Docs"]
+    Retrieve --> Filters{"Filters Match?"}
+
+    Filters -->|"Sim"| Return["Retornar Docs em Cache"]
+    Filters -->|"Nao"| Invalid["Invalidar Cache"]
+    Invalid --> Pipeline["Executar Pipeline"]
+    Return --> Continue["Continuar Pipeline"]
+  end
+
+  subgraph "CACHE MISS"
+    Miss --> Pipeline
+    Pipeline --> Result["Resultado do Pipeline"]
+    Result --> Store["Armazenar no Cache"]
+    Store --> TTL["TTL: 3600s"]
+    TTL --> RedisSet["Redis SET"]
+    RedisSet --> Continue
+  end

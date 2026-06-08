@@ -1,0 +1,12 @@
+flowchart TD
+    A["Template ou YAML base"] --> B["ConfigurationFactory carrega e finaliza"]
+    B --> C["Session e security_keys são resolvidos"]
+    C --> D["tools_library builtin pode ser injetada"]
+    D --> E{"Domínio desejado"}
+    E -- Workflow --> F["Assembly AST resolve selected_workflow"]
+    E -- DeepAgent --> G["Assembly AST resolve selected_supervisor"]
+    E -- ETL --> H["ExtractTransformLoadService valida extract_transform_load"]
+    F --> I["Validate e Confirm publicam fragmento governado"]
+    G --> I
+    I --> J["Runtime agentic executa o alvo ativo"]
+    H --> K["Orquestrador ETL executa pipelines enabled"]

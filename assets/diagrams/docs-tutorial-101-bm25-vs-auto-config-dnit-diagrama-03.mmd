@@ -1,0 +1,50 @@
+flowchart LR
+    subgraph Entry["Entry points"]
+        A1["app/main.py"]
+        A2["src/api/service_api.py"]
+        A3["src/api/routers/rag_router.py"]
+    end
+
+    subgraph Orchestration["Orquestracao"]
+        B1["ContentQASystem"]
+        B2["IntelligentOrchestrator"]
+        B3["DomainConfigurationService"]
+    end
+
+    subgraph Runtime["Runtime de dominio"]
+        C1["auto_config runtime hints"]
+        C2["QueryAnalyzer"]
+        C3["DnitQueryExpansionStep"]
+    end
+
+    subgraph Retrieval["Retrieval"]
+        D1["RetrievalEngine"]
+        D2["BM25Retriever"]
+        D3["vector search"]
+    end
+
+    subgraph Data["Camada de dados"]
+        E1["bm25_indexes"]
+        E2["ingestion_domain_processors.auto_config"]
+        E3["ingestion manifests"]
+    end
+
+    subgraph Contracts["Contratos"]
+        F1["YAML domain_specific_processing"]
+        F2["YAML domain_specific_rag"]
+    end
+
+    subgraph Graphs["LangGraph neste tema"]
+        G1["Nao encontrado no codigo como ator principal deste fluxo"]
+    end
+
+    A1 --> A2 --> A3 --> B1 --> B2
+    A3 --> B3
+    B3 --> C1 --> C2 --> C3 --> D1
+    D1 --> D2
+    D1 --> D3
+    D1 --> E1
+    B3 --> E2
+    E3 --> E2
+    F1 --> B3
+    F2 --> B3

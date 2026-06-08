@@ -1,0 +1,21 @@
+flowchart TD
+    A["Pergunta"] --> B["QuestionService"]
+    B --> C["ContentQASystem"]
+    C --> D["QAQuestionProcessor"]
+    D --> E["IntelligentRAGOrchestrator"]
+    E --> F["Query Rewrite"]
+    F --> G["Query Analyzer"]
+    G --> H["Adaptive Router"]
+    H --> I["Retrieval Tradicional"]
+    H --> J["Retrieval Híbrido"]
+    H --> K["Self-Query"]
+    H --> L["Multi-Query"]
+    H --> M["JSON ou Excel Especializado"]
+    I --> N["FTS, Cache, Fusão, Deduplicação"]
+    J --> N
+    K --> N
+    L --> N
+    M --> N
+    N --> O["ACL Pós-Retrieval"]
+    O --> P["Geração com LLM"]
+    P --> Q["Resposta, Fontes e Diagnósticos"]

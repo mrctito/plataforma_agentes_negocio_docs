@@ -1,0 +1,44 @@
+flowchart TB
+  subgraph Humano
+    H1["Objetivo"]
+    H2["Contexto"]
+    H3["Aceite"]
+  end
+
+  subgraph Governanca
+    G1["Copilot instructions"]
+    G2["Instructions por escopo"]
+    G3["Agents"]
+    G4["Skills"]
+  end
+
+  subgraph Execucao
+    E1["Investigar"]
+    E2["Planejar"]
+    E3["Implementar"]
+    E4["Testar"]
+    E5["Documentar"]
+  end
+
+  subgraph Evidencia
+    V1["Codigo lido"]
+    V2["Logs"]
+    V3["Suite oficial"]
+    V4["Backlog e lessons"]
+  end
+
+  H1 --> E1
+  H2 --> E1
+  G1 --> E1
+  G2 --> E3
+  G3 --> E1
+  G4 --> E2
+  E1 --> V1
+  E1 --> E2
+  E2 --> E3
+  E3 --> E4
+  E4 --> V3
+  E4 --> E5
+  E5 --> H3
+  V2 --> E1
+  V4 --> E2

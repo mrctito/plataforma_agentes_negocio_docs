@@ -1,0 +1,19 @@
+sequenceDiagram
+        participant Cliente
+        participant Router as /config/nl2sql/generate
+        participant Service as Nl2SqlService
+        participant Factory as SqlSchemaRagToolFactory
+        participant VS as Vector Store de Schema
+        participant LLM as LLM
+        participant Guard as SqlReadOnlyGuardrail
+
+        Cliente->>Router: prompt + YAML + dialect
+        Router->>Service: contexto resolvido
+        Service->>Factory: yaml_config preparado
+        Factory->>VS: busca metadados de schema
+        VS-->>Factory: contexto relevante
+        Factory->>LLM: prompt de geração SQL
+        LLM-->>Service: SQL proposta
+        Service->>Guard: valida somente leitura
+        Guard-->>Service: allowed ou blocked
+        Service-->>Cliente: SQL proposta + diagnostics

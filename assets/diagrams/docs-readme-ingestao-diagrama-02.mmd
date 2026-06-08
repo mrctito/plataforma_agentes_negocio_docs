@@ -1,0 +1,10 @@
+flowchart TD
+  A["Arquivo .xlsx ou .xls entregue ao pipeline"] --> B["FileSystemDataSource lê bytes e infere ContentType"]
+  B --> C["PreparedFilePipelineDocument recebe StorageDocument"]
+  C --> D["ContentProcessorFactory resolve ExcelContentProcessor"]
+  D --> E["Validação do contrato do arquivo"]
+  E --> F["Carregamento do workbook com openpyxl ou xlrd"]
+  F --> G["Análise estrutural de abas, cabeçalhos e tabelas"]
+  G --> H["Construção do ExcelDocument com metadados ricos"]
+  H --> I["Chunking adaptativo por linhas"]
+  I --> J["Indexação final no pipeline comum"]

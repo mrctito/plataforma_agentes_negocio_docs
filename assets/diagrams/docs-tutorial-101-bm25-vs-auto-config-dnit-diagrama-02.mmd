@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant U as Usuario
+    participant API as rag_router
+    participant DCS as DomainConfigurationService
+    participant ACFG as ingestion_domain_processors
+    participant QA as QueryAnalyzer
+    participant RET as RetrievalEngine
+    participant BDB as bm25_indexes
+    participant BMR as BM25Retriever
+
+    U->>API: Envia pergunta
+    API->>DCS: Monta configuracao de runtime do dominio
+    DCS->>ACFG: Le snapshot auto_config persistido
+    ACFG-->>DCS: termos, codigos e hints
+    DCS-->>API: runtime com auto_detection_keywords e query_expansion
+    API->>QA: Analisa query com runtime de dominio
+    QA-->>API: sinais de dominio e hints
+    API->>RET: Prepara retrieval hibrido
+    RET->>BDB: Carrega BM25VocabularySnapshot
+    BDB-->>RET: detection_keywords e query_expansion_vocabulary
+    RET->>BMR: retrieve(query)
+    BMR-->>RET: scores lexicais
+    RET-->>API: contexto recuperado
+    API-->>U: resposta baseada no contexto

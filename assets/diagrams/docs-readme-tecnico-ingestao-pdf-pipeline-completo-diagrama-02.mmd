@@ -1,0 +1,31 @@
+sequenceDiagram
+    participant FP as Esteira de arquivo
+    participant PP as PDFContentProcessor
+    participant DP as DocumentProcessingService
+    participant EX as ExtractionService
+    participant RT as RuntimeCoordinator
+    participant EN as ParsingEngine
+    participant TP as TextProcessingService
+    participant RP as RichProcessingService
+    participant MM as MultimodalService
+    participant CH as ChunkingService
+    participant IX as IndexingExecutor
+
+    FP->>PP: process_document(document)
+    PP->>RT: initialize_runtime()
+    PP->>DP: process_document(document)
+    DP->>EX: extract_pdf_text(storage_document)
+    EX->>RT: build_extraction_pipeline()
+    RT->>EN: parse(raw_pdf_bytes)
+    EN-->>EX: PdfParsingEngineResult
+    EX-->>DP: texto e metadata base
+    DP->>TP: process(document)
+    TP-->>DP: texto limpo
+    DP->>RP: run(document)
+    RP->>MM: process_multimodal_document() se aplicável
+    RP->>CH: create_chunks() quando multimodal não assume
+    MM-->>RP: chunks multimodais ou fallback textual
+    RP-->>DP: lista final de chunks
+    DP-->>PP: chunks
+    PP-->>FP: chunks
+    FP->>IX: indexar e persistir

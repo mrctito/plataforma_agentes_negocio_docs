@@ -1,0 +1,12 @@
+flowchart TD
+    A["Pergunta recebida"] --> B["Montagem do runtime"]
+    B --> C["Query rewrite controlado"]
+    C --> D["Query analysis"]
+    D --> E["Domain processing"]
+    E --> F["Roteamento adaptativo"]
+    F --> G["Retrieval principal"]
+    G --> H["FTS augment ou fallback"]
+    H --> I["Fusion quando exigida"]
+    I --> J["ACL e normalizacao"]
+    J --> K["Generation Engine"]
+    K --> L["Resposta e metricas"]

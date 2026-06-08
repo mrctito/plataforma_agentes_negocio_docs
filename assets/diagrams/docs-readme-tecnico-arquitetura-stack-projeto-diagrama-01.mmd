@@ -1,0 +1,12 @@
+flowchart LR
+    A["Cliente e canais"] --> B["FastAPI"]
+    B --> C["Routers e servicos"]
+    C --> D["Assembly YAML e runtime agentic"]
+    C --> E["Fila RabbitMQ e Dramatiq"]
+    C --> F["Persistencia e telemetria PostgreSQL"]
+    C --> G["Redis e coordenacao"]
+    D --> H["LangChain e LangGraph"]
+    E --> I["Worker"]
+    B --> J["Scheduler via bootstrap dedicado"]
+    C --> K["Qdrant e Azure Search"]
+    C --> L["UCP, WhatsApp, Instagram, MCP e outras integracoes"]

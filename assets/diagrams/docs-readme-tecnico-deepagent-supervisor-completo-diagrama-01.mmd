@@ -1,0 +1,11 @@
+flowchart TD
+    A["YAML multi_agents execution.type=deepagent"] --> B["DeepAgentParser"]
+    B --> C["DeepAgentSupervisorAST"]
+    C --> D["DeepAgentSemanticValidator"]
+    D --> E["SupervisorConfigResolver"]
+    E --> F["ActiveSupervisorContext"]
+    F --> G["DeepAgentSupervisor"]
+    G --> H["create_governed_deep_agent"]
+    H --> I["Execução síncrona"]
+    H --> J["Background runtime"]
+    H --> K["HIL e continuação"]

@@ -1,0 +1,19 @@
+flowchart TD
+    A["Ingestao de documentos"] --> B["Manifestos com auto_config_signals"]
+    B --> C["DomainAutoConfigAggregator em domain_signal_processor.py"]
+    C --> D["DomainConfigRepository.update_auto_config"]
+    D --> E["(ingestion_domain_processors.auto_config)"]
+
+    F["Pergunta do usuario"] --> G["rag_router -> ContentQASystem"]
+    G --> H["DomainConfigurationService._build_runtime_domain_config"]
+    H --> I["auto_config no runtime"]
+    I --> J["QueryAnalyzer"]
+
+    G --> K["RetrievalEngine.merge_bm25_vocabulary_config"]
+    K --> L["(bm25_indexes)"]
+    L --> M["BM25VocabularySnapshot"]
+    M --> N["BM25Retriever.retrieve"]
+
+    J --> O["IntelligentOrchestrator"]
+    N --> O
+    O --> P["Resposta final"]

@@ -1,0 +1,10 @@
+flowchart LR
+  U["Cliente"] --> API["/POST /rag/etl/"]
+  API --> CFG["resolve_yaml_configuration"]
+  API --> AUTH["authenticate_with_yaml_config"]
+  API --> EX["execute_etl"]
+  EX --> SVC["ExtractTransformLoadService"]
+  SVC --> ORCH["ExtractTransformLoadOrchestrator"]
+  ORCH --> P1["Apify pipelines"]
+  ORCH --> P2["Schema metadata"]
+  ORCH --> U

@@ -1,0 +1,31 @@
+flowchart TD
+    A["src/api/routers/rag_ingestion_router.py"]
+    B["src/api/routers/rag_router.py"]
+    C["src/api/services/ingestion_job_executor.py"]
+    D["src/services/ingestion_request_builder.py"]
+    E["src/ingestion_layer/main_orchestrator.py"]
+    F["src/ingestion_layer/processors/pdf_processor.py"]
+    G["src/ingestion_layer/processors/pdf_runtime_coordinator.py"]
+    H["src/ingestion_layer/processors/pdf_document_ocr_service.py"]
+    I["src/ingestion_layer/pdf_tools"]
+    J["src/ingestion_layer/processors/pdf_rich_processing_application_service.py"]
+    K["src/ingestion_layer/processors/pdf_multimodal_application_service.py"]
+    L["src/utils/pdf_config_resolver.py"]
+    M["app/yaml/rag-config-mrctito-dnit-ingest.yaml"]
+    N["tests/unit + tests/validation"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    G --> I
+    F --> J
+    J --> K
+    D --> L
+    L --> M
+    F --> N
+    G --> N
+    K --> N

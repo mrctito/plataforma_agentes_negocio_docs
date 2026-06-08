@@ -1,0 +1,11 @@
+flowchart LR
+    subgraph DNA["🧬 CLAUDE.md — presente em 100% das fases"]
+        direction LR
+        f0["0 entender"] --> f1["1 analisar"] --> f2["2 planejar"] --> f3["3 implementar"] --> f4["4 testar"] --> f5["5 aceitar"] --> f6["6 operar"] --> f7["7 manter"] --> f8["8 documentar"] --> f9["9 governança"]
+    end
+    obs["🔍 Observabilidade (correlation_id + logs) — atravessa 3→5→6→7"]
+    arb["⚖️ Arbitragem (hooks guard/nudge) — dispara em qualquer fase com edição/comando"]
+    f9 -. alimenta o próximo ciclo .-> f0
+
+    DNA --- obs
+    DNA --- arb

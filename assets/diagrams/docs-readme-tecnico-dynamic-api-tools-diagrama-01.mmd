@@ -1,0 +1,17 @@
+flowchart TD
+    A["Agente ou workflow referencia dyn_api"] --> B["Tool loader interpreta family parametrizada"]
+    B --> C["endpoint_id e injetado no payload da factory"]
+    C --> D{"Endpoint existe em api_dynamic.endpoints?"}
+    D -->|"Sim"| E["Usa contrato local do YAML"]
+    D -->|"Nao"| F["Resolvedor consulta registro governado do tenant"]
+    F --> G{"Operacao ativa, publicada e rest_json?"}
+    G -->|"Nao"| H["Falha fechada"]
+    G -->|"Sim"| I["Mescla operacao e auth profile em api_dynamic"]
+    E --> J["Factory monta schema dinamico"]
+    I --> J
+    J --> K{"Endpoint exige autenticacao?"}
+    K -->|"Nao"| L["Resolve URL, headers, query e body"]
+    K -->|"Sim"| M["AuthenticationManager resolve token ou credencial"]
+    M --> L
+    L --> N["HttpClient executa chamada com timeout e retry"]
+    N --> O["Resposta retorna para a tool"]

@@ -1,0 +1,27 @@
+flowchart LR
+    U["Usuario ou UI"] --> API["FastAPI"]
+
+    subgraph Ingestao
+        API --> ING_ROUTE["/POST /rag/ingest"]
+        ING_ROUTE --> ING_APP["Ingestion HTTP Application Service"]
+        ING_APP --> QUEUE["RabbitMQ"]
+        QUEUE --> WORKER["Worker + Dramatiq"]
+        WORKER --> ING_SVC["IngestionService"]
+        ING_SVC --> ING_ORCH["ContentIngestionOrchestrator"]
+        ING_ORCH --> PROC["Processors e Engines"]
+        PROC --> ACERVO["PostgreSQL + BM25 + Vector Store"]
+    end
+
+    subgraph RAG
+        API --> RAG_ROUTE["/POST /rag/execute operation=ask"]
+        RAG_ROUTE --> Q_SVC["QuestionService"]
+        Q_SVC --> QA_SYS["ContentQASystem"]
+        QA_SYS --> QA_PROC["QAQuestionProcessor"]
+        QA_PROC --> INTEL["IntelligentRAGOrchestrator"]
+        INTEL --> RET["RetrievalEngine"]
+        RET --> ACERVO
+        INTEL --> GEN["GenerationEngine"]
+        GEN --> RESP["Resposta"]
+    end
+
+    RESP --> U

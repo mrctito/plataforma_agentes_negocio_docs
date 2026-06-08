@@ -1,0 +1,31 @@
+flowchart TB
+    subgraph Operacao
+        U["Operador faz a pergunta"]
+        R["Operador revisa a SQL"]
+    end
+
+    subgraph API
+        A1["Resolve YAML"]
+        A2["Injeta correlation_id"]
+        A3["Chama Nl2SqlService"]
+    end
+
+    subgraph Geracao
+        G1["Seleciona vectorstore_id"]
+        G2["Busca schema relevante"]
+        G3["Trunca contexto"]
+        G4["Gera SQL no dialeto certo"]
+    end
+
+    subgraph Protecao
+        P1["Valida somente leitura"]
+        P2["Marca review_required"]
+        P3["Emite diagnostics"]
+    end
+
+    subgraph Evolucao
+        E1["Consulta aprovada"]
+        E2["Migra para dyn_sql quando recorrente"]
+    end
+
+    U --> A1 --> A2 --> A3 --> G1 --> G2 --> G3 --> G4 --> P1 --> P2 --> P3 --> R --> E1 --> E2

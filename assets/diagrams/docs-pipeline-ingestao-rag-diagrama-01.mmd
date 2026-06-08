@@ -1,0 +1,95 @@
+flowchart TB
+  Start(["Inicio: Requisicao do Usuario"]) --> Mode{"Modo?"}
+
+  Mode -->|"Ingestao"| IngestionStart["ContentIngestionOrchestrator"]
+  IngestionStart --> DataSource["DataSource Factory"]
+  DataSource --> |"Confluence/Web/TXT/DOCX/PDF/JSON/Excel/YouTube"| Content["Conteudo Bruto"]
+  Content --> Processor["ContentProcessor"]
+
+  Processor --> ChunkStrategy{"Estrategia de Chunking"}
+  ChunkStrategy -->|"Adaptativo"| AdaptiveChunk["Chunking Adaptativo"]
+  ChunkStrategy -->|"Semantico"| SemanticChunk["Chunking Semantico"]
+  ChunkStrategy -->|"Estrutural"| StructuralChunk["Chunking Estrutural"]
+
+  AdaptiveChunk --> Metadata["Metadados Enriquecidos"]
+  SemanticChunk --> Metadata
+  StructuralChunk --> Metadata
+
+  Metadata --> Embedding["Embedding Generation"]
+  Embedding --> VectorStore["Vector Store"]
+  VectorStore -->|"Qdrant/Azure Search"| BM25Index["BM25 Index"]
+  BM25Index --> IngestionEnd(["Ingestao Completa"])
+
+  Mode -->|"Consulta"| QAStart["ContentQASystem"]
+  QAStart --> IntelligentOrch["IntelligentRAGOrchestrator"]
+
+  IntelligentOrch --> Rewrite{"Reescrita habilitada?"}
+  Rewrite -->|"Sim"| QueryRewrite["QueryRewriter"]
+  Rewrite -->|"Nao"| Pipeline["Pipeline Inteligente"]
+  QueryRewrite --> Pipeline
+
+  Pipeline --> Step1["1. Query Analysis"]
+  Step1 --> Analyzer["QueryAnalyzer"]
+  Analyzer -->|"Features"| Features["QueryFeatures: tipo, dominio, complexidade"]
+
+  Features --> Step2["2. Adaptive Routing"]
+  Step2 --> Router["AdaptiveQueryRouter"]
+  Router -->|"RoutingDecision"| Decision{"Decisao de Roteamento"}
+
+  Decision -->|"JSON_TOOLKIT"| JSONProc["JSON Processor"]
+  Decision -->|"HYBRID_SEARCH"| HybridProc["Hybrid Processor"]
+  Decision -->|"SELF_QUERY"| SelfQueryProc["Self-Query Processor"]
+  Decision -->|"MULTI_QUERY"| MultiQueryProc["Multi-Query Processor"]
+  Decision -->|"TRADITIONAL_RAG"| TraditionalProc["Traditional Processor"]
+
+  JSONProc --> Step3["3. Query Expansion"]
+  HybridProc --> Step3
+  SelfQueryProc --> Step3
+  MultiQueryProc --> Step3
+  TraditionalProc --> Step3
+
+  Step3 -->|"Sim"| Expansion["DNIT Query Expansion"]
+  Step3 -->|"Nao"| Step4["4. Retrieval Execution"]
+  Expansion --> Step4
+
+  Step4 --> CacheLookup{"Cache Semantico por retriever?"}
+  CacheLookup -->|"HIT"| CachedDocs["Documentos em cache"]
+  CacheLookup -->|"MISS"| RetrievalType{"Tipo de Retrieval"}
+
+  RetrievalType -->|"Vector (texto/visao)"| VectorRet["VectorStoreRetriever"]
+  RetrievalType -->|"BM25"| BM25Ret["BM25Retriever"]
+  RetrievalType -->|"Hybrid"| HybridRet["HybridRetriever"]
+  RetrievalType -->|"FTS"| FTSRet["FTSPostgresRetriever"]
+
+  VectorRet --> Docs["Documentos Recuperados"]
+  BM25Ret --> Docs
+  HybridRet --> FusionStep["Fusion Processing"]
+  FTSRet --> Docs
+  CachedDocs --> Docs
+
+  FusionStep --> FusionAlgo{"Algoritmo de Fusao"}
+  FusionAlgo -->|"RRF"| RRF["Reciprocal Rank Fusion"]
+  FusionAlgo -->|"Weighted RRF"| WRRF["Weighted RRF"]
+  FusionAlgo -->|"Linear"| Linear["Linear Combination"]
+  FusionAlgo -->|"Interleaved"| Interleaved["Interleaving"]
+
+  RRF --> Docs
+  WRRF --> Docs
+  Linear --> Docs
+  Interleaved --> Docs
+
+  Docs --> Step5["5. Access Control"]
+  Step5 --> ACL["AccessControlEvaluator"]
+  ACL --> FilteredDocs["Documentos Filtrados"]
+
+  FilteredDocs --> Step6["6. Reranking"]
+  Step6 --> Reranker["NeuralReranker"]
+  Reranker -->|"Cross-Encoder"| RankedDocs["Documentos Ranqueados"]
+
+  RankedDocs --> Step7["7. Generation"]
+  Step7 --> LLM["LLM Generation"]
+  LLM --> Answer["Resposta Final"]
+
+  Answer --> Telemetry["Telemetria e Metricas"]
+  Telemetry --> CacheUpdate["Atualizar Cache Semantico"]
+  CacheUpdate --> QAEnd(["Consulta Completa"])

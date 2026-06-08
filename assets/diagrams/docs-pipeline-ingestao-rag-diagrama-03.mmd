@@ -1,0 +1,95 @@
+flowchart TB
+  subgraph "ETAPA 0: REESCRITA DA QUERY"
+    Q["Query do Usuario"] --> RewriteCheck{"Reescrita habilitada?"}
+    RewriteCheck -->|"Sim"| Rewriter["QueryRewriter"]
+    RewriteCheck -->|"Nao"| QA
+    Rewriter --> QA
+  end
+
+  subgraph "ETAPA 1: ANALISE DA QUERY"
+    QA["QueryAnalyzer"] --> Features{"Query Features"}
+    Features -->|"QueryType"| Type["factual/procedural/conceptual/comparative"]
+    Features -->|"DataType"| Data["structured_json/unstructured_text/mixed"]
+    Features -->|"Domain"| Domain["technical/operational/regulatory"]
+    Features -->|"Complexity"| Complex["0.0-1.0"]
+  end
+
+  subgraph "ETAPA 2: ROTEAMENTO ADAPTATIVO"
+    Type --> AR["AdaptiveQueryRouter"]
+    Data --> AR
+    Domain --> AR
+    Complex --> AR
+
+    AR --> Rules["Routing Rules"]
+    Rules --> Strategy{"Retrieval Strategy"}
+    Strategy -->|"Alta Complexidade"| Hybrid["HYBRID_SEARCH"]
+    Strategy -->|"JSON Query"| JSONTool["JSON_TOOLKIT"]
+    Strategy -->|"Filtros Estruturados"| SelfQ["SELF_QUERY"]
+    Strategy -->|"Multiplas Perspectivas"| MultiQ["MULTI_QUERY"]
+    Strategy -->|"Simples"| Trad["TRADITIONAL_RAG"]
+  end
+
+  subgraph "ETAPA 3: EXPANSAO DE QUERY"
+    Hybrid --> Expand{"Expansao Necessaria?"}
+    JSONTool --> Expand
+    SelfQ --> Expand
+    MultiQ --> Expand
+    Trad --> Expand
+    Expand -->|"Sim - DNIT"| DNIT["DnitQueryExpansionStep"]
+    Expand -->|"Nao"| Retrieve["Retrieval"]
+    DNIT --> Retrieve
+  end
+
+  subgraph "ETAPA 4: RETRIEVAL EXECUTION"
+    Retrieve --> Cache{"Cache Semantico por retriever?"}
+    Cache -->|"HIT"| CachedDocs["Documentos em cache"]
+    Cache -->|"MISS"| RetType{"Tipo de Retriever"}
+
+    RetType -->|"Vector (texto/visao)"| VSRet["VectorStoreRetriever"]
+    RetType -->|"BM25"| BM25Ret["BM25Retriever"]
+    RetType -->|"Hybrid"| HybRet["HybridRetriever"]
+    RetType -->|"FTS"| FTSRet["FTSPostgresRetriever"]
+
+    VSRet -->|"Similarity Search"| VSDocs["Vector Documents"]
+    BM25Ret -->|"Lexical Search"| BM25Docs["BM25 Documents"]
+    HybRet --> Fusion["HybridFusion"]
+    FTSRet -->|"Full-Text Search"| FTSDocs["FTS Documents"]
+
+    Fusion -->|"RRF/Weighted RRF/Linear"| HybDocs["Hybrid Documents"]
+  end
+
+  subgraph "ETAPA 5: ACCESS CONTROL"
+    VSDocs --> ACL["AccessControlEvaluator"]
+    BM25Docs --> ACL
+    HybDocs --> ACL
+    FTSDocs --> ACL
+    CachedDocs --> ACL
+
+    ACL -->|"Filtrar por Permissoes"| Filtered["Documentos Autorizados"]
+  end
+
+  subgraph "ETAPA 6: RERANKING"
+    Filtered --> Rerank{"Reranking Habilitado?"}
+    Rerank -->|"Sim"| NeuralRerank["NeuralReranker"]
+    Rerank -->|"Nao"| Final["Documentos Finais"]
+
+    NeuralRerank -->|"Cross-Encoder"| Scored["Documents + Scores"]
+    Scored -->|"Feedback Score"| Combined["Combined Score"]
+    Combined --> TopK["Top-K Selection"]
+    TopK --> Final
+  end
+
+  subgraph "ETAPA 7: GENERATION"
+    Final --> Context["Build Context"]
+    Context --> Prompt["Prompt Template"]
+    Prompt --> LLM["LLM Invoke"]
+    LLM --> Response["Resposta Gerada"]
+  end
+
+  subgraph "ETAPA 8: TELEMETRIA"
+    Response --> Metrics["PipelineTelemetryRecorder"]
+    Metrics --> Record["Record Metrics"]
+    Record --> Token["Token Billing"]
+    Token --> Log["Structured Logging"]
+    Log --> UpdateCache["Update Semantic Cache"]
+  end

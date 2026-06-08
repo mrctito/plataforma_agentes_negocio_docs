@@ -1,0 +1,9 @@
+flowchart TD
+    A["POST /api/instagram/provision/start"] --> B["Valida permissão provision.instagram"]
+    B --> C["Valida payload IDs/tokens/url"]
+    C --> D["InstagramProvisionerAsync"]
+    D --> E["fetch_business_profile"]
+    E --> F["subscribe_page_to_messages"]
+    F --> G["configure_webhook"]
+    G --> H["ClientDirectory.register_instagram_account"]
+    H --> I["Resposta success active"]

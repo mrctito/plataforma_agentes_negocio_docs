@@ -1,0 +1,47 @@
+flowchart LR
+    subgraph EntryPoints
+        A1["src/api/routers/rag_router.py"]
+        A2["Pipeline de ingestao"]
+    end
+    subgraph Orchestration
+        B1["src/ingestion_layer/document_persistence_manager.py"]
+        B2["src/domain_configuration/service.py"]
+        B3["src/qa_layer/rag_engine/intelligent_orchestrator.py"]
+    end
+    subgraph AgentsGraphs
+        C1["QueryAnalyzer"]
+        C2["AdaptiveRouter"]
+        C3["RetrievalEngine"]
+    end
+    subgraph ToolsIntegrations
+        D1["DomainAutoConfigAggregator"]
+        D2["BM25IndexManager"]
+        D3["DomainConfigRepository"]
+    end
+    subgraph DataLayer
+        E1["Postgres manifests e dominios"]
+        E2["Redis cache BM25"]
+        E3["Payload BM25 persistido"]
+        E4["Vector store chunks"]
+    end
+    subgraph ContractsConfigs
+        F1["app/yaml/system/rag-config-modelo.yaml"]
+        F2["domain_specific_processing"]
+        F3["domain_specific_rag"]
+        F4["rag_system.retriever.hybrid.bm25"]
+    end
+
+    A2 --> B1 --> D1 --> D3 --> E1
+    A2 --> D2 --> E2
+    A2 --> D2 --> E3
+    A2 --> E4
+    A1 --> B3 --> B2
+    B2 --> C1
+    B2 --> C2
+    B3 --> C3 --> D2
+    F1 --> F2
+    F1 --> F3
+    F1 --> F4
+    F2 --> D1
+    F3 --> B2
+    F4 --> D2

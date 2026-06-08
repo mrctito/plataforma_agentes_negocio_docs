@@ -1,0 +1,19 @@
+flowchart TD
+    A["Documento ingerido"] --> B["DbPayloadBuilder"]
+    B --> C["Manifesto com auto_config_signals e auto_config_domain_key"]
+    C --> D["Persistencia SQL do manifesto"]
+    D --> E["DomainAutoConfigAggregator"]
+    E --> F["auto_config consolidado por dominio"]
+    A --> G["Indexacao de chunks no vector store"]
+    G --> H["BM25IndexManager update_index"]
+    H --> I["Snapshot BM25 persistido por vectorstore_id"]
+    F --> J["DomainConfigurationService"]
+    I --> K["RetrievalEngine ou IntelligentOrchestrator"]
+    J --> L["Runtime domain_specific_rag enriquecido"]
+    K --> L
+    L --> M["QueryAnalyzer"]
+    L --> N["AdaptiveRouter"]
+    L --> O["Query Expansion"]
+    M --> P["RAG responde melhor a pergunta"]
+    N --> P
+    O --> P

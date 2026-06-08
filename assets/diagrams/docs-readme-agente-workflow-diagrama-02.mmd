@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant API as API /workflow/execute
+    participant Service as WorkflowExecutionService
+    participant Orch as WorkflowOrchestrator
+    participant Runtime as AgentWorkflow
+    participant Graph as StateGraph
+
+    API->>Service: hidrata YAML e sessão
+    Service->>Orch: execute(message, thread_id)
+    Orch->>Runtime: initialize()
+    Runtime->>Runtime: parser, integridade, factories, cache
+    Runtime->>Graph: compila node-driven ou edge-first
+    Orch->>Runtime: run(message, thread_id)
+    Runtime->>Graph: ainvoke(initial_state)
+    Graph-->>Runtime: state final
+    Runtime-->>Orch: final_response e metadata
+    Orch-->>API: response normalizada

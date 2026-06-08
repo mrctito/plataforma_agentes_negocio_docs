@@ -1,0 +1,32 @@
+sequenceDiagram
+    participant U as Usuario
+    participant API as rag_router
+    participant SVC as IngestionService
+    participant ORCH as ContentIngestionOrchestrator
+    participant FS as FileSystemDataSource
+    participant XP as ExcelContentProcessor
+    participant VS as Vector Store
+    participant IQA as IntelligentOrchestrator
+    participant XRAG as JSONSpecializedRAGExcel
+
+    U->>API: POST ingestao ou pergunta
+    API->>SVC: execute()
+    SVC->>ORCH: ingest_content(request)
+    ORCH->>FS: fetch_document(path)
+    FS-->>ORCH: StorageDocument(.xlsx/.xls)
+    ORCH->>XP: build_from_storage() e process_document()
+    XP-->>ORCH: ExcelDocument + ContentChunk por linha
+    ORCH->>VS: index_chunks(chunks)
+    VS-->>ORCH: chunks indexados
+    U->>IQA: pergunta sobre planilha
+    IQA->>XRAG: ask_question(question)
+    XRAG->>VS: coleta direta ou similarity_search
+    VS-->>XRAG: documentos com metadata row_data
+    XRAG->>XRAG: tenta caminho deterministico
+    alt resposta analitica
+        XRAG-->>IQA: resposta tabular_deterministic_excel
+    else exige LLM
+        XRAG->>XRAG: create_json_agent(JsonToolkit)
+        XRAG-->>IQA: resposta json_specialized_excel
+    end
+    IQA-->>U: resposta final

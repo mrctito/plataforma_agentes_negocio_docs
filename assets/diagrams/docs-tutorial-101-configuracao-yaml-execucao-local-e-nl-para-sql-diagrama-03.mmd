@@ -1,0 +1,56 @@
+flowchart LR
+    subgraph EntryPoints
+        A1["src/api/service_api.py"]
+        A2["run.sh"]
+        A3["src/api/routers/schema_metadata_router.py"]
+        A4["src/api/routers/config_assembly_router.py"]
+    end
+
+    subgraph Orquestracao
+        B1["src/api/routers/config_resolution.py"]
+        B2["src/config/config_cli/configuration_factory.py"]
+        B3["src/orchestrators/qa_runtime_assembly.py"]
+        B4["src/agentic_layer/supervisor/tools_factory.py"]
+    end
+
+    subgraph AgentsEGrafos
+        C1["multi_agents"]
+        C2["workflows"]
+        C3["src/config/agentic_assembly"]
+    end
+
+    subgraph ToolsEIntegracoes
+        D1["src/agentic_layer/supervisor/tool_loader.py"]
+        D2["dynamic_sql_factory.py"]
+        D3["sql_schema_rag_factory.py"]
+    end
+
+    subgraph Dados
+        E1["Banco SQL de negócio"]
+        E2["Vector store de schema metadata"]
+        E3["PostgreSQL de metadata"]
+        E4["Redis e caches"]
+    end
+
+    subgraph Contratos
+        F1["app/yaml/system/rag-config-modelo.yaml"]
+        F2["src/utils/yaml_schema_normalizer.py"]
+        F3["src/config/agentic_assembly/ast"]
+    end
+
+    A1 --> B1
+    A2 --> A1
+    A3 --> B1
+    A4 --> C3
+    B1 --> B2
+    B2 --> F2
+    B2 --> B3
+    B3 --> B4
+    B4 --> D1
+    D1 --> D2
+    D1 --> D3
+    D2 --> E1
+    D3 --> E2
+    D3 --> E1
+    F1 --> B2
+    F3 --> C3

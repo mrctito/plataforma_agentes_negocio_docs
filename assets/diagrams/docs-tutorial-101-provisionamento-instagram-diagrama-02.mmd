@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant U as Usuário
+    participant API as instagram_provision_router
+    participant PROV as InstagramProvisionerAsync
+    participant META as Meta Graph API
+    participant DIR as ClientDirectory
+
+    U->>API: POST /api/instagram/provision/start
+    API->>API: validar request + permissão
+    API->>PROV: fetch_business_profile(account_id)
+    PROV->>META: GET /{instagram_business_account_id}
+    META-->>PROV: perfil
+    API->>PROV: subscribe_page_to_messages(page_id)
+    PROV->>META: POST /{page_id}/subscribed_apps
+    META-->>PROV: ok
+    API->>PROV: configure_webhook(callback_url, verify_token)
+    PROV->>META: POST /{app_id}/subscriptions
+    META-->>PROV: ok
+    API->>DIR: register_instagram_account(...)
+    DIR-->>API: record
+    API-->>U: InstagramProvisionResponse

@@ -1,0 +1,20 @@
+flowchart LR
+    UI1["ui-plataforma-nl2yaml-studio.html"] --> JS1["objective-yaml-studio.js"]
+    UI2["ui-admin-plataforma-assembly-ast.html"] --> JS2["admin-assembly-ast.js"]
+    JS1 --> R["config_assembly_router.py"]
+    JS2 --> R
+    R --> M["models.py"]
+    R --> S["assembly_service.py"]
+    S --> P1["intent_parser.py"]
+    S --> P2["llm_draft_generator.py"]
+    P2 --> P3["structured_llm_client.py"]
+    S --> P4["repair_loop.py"]
+    S --> V["validators/document_validator.py"]
+    S --> C["compilers/document_compiler.py"]
+    S --> D["drift_detector.py"]
+    S --> T["tool_resolver.py"]
+    S --> Y["yaml_loader.py"]
+    S --> OUT["final_yaml ou saved_path"]
+    TEST1["test_agentic_assembly_service.py"] --> S
+    TEST2["test_config_assembly_router_http.py"] --> R
+    TEST3["nl2yaml_studio_contract.test.js"] --> JS1

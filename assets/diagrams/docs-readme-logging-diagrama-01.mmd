@@ -1,0 +1,21 @@
+flowchart TD
+    A["Requisicao HTTP"] --> B["Middleware resolve correlation_id"]
+    B --> C["create_logger_with_correlation"]
+    C --> D["Arquivo principal rotacionado"]
+    C --> E["Arquivo dedicado por correlacao"]
+    C --> F["Console"]
+    C --> G["CloudWatch como saida adicional"]
+    C --> H["Faulthandler"]
+    I["Incidente ou auditoria"] --> J["Provider canonico"]
+    J --> K["Filesystem"]
+    J --> L["AWS CloudWatch"]
+    J --> M["Northflank"]
+    J --> N["Azure Log Analytics"]
+    L --> O["Materializacao local"]
+    M --> O
+    N --> O
+    K --> P["CanonicalLogReader"]
+    O --> P
+    P --> Q["AnalyzeLogsCommand"]
+    Q --> R["Pipeline unificado de analise"]
+    R --> S["Diagnostico forense"]

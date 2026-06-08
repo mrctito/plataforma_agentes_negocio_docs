@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant U as Usuario
+    participant API as agent_router
+    participant CFG as config_resolution
+    participant ORCH as AgentOrchestrator
+    participant SUP as AgentSupervisor
+    participant TF as ToolsFactory
+    participant TL as ToolLoader
+    participant DS as DynamicSqlFactory
+    participant DB as SQLDatabase
+
+    U->>API: POST /agent/execute (task + encrypted_data)
+    API->>CFG: resolve_yaml_configuration()
+    CFG-->>API: yaml_config resolvido
+    API->>ORCH: execute(task)
+    ORCH->>SUP: initialize() + run()
+    SUP->>TF: resolve_agent_tools(...)
+    TF->>TL: parse_parameterized_tool("dyn_sql<buscar_cliente>")
+    TL-->>TF: base=dyn_sql, param=buscar_cliente
+    TF->>DS: create_dynamic_sql_tool(payload)
+    DS->>DB: run_no_throw(sql,parametros)
+    DB-->>DS: linhas retornadas
+    DS-->>TF: StructuredTool result JSON
+    TF-->>SUP: tool pronta
+    SUP-->>ORCH: resultado consolidado
+    ORCH-->>API: AgentResponse
+    API-->>U: resposta final

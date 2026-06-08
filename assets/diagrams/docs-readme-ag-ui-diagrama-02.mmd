@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant UI as Tela AG-UI Dashboard
+    participant Router as /ag-ui/runs
+    participant Orch as AgUiRunOrchestrator
+    participant Adapter as RetailDemoAgUiAdapter
+    participant Materializer as DashboardMaterializationService
+
+    UI->>Router: POST com executionKind=retail_demo e capability=dashboard_dynamic
+    Router->>Orch: run(context)
+    Orch->>Adapter: execute(context)
+    Adapter->>Materializer: build_events(dashboardSpec)
+    Materializer-->>Adapter: snapshot inicial + eventos custom + deltas
+    Adapter-->>Orch: stream de eventos AG-UI
+    Orch-->>Router: RUN_STARTED + eventos do dashboard + RUN_FINISHED
+    Router-->>UI: SSE com correlation_id no header

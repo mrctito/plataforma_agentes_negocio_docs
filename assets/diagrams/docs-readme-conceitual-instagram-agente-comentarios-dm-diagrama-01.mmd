@@ -1,0 +1,19 @@
+flowchart TD
+    A["Operador provisiona a conta Instagram"] --> B["Conta e pagina ficam registradas no diretorio"]
+    B --> C["Meta envia evento de DM, comentario ou mencao"]
+    C --> D["Webhook Instagram entra no app"]
+    D --> E["InstagramMessageProcessor normaliza o evento"]
+    E --> F["ChannelMessageProcessor resolve contexto e persiste o bruto"]
+    F --> G{"execution_mode"}
+    G -- ask --> H["QuestionService"]
+    G -- agent --> I["AgentOrchestrator"]
+    G -- workflow --> J["WorkflowOrchestrator"]
+    H --> K["OutgoingMessage"]
+    I --> K
+    J --> K
+    K --> L{"Ha instagram_comment_reply?"}
+    L -- Sim --> M["Responder monta reply publico a comentario"]
+    L -- Nao --> N["Responder monta DM, quick replies ou midia"]
+    M --> O["InstagramMessageClient chama Graph API"]
+    N --> O
+    O --> P["Usuario recebe resposta em comentario ou inbox"]

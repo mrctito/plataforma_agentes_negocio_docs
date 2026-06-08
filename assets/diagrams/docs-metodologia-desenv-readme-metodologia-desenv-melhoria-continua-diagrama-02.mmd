@@ -1,0 +1,23 @@
+sequenceDiagram
+  participant H as Humano
+  participant C as Copilot
+  participant L as Logs
+  participant E as Error backlog
+  participant R as Regression logs
+  participant N as Lessons
+  participant B as Bad instructions
+
+  H->>C: relata erro ou pede mudanca
+  C->>L: le evidencias
+  C->>E: consulta erro parecido
+  alt erro recorrente
+    C->>R: registra regressao
+  else erro novo
+    C->>E: registra erro novo
+  end
+  alt houve aprendizado preventivo
+    C->>N: registra licao
+  end
+  alt regra de governanca falhou
+    C->>B: registra instrucao problematica
+  end

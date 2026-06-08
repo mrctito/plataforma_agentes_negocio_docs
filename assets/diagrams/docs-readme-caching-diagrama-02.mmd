@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant Cliente as Requisicao ou Job
+    participant Pool as WarmResourcePool ou Cache Manager
+    participant Redis as Redis
+    participant Admin as Admin Cache
+
+    Cliente->>Pool: solicita recurso
+    Pool->>Redis: consulta backend compartilhado quando aplicavel
+    Redis-->>Pool: hit ou miss
+    alt hit valido
+        Pool-->>Cliente: retorna recurso reutilizado
+    else miss
+        Pool->>Pool: constroi recurso caro
+        Pool->>Redis: persiste quando necessario
+        Pool-->>Cliente: retorna recurso novo
+    end
+    Admin->>Redis: publica sinal global de invalidacao
+    Cliente->>Pool: nova solicitacao
+    Pool->>Redis: consulta timestamp de invalidacao
+    Pool->>Pool: limpa cache local se sinal mudou

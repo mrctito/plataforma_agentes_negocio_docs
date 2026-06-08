@@ -1,0 +1,28 @@
+sequenceDiagram
+  participant U as Cliente
+  participant API as agent_router (/agent/execute)
+  participant SUP as AgentSupervisor
+  participant G as LangGraph Runtime
+  participant H as Humano Aprovador
+
+  U->>API: Executa agente com thread_id=T1
+  API->>SUP: run(message, thread_id=T1)
+  SUP->>G: invoke fluxo
+  G-->>SUP: __interrupt__ (pedido de decisão)
+  SUP-->>API: resposta pausada + thread_id=T1
+  API-->>H: exibe contexto para decisão
+
+  H->>API: /agent/continue (thread_id=T1, resume=decisão)
+  API->>SUP: run(Command(resume=...), thread_id=T1)
+  SUP->>G: retoma checkpoint da thread T1
+
+  alt decisão aprovada
+    G-->>SUP: execução concluída
+    SUP-->>API: success + metadata.human_approvals
+  else decisão rejeitada
+    G-->>SUP: ação bloqueada
+    SUP-->>API: falha controlada + auditoria
+  else decisão editada
+    G-->>SUP: execução com payload editado
+    SUP-->>API: success + decision_type=edited
+  end

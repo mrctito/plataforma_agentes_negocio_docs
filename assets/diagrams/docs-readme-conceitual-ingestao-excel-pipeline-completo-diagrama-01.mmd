@@ -1,0 +1,16 @@
+flowchart TD
+    A["Data source local ou remoto"] --> B["StorageDocument com tipo Excel"]
+    B --> C["ExcelContentProcessor"]
+    C --> D["Validação de extensão, tamanho e bytes"]
+    D --> E["Carregamento do workbook"]
+    E --> F{".xlsx ou .xls"}
+    F -- .xlsx --> G["openpyxl"]
+    F -- .xls --> H["xlrd best-effort"]
+    G --> I["Análise estrutural por aba"]
+    H --> I
+    I --> J["Detecção de tabelas e densidade"]
+    J --> K["Extração de texto, schema e tabelas"]
+    K --> L["ExcelDocument"]
+    L --> M["Chunking row-aware"]
+    M --> N["Chunks com row_data e schema"]
+    N --> O["Esteira comum de indexação e persistência"]

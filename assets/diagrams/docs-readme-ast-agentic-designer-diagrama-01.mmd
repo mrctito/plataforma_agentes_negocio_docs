@@ -1,0 +1,13 @@
+flowchart TD
+    A["Base YAML ou Prompt"] --> B["Preflight"]
+    B --> C["Draft AST"]
+    C --> D["Validate"]
+    D --> E["Confirm"]
+    E --> F["Final YAML"]
+    E --> G["Persistência canônica em app/yaml"]
+    C --> H["Questions"]
+    D --> I["Drift e diagnóstico"]
+    J["Schema e Catalog"] --> C
+    J --> D
+    J --> K["Designer e Tooling"]
+    L["Language Server"] --> K

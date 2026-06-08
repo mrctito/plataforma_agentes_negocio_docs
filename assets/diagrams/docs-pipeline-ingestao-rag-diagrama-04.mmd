@@ -1,0 +1,38 @@
+flowchart LR
+  subgraph "PARALLEL RETRIEVAL"
+    Q["Query"] --> V["Vector Retriever"]
+    Q --> B["BM25 Retriever"]
+    Q --> F["FTS Retriever"]
+
+    V -->|"top_k=20"| VDocs["20 docs - Vector"]
+    B -->|"top_k=20"| BDocs["20 docs - BM25"]
+    F -->|"top_k=20"| FDocs["20 docs - FTS"]
+  end
+
+  subgraph "FUSION PROCESSING"
+    VDocs --> Fusion["HybridFusion"]
+    BDocs --> Fusion
+    FDocs --> Fusion
+
+    Fusion --> Dedup["1. Deduplicacao"]
+    Dedup -->|"document_key"| Unique["Documentos Unicos"]
+
+    Unique --> Normalize["2. Normalizacao de Scores"]
+    Normalize -->|"min-max/z-score"| NormScores["Scores Normalizados"]
+
+    NormScores --> Algo{"Algoritmo"}
+
+    Algo -->|"RRF"| RRFCalc["score = 1/(k + rank)"]
+    Algo -->|"Weighted RRF"| WRRFCalc["score = w1/(k+r1) + w2/(k+r2)"]
+    Algo -->|"Linear"| LinearCalc["score = w1*s1 + w2*s2"]
+    Algo -->|"Interleaved"| IntCalc["alternating docs"]
+
+    RRFCalc --> Combined["Combined Scores"]
+    WRRFCalc --> Combined
+    LinearCalc --> Combined
+    IntCalc --> Combined
+
+    Combined --> Sort["3. Ordenacao"]
+    Sort --> TopK["4. Top-K Selection"]
+    TopK --> Result["Documentos Fusionados"]
+  end

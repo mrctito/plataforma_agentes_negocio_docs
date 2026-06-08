@@ -1,0 +1,17 @@
+flowchart TD
+    A["Request de ingestao ou consulta"] --> B["src/api/routers/rag_router.py"]
+    B --> C["src/services/ingestion_service.py"]
+    C --> D["src/ingestion_layer/main_orchestrator.py"]
+    D --> E["src/ingestion_layer/datasources/filesystem_data_source.py"]
+    E --> F["src/ingestion_layer/processors/excel_processor.py"]
+    F --> G["ContentChunk com row_data e column_names"]
+    G --> H["Vector Store Qdrant ou Azure Search"]
+    I["Pergunta sobre planilha"] --> J["src/qa_layer/rag_engine/intelligent_orchestrator.py"]
+    J --> K["src/qa_layer/json_rag/specialized_rag_excel.py"]
+    K --> H
+    K --> L["DeterministicTabularEngine"]
+    K --> M["JsonToolkit e create_json_agent"]
+    L --> N["Resposta deterministica"]
+    M --> O["Resposta generativa"]
+    N --> P["Resposta final"]
+    O --> P

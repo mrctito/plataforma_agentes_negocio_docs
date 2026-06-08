@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant Cliente
+    participant API as Boundary HTTP
+    participant Runtime as Logger Canônico
+    participant Meta as Sidecar/Manifest
+    participant UI as Frontend
+    participant Admin as Provider Administrativo
+
+    Cliente->>API: Request com ou sem X-Correlation-Id
+    API->>API: Resolve correlation_id oficial
+    API->>Runtime: Propaga correlation_id para logs
+    Runtime->>Meta: Registra sidecar e manifest quando aplicavel
+    API-->>Cliente: Response com X-Correlation-Id
+    Cliente->>UI: Entrega correlation_id oficial
+    UI->>API: Chamadas auxiliares com o mesmo id
+    Admin->>Meta: Resolve familia de logs
+    Admin->>Runtime: Le leitura via provider canônico

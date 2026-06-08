@@ -1,0 +1,22 @@
+sequenceDiagram
+  participant HTTP as API /rag/ingest
+  participant PREP as PreparedAsyncIngestionExecutionService
+  participant ENQ as PreparedAsyncIngestionExecutionService.schedule
+  participant MQP as Fila pai Dramatiq
+  participant WP as Worker pai
+  participant FAN as DocumentFanoutCoordinator
+  participant MQC as Fila filha Dramatiq
+  participant WC as Worker filho
+  participant PDF as Pipeline PDF
+  participant IDX as Indexacao final
+
+  HTTP->>PREP: valida request e compoe YAML
+  PREP->>ENQ: schedule_prepared_ingestion_worker_job()
+  ENQ->>MQP: publica envelope prepared_yaml
+  MQP->>WP: entrega job pai
+  WP->>FAN: build_plan() quando fan-out e elegivel
+  FAN->>MQC: publica envelopes document_fanout_child
+  MQC->>WC: entrega documento filho
+  WC->>PDF: executa slice PDF do documento
+  PDF->>IDX: devolve chunks para indexacao
+  IDX-->>WC: persistencia e telemetria terminal

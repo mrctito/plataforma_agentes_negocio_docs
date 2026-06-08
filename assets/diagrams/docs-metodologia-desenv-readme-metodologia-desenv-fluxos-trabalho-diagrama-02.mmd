@@ -1,0 +1,12 @@
+flowchart TB
+  S["Sintoma observado"] --> C["Capturar correlation_id ou log"]
+  C --> L["Ler log completo"]
+  L --> K["Ler codigo executado"]
+  K --> Q{"Historia fecha?"}
+  Q -- nao --> O["Instrumentar observabilidade"]
+  O --> N["Nova execucao"]
+  N --> L
+  Q -- sim --> R["Corrigir causa raiz"]
+  R --> T["Rodar suite compativel"]
+  T --> B["Registrar backlog ou regressao"]
+  B --> F["Fechar tarefa"]

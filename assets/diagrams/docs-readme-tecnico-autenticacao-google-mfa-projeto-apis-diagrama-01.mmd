@@ -1,0 +1,30 @@
+sequenceDiagram
+    participant UI as Auth Gateway
+    participant GIS as Google Identity Services
+    participant API as Auth Router
+    participant Provider as FederatedAuthManager
+    participant Cache as FederatedSessionRepository
+    participant TOTP as TotpService
+    participant Browser as Navegador
+
+    UI->>GIS: Solicita credencial Google
+    GIS-->>UI: id_token
+    UI->>API: POST /api/auth/federated/session
+    API->>Provider: authenticate(provider_id, id_token)
+    Provider-->>API: claims normalizados
+    API->>Cache: issue(record)
+    API->>TOTP: get_status(email)
+    alt TOTP habilitado
+        API-->>UI: mfa_challenge + session_token
+        UI->>API: POST /api/auth/federated/session/totp/confirm
+        API->>TOTP: confirm_code(record, code)
+        API-->>Browser: cookie federated_session
+    else MFA obrigatório sem TOTP ativo
+        API-->>UI: mfa_setup_required + session_token
+        UI->>API: POST /api/auth/federated/session/totp/start
+        API-->>UI: QR Code + secret + expires_at
+        UI->>API: POST /api/auth/federated/session/totp/confirm
+        API-->>Browser: cookie federated_session
+    else sem MFA adicional
+        API-->>Browser: cookie federated_session
+    end

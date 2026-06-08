@@ -1,0 +1,18 @@
+flowchart TB
+    C1["service_api FastAPI app"]
+    C2["agent_router execute/continue"]
+    C3["config_resolution ResolvedConfig"]
+    C4["SupervisorConfigResolver"]
+    C5["AgentSupervisor"]
+    C6["DeepAgentSupervisor"]
+    C7["ToolsFactory"]
+    C8["Tool catalog docs/tools + tools_library"]
+
+    C1 --> C2
+    C2 --> C3
+    C2 --> C4
+    C4 --> C5
+    C4 --> C6
+    C5 --> C7
+    C6 --> C7
+    C7 --> C8

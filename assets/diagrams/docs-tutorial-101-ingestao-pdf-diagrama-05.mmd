@@ -1,0 +1,39 @@
+flowchart LR
+    subgraph Cliente
+        C1["Carrega YAML ou payload"]
+        C2["Solicita criptografia"]
+        C3["Dispara /rag/ingest"]
+    end
+
+    subgraph BordaHTTP
+        H1["Valida request RagIngestionRequest"]
+        H2["Prepara execucao assincrona"]
+    end
+
+    subgraph Preparacao
+        P1["Resolve YAML e chaves"]
+        P2["Monta IngestionRequest"]
+        P3["Descobre pdf_file_paths"]
+    end
+
+    subgraph PipelinePDF
+        PDF1["Valida bytes"]
+        PDF2["OCR documental opcional"]
+        PDF3["Parsing por engine"]
+        PDF4["Limpeza textual"]
+        PDF5["OCR basico opcional"]
+        PDF6["Multimodal opcional"]
+        PDF7["Chunking final"]
+    end
+
+    subgraph Saidas
+        S1["Chunks"]
+        S2["Execution manifest"]
+        S3["Logs e telemetria"]
+    end
+
+    C1 --> C2 --> C3 --> H1 --> H2 --> P1 --> P2 --> P3 --> PDF1 --> PDF2 --> PDF3 --> PDF4 --> PDF5 --> PDF6 --> PDF7 --> S1
+    PDF6 --> S2
+    H2 --> S3
+    PDF3 --> S3
+    PDF6 --> S3

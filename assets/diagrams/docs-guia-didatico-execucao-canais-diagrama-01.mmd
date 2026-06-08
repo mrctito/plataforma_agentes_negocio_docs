@@ -1,0 +1,9 @@
+flowchart LR
+    A["Cliente"] --> B["API HTTP"]
+    B --> C["Resposta síncrona"]
+    B --> D["Aceitação assíncrona"]
+    D --> E["Worker oficial"]
+    F["Scheduler dedicado"] --> G["Jobs por tempo"]
+    E --> H["Plano de controle multicanal"]
+    E --> I["Runtime RabbitMQ + Dramatiq"]
+    I --> J["Ingestão e ETL"]

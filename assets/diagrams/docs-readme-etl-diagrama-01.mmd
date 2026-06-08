@@ -1,0 +1,13 @@
+flowchart TD
+    A["POST /rag/etl"] --> B["Resolve YAML e autentica permissao ETL"]
+    B --> C["Camada de compatibilidade escolhe modo de execucao"]
+    C --> D["Publica job em RabbitMQ"]
+    D --> E["Worker Dramatiq consome o ETL"]
+    E --> F["ExtractTransformLoadService valida configuracao"]
+    F --> G["ExtractTransformLoadOrchestrator escolhe pipelines habilitados"]
+    G --> H{"Mais de um pipeline e fan-out aplicavel?"}
+    H -- Sim --> I["Publica jobs filhos por pipeline"]
+    H -- Nao --> J["Executa sequencialmente no job atual"]
+    I --> K["Consolida resultados do job pai"]
+    J --> K
+    K --> L["Status, stream e cancelamento cooperativo"]

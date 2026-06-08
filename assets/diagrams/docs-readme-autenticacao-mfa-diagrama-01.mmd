@@ -1,0 +1,15 @@
+flowchart TD
+    A["Login principal"] --> B["Emite sessao autenticada no cache central"]
+    B --> C["Consulta estado TOTP persistido"]
+    C --> D["Consulta FEDERATED_MFA_REQUIRED"]
+    D --> E{"Conta tem TOTP ativo?"}
+    E -- Sim --> F["Retorna mfa_challenge com session_token"]
+    E -- Nao --> G{"Politica exige MFA?"}
+    G -- Nao --> H["Retorna ok e grava cookie final"]
+    G -- Sim --> I["Retorna mfa_setup_required com session_token"]
+    F --> J["Usuario informa codigo"]
+    I --> K["Usuario recebe QR Code e ativa autenticador"]
+    K --> J
+    J --> L["Valida codigo TOTP"]
+    L --> M["Persiste ou atualiza verificacao"]
+    M --> N["Grava cookie final"]

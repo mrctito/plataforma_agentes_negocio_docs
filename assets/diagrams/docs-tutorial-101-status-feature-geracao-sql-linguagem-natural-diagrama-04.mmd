@@ -1,0 +1,42 @@
+flowchart TD
+    subgraph API["API FastAPI"]
+        A1["agent_router"]
+        A2["schema_metadata_router"]
+        A3["service_api include_router"]
+    end
+
+    subgraph Config["Config e Contratos"]
+        C1["config_resolution"]
+        C2["ConfigurationFactory"]
+        C3["builtin_tool_registry"]
+        C4["rag-config-modelo.yaml"]
+    end
+
+    subgraph Runtime["Runtime Agentes"]
+        R1["AgentOrchestrator"]
+        R2["AgentSupervisor"]
+        R3["ToolsFactory"]
+        R4["ToolInstantiationEngine"]
+        R5["ToolLoader"]
+    end
+
+    subgraph SQLTools["Feature SQL"]
+        S1["create_dynamic_sql_tool"]
+        S2["DynamicSqlToolFactory"]
+        S3["create_sql_schema_rag_tool"]
+        S4["SqlSchemaRagToolFactory"]
+    end
+
+    subgraph Infra["Infra Externa"]
+        I1["SQLDatabase / SQLAlchemy"]
+        I2["VectorStoreFactory"]
+        I3["LLM Factory"]
+    end
+
+    A1 --> C1 --> C2
+    C2 --> C3
+    C4 --> C1
+    C1 --> R1 --> R2 --> R3 --> R4 --> R5
+    R5 --> S1 --> S2 --> I1
+    R5 --> S3 --> S4 --> I2
+    S4 --> I3

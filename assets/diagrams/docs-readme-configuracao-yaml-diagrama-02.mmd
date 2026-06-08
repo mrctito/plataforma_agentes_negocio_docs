@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant Operador as Operador ou API
+    participant Factory as ConfigurationFactory
+    participant Normalizer as YamlSchemaNormalizer
+    participant Directory as ClientDirectory
+    participant Assembly as Assembly Agentic
+    participant Runtime as Runtime
+
+    Operador->>Factory: envia YAML
+    Factory->>Factory: injeta user_session
+    Factory->>Factory: valida security_keys
+    Factory->>Factory: injeta tools_library
+    Factory->>Factory: expande placeholders
+    Factory->>Normalizer: normaliza contrato
+    Normalizer-->>Factory: YAML estruturalmente válido
+    Factory->>Directory: enriquece client_context e security_keys
+    Directory-->>Factory: tenant e segredos resolvidos
+    Factory->>Assembly: valida trecho agentic quando existe
+    Assembly-->>Factory: fragmento governado válido
+    Factory-->>Runtime: configuração pronta

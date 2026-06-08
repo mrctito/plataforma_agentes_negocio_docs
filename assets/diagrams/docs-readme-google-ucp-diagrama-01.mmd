@@ -1,0 +1,10 @@
+flowchart TD
+    A["Consumidor UCP"] --> B["Well-known UCP e OAuth"]
+    A --> C["Checkout Sessions"]
+    C --> D{"PDV HTTP configurado?"}
+    D -- Sim --> E["Cliente PDV"]
+    D -- Nao --> F["Fallback banco varejo"]
+    E --> G["Resposta UCP validada"]
+    F --> G
+    A --> H["Order Events"]
+    H --> I["Dispatcher de webhook"]

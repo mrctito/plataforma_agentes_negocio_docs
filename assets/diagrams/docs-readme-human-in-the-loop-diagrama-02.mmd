@@ -1,0 +1,18 @@
+sequenceDiagram
+    participant Exec as DeepAgent em background
+    participant Router as agent_router
+    participant BG as HilBackgroundApprovalService
+    participant Repo as Repositorio HIL
+    participant Notify as NotificationService
+    participant Approver as Aprovador externo
+    participant Decide as HilApprovalDecisionService
+    participant Continue as AgentHilContinuationService
+
+    Exec->>Router: pausa HIL em execucao assincrona
+    Router->>BG: dispatch(async_approval)
+    BG->>Repo: create_pending com token e metadata
+    BG->>Notify: enviar aprovacao por whatsapp ou email
+    Approver->>Decide: responde por token ou canal
+    Decide->>Repo: validar pendencia, expiracao e aprovador
+    Decide->>Continue: retomar execucao original
+    Continue-->>Approver: resultado consolidado da continuacao

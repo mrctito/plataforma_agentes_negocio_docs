@@ -1,0 +1,43 @@
+flowchart LR
+    subgraph E["Entry points"]
+        A1["agent_router"]
+        A2["workflow_router"]
+        A3["channel_router"]
+    end
+
+    subgraph O["Orquestracao"]
+        O1["AgentOrchestrator"]
+        O2["WorkflowOrchestrator"]
+        O3["WorkflowExecutionService"]
+    end
+
+    subgraph G["Agents e Graphs"]
+        G1["DeepAgentSupervisor"]
+        G2["AgentWorkflow"]
+        G3["BaseNodeHandler"]
+    end
+
+    subgraph T["Tools e HIL"]
+        T1["interrupt_on"]
+        T2["human_gate"]
+        T3["normalize_hil_contract"]
+        T4["HilBackgroundApprovalService"]
+    end
+
+    subgraph D["Persistencia e estado"]
+        D1["checkpointer"]
+        D2["HilPauseRegistry"]
+        D3["agent_hil_approval_requests"]
+    end
+
+    subgraph U["UI e contratos"]
+        U1["Envelope hil"]
+        U2["ui-webchat-hil-contract.js"]
+        U3["hil-review-panel.js"]
+        U4["admin-webchat/app.js e ui-webchat-v3.js"]
+    end
+
+    A1 --> O1 --> G1 --> T1 --> D1 --> U1 --> U2 --> U3 --> U4
+    A2 --> O3 --> O2 --> G2 --> T2 --> D1
+    A3 --> T4 --> D3
+    G1 --> T3 --> U1

@@ -1,0 +1,28 @@
+sequenceDiagram
+    participant Ingestao as Pipeline de Ingestao
+    participant Payload as DbPayloadBuilder
+    participant SQL as Persistencia SQL
+    participant AutoAgg as DomainAutoConfigAggregator
+    participant Repo as DomainConfigRepository
+    participant BM25 as BM25IndexManager
+    participant Orq as IntelligentOrchestrator
+    participant DomainSvc as DomainConfigurationService
+    participant Query as QueryAnalyzer
+    participant Router as AdaptiveRouter
+
+    Ingestao->>Payload: monta manifesto e chunks
+    Payload->>Payload: adiciona auto_config_domain_key
+    Payload->>Payload: adiciona auto_config_signals
+    Payload->>SQL: persiste manifesto
+    SQL->>AutoAgg: pos-persistencia chama agregacao
+    AutoAgg->>SQL: le manifestos do dominio
+    AutoAgg->>Repo: update_auto_config
+    Ingestao->>BM25: update_index(vectorstore_id, chunks)
+    BM25->>BM25: grava snapshot e cache
+    Orq->>DomainSvc: apply_runtime_overrides
+    DomainSvc-->>Orq: runtime com auto_config aplicado
+    Orq->>Orq: merge_bm25_vocabulary_config
+    Orq->>BM25: load_vocabulary_snapshot
+    BM25-->>Orq: snapshot BM25
+    Orq->>Query: analisa pergunta com keywords enriquecidas
+    Orq->>Router: decide estrategia com indicadores

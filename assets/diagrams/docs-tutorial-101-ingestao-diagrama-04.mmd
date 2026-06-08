@@ -1,0 +1,16 @@
+flowchart LR
+  A["rag_router.py"] --> B["IngestionService"]
+  B --> C["ContentIngestionOrchestrator"]
+  C --> D["ContentTypeDispatcherMixin"]
+  D --> E["local_content_family.py"]
+  D --> F["confluence_content_family.py"]
+  D --> G["remote_content_family.py"]
+  D --> H["dynamic_data_content_family.py"]
+  E --> I["processors/"]
+  F --> J["confluence_data_source.py"]
+  G --> K["datasources e clients remotos"]
+  H --> L["dynamic_data/loader.py"]
+  I --> M["Vector Store"]
+  J --> M
+  K --> M
+  L --> M

@@ -1,0 +1,28 @@
+sequenceDiagram
+    participant A as Runtime Agentic
+    participant T as Tool background_execution
+    participant B as agent_background
+    participant S as scheduler universal
+    participant P as Scheduler-only process
+    participant W as Worker oficial
+    participant H as HIL async
+
+    A->>T: schedule_background_execution_request
+    T->>B: grava request e snapshot
+    T->>S: grava scheduled_job canonico
+    P->>S: claim_due_executions
+    P->>S: publish_execution
+    P->>W: reserva publicada
+    W->>B: create_projection_run_for_scheduler_execution
+    W->>B: mark_run_running
+    W->>W: execute_run no runtime oficial
+    alt resultado final
+        W->>B: mark_run_completed ou mark_run_failed
+    else waiting_hil
+        W->>B: mark_run_waiting_hil
+        W->>H: dispatch_waiting_hil
+        H->>B: cria approval_request duravel
+        H-->>A: decisao posterior por POST ou canal
+        A->>W: continuation da mesma thread
+        W->>B: finalize_after_decision
+    end

@@ -1,0 +1,30 @@
+flowchart LR
+    API["routes rag_router e service_api"]
+    ING["IngestionService"]
+    ORCH["ContentIngestionOrchestrator"]
+    DS["FileSystemDataSource"]
+    PROC["ExcelContentProcessor"]
+    ANA["ExcelSheetAnalyzer"]
+    DISP["content_type_dispatcher"]
+    DB["DocumentPersistenceManagerMixin"]
+    VQ["Qdrant client"]
+    VA["Azure Search client"]
+    QA["IntelligentOrchestrator"]
+    XR["JSONSpecializedRAGExcel"]
+    DET["DeterministicTabularEngine"]
+    JTK["JsonToolkit e JsonSpec"]
+
+    API --> ING --> ORCH
+    ORCH --> DS
+    ORCH --> DISP
+    DS --> PROC
+    PROC --> ANA
+    PROC --> DISP
+    DISP --> VQ
+    DISP --> VA
+    DISP --> DB
+    QA --> XR
+    XR --> VQ
+    XR --> VA
+    XR --> DET
+    XR --> JTK

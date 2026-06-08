@@ -1,0 +1,10 @@
+flowchart LR
+  U["Cliente"] --> API["/POST /workflow/execute/"]
+  API --> CFG["resolve_yaml_configuration"]
+  API --> AUTH["authenticate_with_yaml_config"]
+  API --> SVC["WorkflowExecutionService"]
+  SVC --> ORCH["WorkflowOrchestrator"]
+  ORCH --> AW["AgentWorkflow"]
+  AW --> SG["StateGraph compile"]
+  SG --> RUN["ainvoke"]
+  RUN --> U

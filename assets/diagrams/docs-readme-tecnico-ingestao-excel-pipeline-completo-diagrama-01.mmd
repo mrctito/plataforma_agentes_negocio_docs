@@ -1,0 +1,28 @@
+sequenceDiagram
+  participant LR as resolve_local_files
+  participant RB as IngestionRequestBuilder
+  participant CT as ContentTypeDispatcher
+  participant LF as LocalContentFamilyService
+  participant FD as FileSystemDataSource
+    participant CP as ExcelContentProcessor
+    participant SA as ExcelSheetAnalyzer
+    participant BP as BaseContentProcessor
+    participant IX as DocumentIndexingExecutor
+
+  LR->>RB: LocalFileSources.excel_files
+  RB->>CT: IngestionRequest.excel_file_paths
+  CT->>LF: content_type:excel
+  LF->>FD: fetch_document(file_path)
+  FD->>CP: StorageDocument Excel
+    CP->>CP: validate_storage_document
+    CP->>CP: load_workbook(openpyxl/xlrd)
+    CP->>SA: analyze_sheet_structure / analyze_grid_sheet
+    SA-->>CP: ExcelSheetInfo + ExcelTableInfo
+    CP->>CP: build_from_storage
+    CP-->>BP: ExcelDocument
+    BP->>CP: _extract_text_content
+    BP->>CP: _clean_text_content
+    BP->>CP: _split_into_chunks(row-aware)
+    CP-->>BP: ContentChunk[]
+    BP-->>IX: chunks
+    IX->>IX: indexar e persistir

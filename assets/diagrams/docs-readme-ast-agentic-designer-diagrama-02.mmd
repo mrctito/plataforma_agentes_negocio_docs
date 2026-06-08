@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant Operador as Operador ou UI
+    participant Router as /config/assembly
+    participant Service as AgenticAssemblyService
+    participant Parser as Parsers AST
+    participant Validator as DocumentSemanticValidator
+    participant Compiler as DocumentCompiler
+    participant Editor as CanonicalYamlEditor
+
+    Operador->>Router: preflight
+    Router->>Service: preflight
+    Service-->>Operador: checks e diagnostics
+    Operador->>Router: draft
+    Router->>Service: draft
+    Service->>Parser: parse ou geração assistida
+    Service->>Validator: validação semântica
+    Service->>Compiler: fragmento e preview
+    Service-->>Operador: ast_draft, diff_preview, questions
+    Operador->>Router: confirm
+    Router->>Service: confirm
+    Service->>Validator: revalida
+    Service->>Compiler: merge seletivo
+    Service->>Editor: salva quando apply=true
+    Service-->>Operador: final_yaml e saved_path

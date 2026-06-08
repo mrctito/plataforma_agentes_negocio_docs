@@ -1,0 +1,13 @@
+flowchart TD
+    A["URLs em remote_sources.web_scraping.sources"] --> B["resolve_web_scraping"]
+    B --> C["IngestionRequest.web_scraping_urls"]
+    C --> D["ContentTypeDispatcher"]
+    D --> E["RemoteContentFamilyService.process_web_scraping"]
+    E --> F["WebScrapingDatasourceMultimodalAdapterClient"]
+    F --> G["Decisão de estratégia: básica ou avançada"]
+    G --> H["Documento web rico + anexos"]
+    H --> I["Partition: páginas, anexos e prefetched_documents"]
+    I --> J["_process_files_with_pipeline"]
+    J --> K["DataSourceDocumentExecutor reutiliza prefetch"]
+    K --> L["WebContentProcessor"]
+    L --> M["Chunks + persistência oficial"]

@@ -1,0 +1,11 @@
+flowchart TD
+    A["Código-fonte das tools"] --> B["ToolsLibraryBuilder descobre implementações"]
+    B --> C["Builder adiciona factories parametrizadas base"]
+    C --> D["BuiltinToolCatalogSynchronizer normaliza e sincroniza"]
+    D --> E["integrations.builtin_tool_registry"]
+    E --> F["ToolsLibraryCache carrega snapshot global"]
+    F --> G["ConfigurationFactory recebe YAML"]
+    G --> H{"tools_library existe e está vazia?"}
+    H -->|"não"| I["Falha fechada"]
+    H -->|"sim"| J["Injeta tools builtin ativas"]
+    J --> K["Assembly e runtime resolvem tools"]

@@ -1,0 +1,8 @@
+flowchart LR
+  A["agent_router.py"] --> B["resolve_agent_execution_context"]
+  B --> C["invoke_agent"]
+  C --> D["AgentOrchestrator"]
+  D --> E["AgentSupervisor"]
+  E --> F["MemoryFactory"]
+  E --> G["ToolsFactory"]
+  E --> H["Prompt helper"]

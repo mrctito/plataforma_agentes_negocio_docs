@@ -1,0 +1,35 @@
+flowchart LR
+    subgraph EntryPoints
+      EP1["src/api/service_api.py"]
+      EP2["src/api/routers/agent_router.py"]
+    end
+
+    subgraph Orchestration
+      OR1["src/orchestrators AgentOrchestrator"]
+      OR2["src/agentic_layer/supervisor/config_resolver.py"]
+    end
+
+    subgraph AgentsGraphs
+      AG1["src/agentic_layer/supervisor/agent_supervisor.py"]
+      AG2["src/agentic_layer/supervisor/deep_agent_supervisor.py"]
+    end
+
+    subgraph ToolsIntegrations
+      TI1["src/agentic_layer/supervisor/tools_factory.py"]
+      TI2["src/agentic_layer/tools/**"]
+    end
+
+    subgraph DataConfig
+      DC1["app/yaml/system/rag-config-modelo.yaml"]
+      DC2["src/security/client_directory.py"]
+      DC3["memory checkpointer/redis configurados por YAML"]
+    end
+
+    EP1 --> EP2 --> OR1 --> OR2 --> AG1
+    OR2 --> AG2
+    AG1 --> TI1 --> TI2
+    AG2 --> TI1
+    EP2 --> DC1
+    EP2 --> DC2
+    AG1 --> DC3
+    AG2 --> DC3

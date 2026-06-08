@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant UI as Pagina
+  participant Router as /ag-ui/runs
+    participant Orch as AgUiRunOrchestrator
+    participant Adapter as Adapter selecionado
+    participant FE as Store/Sidecar
+
+    UI->>Router: POST run tipado
+    Router->>Orch: AgUiRunContext
+    Orch-->>FE: RUN_STARTED
+    Orch->>Adapter: execute(context)
+    Adapter-->>Orch: STEP / TOOL / STATE / TEXT / CUSTOM
+    Orch-->>FE: SSE dos eventos
+    Adapter-->>Orch: RUN_FINISHED ou erro normalizado
+    Orch-->>FE: terminal unico

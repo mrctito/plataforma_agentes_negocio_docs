@@ -1,0 +1,13 @@
+flowchart TD
+    A["Request HTTP"] --> B["log_requests middleware"]
+    B --> C["resolve ou cria correlation_id oficial"]
+    C --> D["request.state e contextvars"]
+    D --> E["create_logger_with_correlation"]
+    E --> F{"arquivo dedicado habilitado e id valido?"}
+    F -- sim --> G["FileHandler dedicado + sidecar + manifest"]
+    F -- nao --> H["shared bound logger"]
+    G --> I["logs estruturados"]
+    H --> I["logs estruturados"]
+    I --> J["CanonicalLogReader"]
+    J --> K["provider administrativo"]
+    K --> L["AnalyzeLogsCommand"]

@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant UI as Cliente ou UI
+    participant Agent as /agent/execute
+    participant Repo as Tabela HIL
+    participant Notify as Notificação HIL
+    participant WA as /channels/{channel_id}/messages
+    participant Decide as /agent/hil/decisions ou bridge
+    participant Continue as /agent/continue
+
+    UI->>Agent: POST /agent/execute
+    Agent-->>UI: response + hil + thread_id + correlation_id
+    Agent->>Repo: cria pedido durável quando async_approval está ativo
+    Repo-->>Notify: approval_request_id + token_hint + metadados
+    Notify-->>WA: mensagem interativa no WhatsApp
+    WA->>Decide: payload hil_approval|"..."|approve|token
+    Decide->>Continue: resume tipado da mesma thread
+    Continue-->>UI: execução retomada e resposta final

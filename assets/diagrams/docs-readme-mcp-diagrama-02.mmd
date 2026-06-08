@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant Y as YAML
+    participant R as MCPConfigResolver
+    participant T as MCPToolsResolver
+    participant P as Proxy /mcp
+    participant S as Servidor MCP stdio
+    participant A as Agente
+
+    Y->>R: global_mcp_configuration + local_mcp_configuration
+    R->>T: conexoes resolvidas por escopo
+    alt transporte stdio
+        T->>P: conexao streamable_http local
+        P->>S: list_tools ou call_tool
+        S-->>P: resposta MCP
+        P-->>T: catalogo ou resultado
+    else transporte remoto
+        T->>T: cliente MCP remoto
+    end
+    T->>A: tools MCP mescladas com tools locais

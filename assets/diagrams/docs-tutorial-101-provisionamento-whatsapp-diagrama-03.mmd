@@ -1,0 +1,27 @@
+flowchart LR
+    subgraph EntryPoints
+      EP1["src/api/service_api.py"]
+      EP2["src/api/routers/whatsapp_provision_router.py"]
+    end
+
+    subgraph Orchestration
+      OR1["MultiTenantWhatsAppManager"]
+      OR2["validacao tenant/client_code/channel_id"]
+    end
+
+    subgraph AgentsGraphs
+      AG1["Não encontrado no código"]
+    end
+
+    subgraph ToolsIntegrations
+      TI1["WhatsAppProvisionerAsync"]
+      TI2["Meta Graph API"]
+    end
+
+    subgraph DataLayer
+      DL1["src/security/client_directory.py"]
+      DL2["tenant_profile + channel mapping + whatsapp phones"]
+    end
+
+    EP1 --> EP2 --> OR2 --> OR1 --> TI1 --> TI2
+    EP2 --> DL1 --> DL2

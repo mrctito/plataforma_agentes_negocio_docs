@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant UI as UI Web
+    participant Auth as auth_router
+    participant Store as Federated Session Store
+    participant Dir as ClientDirectory
+    participant API as Endpoint protegido
+
+    UI->>Auth: POST /api/auth/federated/session ou /local/session
+    Auth->>Dir: resolve tenant, user_account e contexto de grants
+    Auth->>Store: issue(session com membership_role e effective_permissions)
+    UI->>API: request protegida sem X-API-Key
+    API->>Store: carrega sessão
+    API->>Dir: refresh_federated_session_membership_snapshot
+    Dir-->>API: grants atualizados
+    API->>API: _validate_permission sobre user_data montado da sessão
+    API-->>UI: resposta ou 403

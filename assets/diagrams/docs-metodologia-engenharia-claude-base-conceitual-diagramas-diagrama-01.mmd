@@ -1,0 +1,29 @@
+sequenceDiagram
+    actor H as Humano (maestro)
+    participant I as investigar
+    participant P as planejar
+    participant M as implementar
+    participant V as validar-entrega
+    participant R as rules/ (contratos)
+
+    H->>I: /investigar (escopo)
+    Note over I,R: lê código real · zero alucinação<br/>evidência com path/linha
+    I-->>H: relatório forense (achados + evidência)
+
+    H->>P: /planejar
+    Note over P,R: postura crítica · T1 cria Estratégia<br/>T2 mapeia testes · anti-omissão
+    P-->>H: plano (tarefas + critérios + rollback)
+
+    H->>M: /implementar
+    Note over M,R: gates reuso/banco/YAML · anti-legado<br/>definição-de-pronto · hooks no ato
+    M-->>V: código + testes + logs
+
+    H->>V: /validar-entrega
+    Note over V,R: hierarquia de verdade<br/>"teste verde não prova fluxo real"
+
+    alt APROVADO (prova no runtime)
+        V-->>H: APROVADO + relatório de validação
+    else REPROVADO / BLOQUEADO
+        V-->>P: inventário de não-entregas
+        Note over V,P: a bola volta — replaneja só o que faltou
+    end

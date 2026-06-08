@@ -1,0 +1,15 @@
+flowchart TD
+    A["UI auth gateway"] --> B["Google GIS ou login local"]
+    B --> C["POST /api/auth/federated/session ou /api/auth/local/session"]
+    C --> D["Validação da identidade principal"]
+    D --> E["Emissão da sessão federada no cache central"]
+    E --> F{"TOTP já habilitado?"}
+    F -- Sim --> G["mfa_challenge + session_token"]
+    F -- Não --> H{"FEDERATED_MFA_REQUIRED ativo?"}
+    H -- Sim --> I["mfa_setup_required + session_token"]
+    H -- Não --> J["Cookie final federated_session"]
+    G --> K["POST /api/auth/federated/session/totp/confirm"]
+    I --> L["POST /api/auth/federated/session/totp/start"]
+    L --> K
+    K --> J
+    J --> M["Middleware libera HTML protegido"]

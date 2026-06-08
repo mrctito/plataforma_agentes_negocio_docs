@@ -1,0 +1,9 @@
+flowchart TD
+    A["Cliente chama /api/whatsapp/provision/start"] --> B["Valida permissao provision.whatsapp"]
+    B --> C["Resolve client_code e tenant via ClientDirectory"]
+    C --> D["MultiTenantWhatsAppManager.start_provision"]
+    D --> E["WhatsAppProvisionerAsync register + request_verification"]
+    E --> F["Telefone salvo local pending_verification"]
+    F --> G["Cliente chama /verify com codigo_sms"]
+    G --> H["finalize_provision ativa + webhook + template"]
+    H --> I["Telefone salvo local active"]

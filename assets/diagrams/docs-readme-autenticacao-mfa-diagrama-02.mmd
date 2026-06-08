@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant UI as Auth Gateway
+    participant Router as Auth Router
+    participant Session as FederatedSessionRepository
+    participant TOTP as TotpService
+    participant Audit as FederatedLoginAudit
+
+    UI->>Router: login federado ou local
+    Router->>Session: issue
+    Router->>TOTP: get_status(email)
+    alt TOTP ativo
+        Router-->>UI: mfa_challenge + session_token
+    else Politica exige MFA
+        Router-->>UI: mfa_setup_required + session_token
+        UI->>Router: POST /totp/start
+        Router->>TOTP: start_activation
+        TOTP-->>UI: QR Code + secret + expires_at
+    else Sem MFA exigido
+        Router-->>UI: ok + cookie final
+    end
+    UI->>Router: POST /totp/confirm
+    Router->>TOTP: confirm_code
+    TOTP->>Audit: habilita ou atualiza TOTP
+    Router-->>UI: ok + cookie final

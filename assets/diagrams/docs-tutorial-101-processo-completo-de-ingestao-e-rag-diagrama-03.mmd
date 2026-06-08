@@ -1,0 +1,46 @@
+flowchart TB
+    subgraph Entry points
+        E1["POST /rag/ingest"]
+        E2["POST /rag/execute"]
+        E3["/status e /ingestion-runs"]
+    end
+
+    subgraph Orquestracao
+        O1["IngestionHttpApplicationService"]
+        O2["IngestionService"]
+        O3["ContentIngestionOrchestrator"]
+        O4["QuestionService"]
+        O5["ContentQASystem"]
+        O6["QAQuestionProcessor"]
+        O7["QARuntimeAssembly"]
+        O8["IntelligentRAGOrchestrator"]
+    end
+
+    subgraph Tecnicas e engines
+        T1["ContentTypeDispatcher"]
+        T2["PDFContentProcessor"]
+        T3["PdfExtractionState"]
+        T4["QueryRewriter"]
+        T5["QueryAnalyzer"]
+        T6["AdaptiveQueryRouter"]
+        T7["RetrievalEngine"]
+        T8["GenerationEngine"]
+    end
+
+    subgraph Dados e observabilidade
+        D1["PostgreSQL"]
+        D2["BM25"]
+        D3["Qdrant ou Azure Search"]
+        D4["Redis"]
+        D5["PipelineCacheManager"]
+        D6["Logs com correlation_id"]
+    end
+
+    E1 --> O1 --> O2 --> O3 --> T1 --> D1
+    T1 --> D2
+    T1 --> D3
+    E2 --> O4 --> O5 --> O6 --> O7 --> O8 --> T7 --> D3
+    O8 --> T8 --> D6
+    O2 --> D6
+    O4 --> D5
+    E3 --> D4

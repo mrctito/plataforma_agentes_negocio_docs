@@ -1,0 +1,13 @@
+flowchart TD
+    A["API"] --> B["Autenticacao e permissao"]
+    B --> C["Configuracao YAML e runtime"]
+    C --> D["RAG e NL2SQL"]
+    C --> E["Agentes e workflows"]
+    C --> F["Integracoes e canais"]
+    A --> G["Worker"]
+    A --> H["Scheduler"]
+    G --> I["Ingestao e ETL"]
+    I --> J["Acervo, schema metadata e catálogos"]
+    D --> J
+    E --> J
+    F --> K["Varejo, checkout, WhatsApp, Instagram, AG-UI"]

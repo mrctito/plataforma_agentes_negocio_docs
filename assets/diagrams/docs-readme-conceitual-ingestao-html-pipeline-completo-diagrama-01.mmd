@@ -1,0 +1,10 @@
+flowchart TD
+    A["Documento HTML bruto"] --> B["StorageDocument com ContentType.HTML"]
+    B --> C{"Origem remota web?"}
+    C -- Sim --> D["build_from_storage do stack Web"]
+    C -- Não --> E["Documento segue como veio"]
+    D --> F["Limpeza HTML para texto"]
+    E --> F
+    F --> G["Normalização de espaços"]
+    G --> H["Chunking adaptativo"]
+    H --> I["Chunks para indexação"]

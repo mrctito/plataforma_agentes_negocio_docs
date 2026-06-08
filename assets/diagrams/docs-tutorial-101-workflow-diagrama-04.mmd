@@ -1,0 +1,8 @@
+flowchart LR
+  A["workflow_router.py"] --> B["WorkflowExecutionService"]
+  B --> C["WorkflowOrchestrator"]
+  C --> D["AgentWorkflow.initialize"]
+  D --> E["_create_dynamic_workflow"]
+  E --> F["NodeFactory"]
+  E --> G["EdgeCompiler"]
+  D --> H["compiled workflow"]

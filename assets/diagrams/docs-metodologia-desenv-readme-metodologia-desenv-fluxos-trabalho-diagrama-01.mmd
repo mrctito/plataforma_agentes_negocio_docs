@@ -1,0 +1,17 @@
+sequenceDiagram
+  participant H as Humano
+  participant I as Investigar
+  participant P as Planejar
+  participant E as Implementar
+  participant T as Suite
+  participant D as Documentar
+
+  H->>I: descreve objetivo e escopo
+  I-->>H: evidencias, lacunas e riscos
+  H->>P: pede plano executavel
+  P-->>H: tarefas pequenas e verificaveis
+  H->>E: executa tarefa por tarefa
+  E->>T: valida impacto e regressao
+  T-->>E: logs, checkpoints e telemetria
+  E->>D: atualiza docs quando necessario
+  D-->>H: entrega documentada e provada

@@ -1,0 +1,41 @@
+sequenceDiagram
+    autonumber
+    participant Operador
+    participant Pagina as Tela AG-UI
+    participant Sidecar
+    participant Cliente as ag-ui-client.js
+    participant API as POST /ag-ui/runs
+    participant Router as ag_ui_router.run_ag_ui
+    participant Orq as AgUiRunOrchestrator
+    participant Adapter as RetailDemoAgUiAdapter
+    participant Mat as DashboardMaterializationService
+
+    Operador->>Pagina: Ajusta prompt, periodo e contexto
+    Pagina->>Sidecar: attachContext()
+    Operador->>Sidecar: submitMessage()
+    Sidecar->>Cliente: start(payload)
+    Cliente->>API: POST SSE com X-API-Key
+    API->>Router: request validado
+    Router->>Orq: run(context)
+    Orq-->>Cliente: RUN_STARTED
+    Orq->>Adapter: execute(context)
+    alt capability fixa
+        Adapter-->>Cliente: STEP_STARTED
+        Adapter-->>Cliente: TOOL_CALL_START
+        Adapter-->>Cliente: TOOL_CALL_ARGS
+        Adapter-->>Cliente: TOOL_CALL_RESULT
+        Adapter-->>Cliente: STATE_SNAPSHOT
+        Adapter-->>Cliente: TEXT_MESSAGE_*
+        Adapter-->>Cliente: STEP_FINISHED
+    else dashboard_dynamic
+        Adapter->>Mat: build_events(context, dashboardSpec)
+        Mat-->>Cliente: CUSTOM spec.started
+        Mat-->>Cliente: STATE_SNAPSHOT
+        Mat-->>Cliente: CUSTOM spec.validated
+        Mat-->>Cliente: STATE_DELTA
+        Mat-->>Cliente: CUSTOM widget.added
+        Mat-->>Cliente: CUSTOM render.ready
+    end
+    Orq-->>Cliente: RUN_FINISHED ou RUN_ERROR
+    Cliente->>Sidecar: onEvent(event)
+    Sidecar->>Pagina: atualiza DOM e estado

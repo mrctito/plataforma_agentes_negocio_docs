@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant API as schedule_prepared_ingestion_worker_job
+    participant Q as publish_job_envelope
+    participant PAI as execute_ingestion_async
+    participant SERV as IngestionService
+    participant FAN as DocumentFanoutCoordinator
+    participant FILHO as DocumentFanoutChildExecutorService
+    participant PDF as execute_single_document + pipeline PDF
+
+    API->>Q: publica prepared_yaml
+    Q->>PAI: job pai chega ao worker
+    PAI->>SERV: service.execute(batch)
+    SERV->>FAN: tenta montar plano de fan-out
+    FAN-->>PAI: pai fica waiting_children ou segue sequencial
+    FAN->>FILHO: publica document_fanout_child
+    FILHO->>SERV: service.execute_single_document()
+    SERV->>PDF: processa PDF real do documento

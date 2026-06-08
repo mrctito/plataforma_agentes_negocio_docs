@@ -1,0 +1,33 @@
+flowchart LR
+    subgraph Cliente
+        C1["Prepara payload com question e encrypted_data"]
+        C2["Chama /rag/execute"]
+    end
+
+    subgraph API
+        A1["Valida envelope"]
+        A2["Resolve YAML"]
+        A3["Autentica e escolhe modo"]
+    end
+
+    subgraph Service
+        S1["QuestionService"]
+        S2["Pipeline cache"]
+    end
+
+    subgraph RuntimeQA
+        R1["ContentQASystem"]
+        R2["QARuntimeAssembly"]
+        R3["QAQuestionProcessor"]
+        R4["IntelligentRAGOrchestrator"]
+    end
+
+    subgraph Saida
+        O1["Resposta sync"]
+        O2["Task async com polling e stream"]
+        O3["Metrics, sources e diagnostics"]
+    end
+
+    C1 --> C2 --> A1 --> A2 --> A3 --> S1 --> S2 --> R1 --> R2 --> R3 --> R4 --> O1
+    A3 --> O2
+    R4 --> O3

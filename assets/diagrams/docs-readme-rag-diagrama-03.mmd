@@ -1,0 +1,41 @@
+flowchart LR
+    subgraph Entrada
+        E1["POST /rag/execute"]
+        E2["Contexto e YAML"]
+    end
+
+    subgraph Runtime
+        R1["QARuntimeAssembly"]
+        R2["QueryRewriter"]
+        R3["QueryAnalyzer"]
+        R4["AdaptiveQueryRouter"]
+        R5["RetrievalEngine"]
+        R6["Evidence e Diagnostics"]
+        R7["GenerationEngine"]
+    end
+
+    subgraph Tecnicas
+        T1["Domain Query Expansion"]
+        T2["Multi Query"]
+        T3["Hybrid Search"]
+        T4["Hybrid Fusion"]
+        T5["Rerank"]
+        T6["Retry do LLM"]
+    end
+
+    subgraph Saida
+        S1["Answer"]
+        S2["Sources"]
+        S3["Metadata e Telemetria"]
+    end
+
+    E1 --> E2 --> R1 --> R2 --> R3 --> R4 --> R5 --> R6 --> R7
+    R5 --> T1
+    R5 --> T2
+    R5 --> T3
+    R5 --> T4
+    R5 --> T5
+    R7 --> T6
+    R7 --> S1
+    R6 --> S2
+    R6 --> S3

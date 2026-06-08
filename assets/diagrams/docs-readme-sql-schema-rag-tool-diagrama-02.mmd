@@ -1,0 +1,9 @@
+flowchart LR
+    A["Banco de origem"] --> B["ETL de schema metadata"]
+    B --> C["Catálogo dbschemas"]
+    C --> D["Exportação de documentos de schema"]
+    D --> E["Vector store de schema"]
+    E --> F["Endpoint NL2SQL"]
+    F --> G["LLM com dialeto fixo"]
+    G --> H["Guardrail somente leitura"]
+    H --> I["Proposta revisável"]

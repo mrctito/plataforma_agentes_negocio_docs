@@ -1,0 +1,8 @@
+flowchart TD
+    A["Usuario envia pergunta ou mensagem"] --> B["Runtime produz resposta do agente"]
+    B --> C["Recorder ou processor extrai pergunta, resposta e metadados"]
+    C --> D["InteractionTelemetryManager monta InteractionTelemetryRecord"]
+    D --> E["Registro entra na fila assincrona"]
+    E --> F["Batch writer persiste em interaction_runs"]
+    F --> G["Usuario ou operacao consulta interaction_runs"]
+    G --> H["Usuario adiciona observacoes para revisao e melhoria futura"]

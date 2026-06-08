@@ -1,0 +1,55 @@
+flowchart LR
+  subgraph "1. ACQUISITION"
+    DS["DataSource"] -->|"Confluence"| ConfDS["ConfluenceDataSource"]
+    DS --> Client["IContentClient"]
+    Client -->|"Web"| WebClient["WebScrapingDatasourceMultimodalAdapterClient"]
+    Client -->|"File"| FileClient["FileClient"]
+    Client -->|"YouTube"| YTClient["YouTubeClient"]
+  end
+
+  subgraph "2. PROCESSING"
+    ConfDS --> Proc["IContentProcessor"]
+    WebClient --> Proc
+    FileClient --> Proc
+    YTClient --> Proc
+
+    Proc -->|"HTML"| HTMLProc["HtmlProcessor"]
+    Proc -->|"PDF"| PDFProc["PdfProcessor"]
+    Proc -->|"DOCX"| DOCXProc["DocxProcessor"]
+    Proc -->|"JSON"| JSONProc["JsonProcessor"]
+    Proc -->|"Excel"| ExcelProc["ExcelProcessor"]
+    Proc -->|"TXT"| TXTProc["TxtProcessor"]
+  end
+
+  subgraph "3. CHUNKING"
+    HTMLProc --> Chunk["BaseContentProcessor._split_into_chunks"]
+    PDFProc --> Chunk
+    DOCXProc --> Chunk
+    JSONProc --> Chunk
+    ExcelProc --> Chunk
+    TXTProc --> Chunk
+
+    Chunk --> Adaptive["_compute_adaptive_chunk_params"]
+    Adaptive --> |"chunk_size, overlap"| Split["RecursiveCharacterTextSplitter"]
+  end
+
+  subgraph "4. ENRICHMENT"
+    Split --> Meta["Metadata Builder"]
+    Meta --> Hash["ContentHashGenerator"]
+    Hash --> Keywords["RAKE Keyword Extractor"]
+  end
+
+  subgraph "5. VECTORIZATION"
+    Keywords --> Embed["Embeddings"]
+    Embed -->|"OpenAI/Azure"| Vector["Vector Embeddings"]
+  end
+
+  subgraph "6. STORAGE"
+    Vector --> VS{"Vector Store Type"}
+    VS -->|"Qdrant"| Qdrant["(Qdrant VectorDB)"]
+    VS -->|"Azure"| Azure["(Azure AI Search)"]
+
+    Qdrant --> BM25["BM25 Vocabulary Builder"]
+    Azure --> BM25
+    BM25 --> Postgres["(PostgreSQL)"]
+  end

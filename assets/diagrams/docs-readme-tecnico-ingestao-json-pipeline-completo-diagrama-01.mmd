@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant FS as FileSystemDataSource
+    participant JC as JsonFileClient
+    participant JMB as JsonMetadataBuilder
+    participant JCP as JsonContentProcessor
+    participant DPE as DocumentProcessorExecutor
+    participant DIE as DocumentIndexingExecutor
+
+    FS->>JC: StorageDocument .json
+    JC->>JMB: build_from_storage
+    JMB->>JMB: validar tamanho e raw_bytes
+    JMB->>JMB: decode por encodings permitidos
+    JMB->>JMB: json.loads e profiling estrutural
+    JMB-->>JC: TextDocument enriquecido
+    JC-->>DPE: documento JSON pronto
+    DPE->>JCP: process_document
+    JCP->>JCP: resolver perfil e limpar conteúdo
+    JCP->>JCP: chunking por objeto/array/primitivo
+    JCP->>JCP: aplicar plugins de domínio opcionais
+    JCP-->>DPE: chunks JSON
+    DPE-->>DIE: chunks + documento
+    DIE->>DIE: indexar e persistir

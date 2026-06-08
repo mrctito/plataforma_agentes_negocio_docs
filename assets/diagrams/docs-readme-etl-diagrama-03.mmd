@@ -1,0 +1,29 @@
+flowchart LR
+    subgraph Cliente
+        C1["Cliente ou UI"]
+    end
+
+    subgraph API
+        A1["/rag/etl"]
+        A2["/status"]
+    end
+
+    subgraph Worker
+        W1["WorkerProcessRuntime"]
+        W2["ExtractTransformLoadService"]
+        W3["ExtractTransformLoadOrchestrator"]
+        W4["Pipelines habilitados"]
+    end
+
+    subgraph Infra
+        I1["RabbitMQ"]
+        I2["Redis"]
+        I3["PostgreSQL"]
+        I4["Providers externos"]
+    end
+
+    C1 --> A1 --> I1 --> W1 --> W2 --> W3 --> W4
+    W4 --> I3
+    W4 --> I4
+    I2 --> A2
+    I3 --> A2

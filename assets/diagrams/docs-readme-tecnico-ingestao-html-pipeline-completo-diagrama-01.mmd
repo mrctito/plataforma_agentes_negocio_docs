@@ -1,0 +1,18 @@
+sequenceDiagram
+    participant Fonte as Fonte de Conteúdo
+    participant DS as DataSource
+    participant Disp as Dispatcher/Pipeline
+    participant Proc as Processor HTML/Web
+    participant Chunk as Chunking
+
+    Fonte->>DS: entrega caminho local ou URL
+    DS->>Disp: StorageDocument com ContentType.HTML
+    Disp->>Disp: resolve processor padrão
+    alt origem remota
+        Disp->>Proc: build_from_storage(StorageDocument)
+    else origem não remota
+        Disp->>Proc: process_document(documento como veio)
+    end
+    Proc->>Proc: extrai texto e normaliza
+    Proc->>Chunk: gera chunks
+    Chunk-->>Disp: lista de ContentChunk

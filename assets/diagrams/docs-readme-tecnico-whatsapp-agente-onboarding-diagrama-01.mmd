@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant Ops as Operador
+    participant Directory as Diretorio
+    participant Meta as Meta Cloud API
+    participant Router as /channels/{channel_id}/messages
+    participant Processor as ChannelMessageProcessor
+    participant Engine as ChannelExecutionEngine
+    participant WA as MetaWhatsAppClient
+
+    Ops->>Directory: registra ChannelDefinition
+    Ops->>Meta: inicia onboarding do numero
+    Meta-->>Ops: phone_number_id e codigo SMS
+    Ops->>Meta: confirma codigo e assume webhook
+    Meta->>Router: GET challenge do webhook
+    Router-->>Meta: hub.challenge
+    Meta->>Router: POST mensagem do usuario
+    Router->>Directory: resolve canal, client_code e yaml_path
+    Router->>Processor: entrega IncomingMessagePayload
+    Processor->>Engine: executa ask ou workflow no caminho oficial
+    Engine-->>Processor: OutgoingMessage
+    Processor->>WA: envia lote formatado para Meta
+    WA-->>Meta: mensagens
+    Meta-->>Ops: usuario recebe resposta no WhatsApp

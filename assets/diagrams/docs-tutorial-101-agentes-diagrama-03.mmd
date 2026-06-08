@@ -1,0 +1,23 @@
+flowchart TB
+  subgraph Entry
+    E1["FastAPI Router\nagent_router.py"]
+  end
+  subgraph Orchestration
+    O1["AgentOrchestrator"]
+  end
+  subgraph AgentsGraphs
+    G1["AgentSupervisor"]
+  end
+  subgraph ToolsIntegrations
+    T1["ToolsFactory"]
+    T2["LangChainAgentGateway"]
+  end
+  subgraph Data
+    D1["Redis progress callback"]
+    D2["Checkpointer configurado"]
+  end
+
+  E1 --> O1 --> G1 --> T1
+  G1 --> T2
+  O1 --> D1
+  G1 --> D2

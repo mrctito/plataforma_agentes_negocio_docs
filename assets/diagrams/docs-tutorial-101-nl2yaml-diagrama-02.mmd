@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant User as Operador
+    participant UI as Studio NL2YAML
+    participant API as Router config assembly
+    participant Service as AgenticAssemblyService
+    participant Draft as Draft AST
+    participant Confirm as Confirm dry-run
+
+    User->>UI: escreve briefing e escolhe target
+    UI->>API: POST objective-to-yaml
+    API->>Service: objective_to_yaml
+    Service->>Service: preflight
+    Service->>Draft: gerar rascunho AST
+    Draft-->>Service: ast_payload ou questions
+    Service->>Service: validate
+    Service->>Confirm: confirm apply false
+    Confirm-->>Service: final_yaml e diff
+    Service-->>API: resposta consolidada
+    API-->>UI: preview, diagnostics, decision_trace
+    User->>UI: confirma publicação
+    UI->>API: POST confirm apply true

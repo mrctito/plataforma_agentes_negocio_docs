@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant WR as Worker Runner
+    participant RB as RuntimeBootstrap
+    participant WPR as WorkerProcessRuntime
+    participant CP as Control Plane
+    participant AR as Async Runtime
+
+    WR->>RB: start()
+    RB-->>WR: bootstrap compartilhado pronto
+    WR->>WPR: start()
+    WPR->>CP: start_control_plane()
+    CP-->>WPR: supervisor pronto
+    WPR->>AR: start()
+    AR-->>WPR: ingestão e ETL prontos
+    WPR-->>WR: snapshot ready
+    WR-->>WR: MULTICHANNEL_SUPERVISOR_READY
+    WR-->>WR: WORKER_READY

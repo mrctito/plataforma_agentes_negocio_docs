@@ -1,0 +1,14 @@
+flowchart TD
+    A["Aplicacao cliente envia POST para /ag-ui/runs"] --> B["Router valida permissao e fonte de configuracao"]
+    B --> C["Router resolve correlation_id e cria AgUiRunContext"]
+    C --> D["Orquestrador emite RUN_STARTED"]
+    D --> E["Orquestrador resolve adapter por executionKind"]
+    E --> F{"executionKind atual"}
+    F -- retail_demo capability fixa --> G["Adapter resolve capability e query governada"]
+    F -- retail_demo dashboard_dynamic --> H["Adapter delega para materializacao de DashboardSpec"]
+    G --> I["Eventos de step, tool, snapshot e mensagem"]
+    H --> J["Eventos custom, snapshot, deltas e mensagem de validacao ou prontidao"]
+    I --> K["Encoder serializa BaseEvent em SSE"]
+    J --> K
+    K --> L["Cliente SSE atualiza sidecar e tela"]
+    L --> M["RUN_FINISHED ou RUN_ERROR"]

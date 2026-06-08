@@ -1,0 +1,40 @@
+flowchart LR
+    subgraph Cliente
+        C1["Envia arquivo ou pergunta"]
+        C2["Acompanha status ou recebe resposta"]
+    end
+
+    subgraph API
+        A1["Resolve correlation_id"]
+        A2["Resolve YAML e autentica"]
+        A3["Despacha ingestao ou ask"]
+    end
+
+    subgraph Worker
+        W1["Consome job de ingestao"]
+        W2["Executa IngestionService"]
+        W3["Executa ContentIngestionOrchestrator"]
+    end
+
+    subgraph QA
+        Q1["QuestionService"]
+        Q2["QAQuestionProcessor"]
+        Q3["IntelligentRAGOrchestrator"]
+        Q4["GenerationEngine"]
+    end
+
+    subgraph Infra
+        I1["RabbitMQ"]
+        I2["Redis"]
+        I3["PostgreSQL"]
+        I4["BM25"]
+        I5["Qdrant ou Azure Search"]
+    end
+
+    C1 --> A1 --> A2 --> A3
+    A3 --> I1 --> W1 --> W2 --> W3 --> I3
+    W3 --> I4
+    W3 --> I5
+    A3 --> Q1 --> Q2 --> Q3 --> I5
+    Q3 --> Q4 --> C2
+    I2 --> C2

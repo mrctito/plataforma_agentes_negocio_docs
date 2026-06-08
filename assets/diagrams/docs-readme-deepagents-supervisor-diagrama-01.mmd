@@ -1,0 +1,10 @@
+flowchart TD
+    A["YAML com selected_supervisor e multi_agents"] --> B["Parser DeepAgent filtra execution.type deepagent"]
+    B --> C["AST DeepAgent + validação semântica"]
+    C --> D["DeepAgentSupervisor carrega contexto e factories"]
+    D --> E["Resolve cache, tools, modelo e prompt"]
+    E --> F["Resolve memory, backend e store"]
+    F --> G["Compõe pilha governada de middlewares"]
+    G --> H["Cria ou reutiliza artefato DeepAgent"]
+    H --> I["Executa invoke com thread_id e telemetria"]
+    I --> J["Normaliza resposta, HIL, timeline e tools_usage"]

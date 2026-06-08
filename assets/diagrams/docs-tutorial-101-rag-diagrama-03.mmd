@@ -1,0 +1,40 @@
+flowchart TB
+    subgraph EntryPoints
+        E1["/rag/execute"]
+        E2["/health"]
+    end
+
+    subgraph Contracts
+        C1["ExecuteEnvelope"]
+        C2["RagQuestionRequest"]
+        C3["user_session, vector_store, rag_system, qa_system"]
+    end
+
+    subgraph Orchestration
+        O1["rag_runtime_operations_compat"]
+        O2["QuestionService"]
+        O3["PipelineCacheManager"]
+    end
+
+    subgraph QA_Runtime
+        Q1["ContentQASystem"]
+        Q2["QARuntimeAssembly"]
+        Q3["QAQuestionProcessor"]
+        Q4["IntelligentRAGOrchestrator"]
+    end
+
+    subgraph Retrieval_And_Generation
+        R1["rag_engine.config_utils"]
+        R2["retrieval"]
+        R3["generation"]
+    end
+
+    subgraph Telemetry
+        T1["analysis"]
+        T2["pipeline_diagnostics"]
+        T3["logs e token_usage"]
+    end
+
+    E1 --> C1 --> O1 --> O2 --> O3 --> Q1 --> Q2 --> Q3 --> Q4 --> R1 --> R2 --> R3 --> T1
+    Q3 --> T2
+    O2 --> T3

@@ -1,0 +1,11 @@
+flowchart TD
+    A["Cliente HTTP"] --> B["App FastAPI central"]
+    B --> C{"Rota protegida?"}
+    C -->|"Sim"| D["Valida permissão e contexto"]
+    C -->|"Não"| E["Roteia direto"]
+    D --> E
+    E --> F{"Execução curta ou longa?"}
+    F -->|"Curta"| G["Resposta no mesmo HTTP"]
+    F -->|"Longa"| H["Task ID e URLs de acompanhamento"]
+    H --> I["GET /status ou /api/v1/status"]
+    H --> J["GET /status/stream ou /api/v1/status/stream"]

@@ -1,0 +1,21 @@
+sequenceDiagram
+  participant U as Usuario
+  participant API as rag_router.etl
+  participant SVC as ExtractTransformLoadService
+  participant ORCH as ETL Orchestrator
+  participant AP as Apify Pipelines
+  participant SM as Schema Metadata
+
+  U->>API: POST /rag/etl
+  API->>API: resolve_yaml_configuration + auth
+  API->>SVC: execute(...)
+  SVC->>ORCH: run(progress_callback)
+  alt apify habilitado
+    ORCH->>AP: run()
+  end
+  alt schema_metadata habilitado
+    ORCH->>SM: run()
+  end
+  ORCH-->>SVC: root_result
+  SVC-->>API: ETL response
+  API-->>U: 202 ou resultado

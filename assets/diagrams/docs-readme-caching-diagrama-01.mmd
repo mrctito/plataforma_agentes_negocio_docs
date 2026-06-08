@@ -1,0 +1,14 @@
+flowchart TD
+    A["Recurso solicitado"] --> B{"Familia de cache existe?"}
+    B -- Nao --> C["Constroi recurso"]
+    B -- Sim --> D["Deriva chave e namespace"]
+    D --> E{"Backend local ou distribuido?"}
+    E -- Local --> F["Consulta cache em processo"]
+    E -- Distribuido --> G["Consulta Redis ou backend vetorial"]
+    F --> H{"Hit?"}
+    G --> H
+    H -- Sim --> I["Reutiliza recurso"]
+    H -- Nao --> C
+    C --> J["Armazena no cache apropriado"]
+    J --> K["Segue execucao"]
+    I --> K

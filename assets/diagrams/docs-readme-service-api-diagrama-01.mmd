@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant C as Cliente
+    participant B as Boundary HTTP
+    participant Y as ResolvedConfig
+    participant S as Service
+    participant W as Worker ou execução direta
+
+    C->>B: request HTTP
+    B->>B: autentica e aplica permissões
+    B->>Y: resolve YAML quando necessário
+    Y-->>B: configuração resolvida
+    B->>S: chama caso de uso
+    alt operação longa
+        S->>W: publica job
+        W-->>B: task_id
+        B-->>C: resposta assíncrona
+    else operação curta
+        S-->>B: payload final
+        B-->>C: resposta síncrona
+    end

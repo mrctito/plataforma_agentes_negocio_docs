@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant Ops as Operador
+    participant Meta as Instagram Graph API
+    participant Dir as Diretorio
+    participant Hook as /channels/{channel_id}/messages
+    participant Parser as InstagramMessageProcessor
+    participant Proc as ChannelMessageProcessor
+    participant Engine as ChannelExecutionEngine
+    participant Send as InstagramMessageClient
+
+    Ops->>Meta: provisiona conta e webhook
+    Ops->>Dir: provisionamento registra conta base
+    Ops->>Dir: registra ou atualiza canal com YAML e execution_mode
+    Meta->>Hook: GET hub.challenge
+    Hook-->>Meta: hub.challenge
+    Meta->>Hook: POST DM, comentario ou mencao
+    Hook->>Parser: normaliza evento bruto
+    Parser->>Proc: IncomingMessagePayload
+    Proc->>Engine: executa ask, workflow ou agent apenas como legado
+    Engine-->>Proc: OutgoingMessage
+    Proc->>Send: envia DM ou comment_reply
+    Send-->>Meta: messages ou /replies
+    Meta-->>Ops: usuario recebe resposta no inbox ou no comentario

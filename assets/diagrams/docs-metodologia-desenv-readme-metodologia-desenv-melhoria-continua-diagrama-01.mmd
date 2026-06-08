@@ -1,0 +1,12 @@
+flowchart TB
+  A["Erro, regressao ou correcao do usuario"] --> B{"Tipo de aprendizado"}
+  B -- erro real --> C["error-backlog"]
+  B -- erro recorrente --> D["regression-logs"]
+  B -- licao preventiva --> E["lessons"]
+  B -- instrucao ruim --> F["bad-instructions"]
+  C --> G["Planejamento futuro"]
+  D --> G
+  E --> G
+  F --> G
+  G --> H["Execucao melhor"]
+  H --> A

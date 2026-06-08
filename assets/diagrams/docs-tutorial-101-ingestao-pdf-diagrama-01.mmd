@@ -1,0 +1,14 @@
+flowchart TD
+  A["PDF bruto chega ao processor"] --> B["Bootstrap do runtime PDF"]
+  B --> C["ValidatePdfBytesStage"]
+  C --> D["ApplyDocumentOcrStage"]
+  D --> E["ParseViaEngineStage"]
+  E --> F["ApplyEngineResultStage"]
+  F --> G["Pipeline textual"]
+  G --> H["Decisao de OCR basico complementar"]
+  H --> I{"Documento pede multimodal?"}
+  I -->|"Nao"| J["PdfChunkingService"]
+  I -->|"Sim"| K["PdfMultimodalApplicationService"]
+  K --> L["Chunks multimodais ou fallback textual"]
+  J --> M["Persistencia e telemetria"]
+  L --> M["Persistencia e telemetria"]

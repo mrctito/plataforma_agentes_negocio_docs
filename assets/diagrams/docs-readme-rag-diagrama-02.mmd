@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant U as Usuario
+    participant O as Orquestrador
+    participant A as Analyzer
+    participant D as Domain Processing
+    participant R as Retrieval Engine
+    participant F as FTS e Fusion
+    participant C as ACL
+    participant G as Generation Engine
+
+    U->>O: Pergunta
+    O->>A: Analisa a query
+    A-->>O: QueryFeatures
+    O->>D: Enriquecimento de dominio
+    D-->>O: QueryFeatures enriquecidas
+    O->>R: Escolhe e executa retrieval
+    R-->>O: Documentos primarios
+    O->>F: Aplica FTS e fusion quando necessario
+    F-->>O: Ranking consolidado
+    O->>C: Filtra por ACL
+    C-->>O: Documentos autorizados
+    O->>G: Gera resposta final
+    G-->>O: Resposta e metricas
+    O-->>U: Resultado final

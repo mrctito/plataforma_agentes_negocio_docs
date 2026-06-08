@@ -1,0 +1,25 @@
+flowchart TD
+    A["src/api/routers/rag_operations_router.py"]
+    B["src/api/routers/rag_runtime_operations_compat.py"]
+    C["src/services/question_service.py"]
+    D["src/qa_layer/content_qa_system.py"]
+    E["src/orchestrators/qa_runtime_assembly.py"]
+    F["src/qa_layer/qa_question_processor.py"]
+    G["src/qa_layer/rag_engine"]
+    H["src/qa_layer/pipeline_cache_manager.py"]
+    I["src/utils/yaml_schema_normalizer.py"]
+    J["app/yaml/rag-config-linx-food.yaml"]
+    K["tests/unit + tests/smoke"]
+
+    A --> B
+    B --> C
+    C --> H
+    C --> D
+    D --> E
+    D --> F
+    F --> G
+    B --> I
+    I --> J
+    C --> K
+    D --> K
+    G --> K

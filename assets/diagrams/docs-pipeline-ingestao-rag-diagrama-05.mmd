@@ -1,0 +1,37 @@
+flowchart TB
+  subgraph "INPUT"
+    Docs["Documentos Recuperados"] --> Extract["Extrair Texto"]
+    Query["Query"] --> Extract
+  end
+
+  subgraph "NEURAL RERANKING"
+    Extract --> Pairs["Criar Pares query-doc"]
+    Pairs --> Model["Cross-Encoder Model"]
+    Model -->|"sentence-transformers"| NeuralScore["Neural Scores 0-1"]
+  end
+
+  subgraph "FEEDBACK INTEGRATION"
+    Docs --> Metadata["Extrair Metadata"]
+    Metadata --> FeedbackField{"feedback_score existe?"}
+
+    FeedbackField -->|"Sim"| FeedbackScore["Feedback Score"]
+    FeedbackField -->|"Nao"| DefaultFB["Default: 0.0"]
+
+    FeedbackScore --> Combine
+    DefaultFB --> Combine
+  end
+
+  subgraph "SCORE COMBINATION"
+    NeuralScore --> Combine["Combinar Scores"]
+    Combine -->|"weighted avg"| Formula["final = (1-w)*neural + w*feedback"]
+    Formula --> FinalScore["Final Score"]
+  end
+
+  subgraph "FILTERING"
+    FinalScore --> Threshold{"Score >= threshold?"}
+    Threshold -->|"Sim"| Keep["Manter Documento"]
+    Threshold -->|"Nao"| Discard["Descartar"]
+
+    Keep --> TopK["Selecionar Top-K"]
+    TopK --> Ranked["Documentos Ranqueados"]
+  end

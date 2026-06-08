@@ -1,0 +1,10 @@
+flowchart TD
+  A["Entry point por tipo: imagem, PDF, DOCX, PPT, web ou Confluence"] --> B["Resolvedor valida contrato YAML e mescla config compartilhada e por origem"]
+  B --> C["MultimodalComponentFactory cria extractor, OCR, descritor e embedding provider"]
+  C --> D["MultimodalContentProcessor inicia o run e prepara status"]
+  D --> E["Extração de imagens"]
+  E --> F["Filtro por tamanho, deduplicação e seleção por prioridade"]
+  F --> G["Para cada imagem: contexto, descrição, OCR, tags e embedding visual"]
+  G --> H["Texto base é enriquecido com evidências visuais"]
+  H --> I["Chunks base recebem imagens, metadata visual e embedding agregado"]
+  I --> J["Status, stage reports e artefatos seguem para a esteira comum"]

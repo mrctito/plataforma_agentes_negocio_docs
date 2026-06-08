@@ -1,0 +1,13 @@
+flowchart TD
+    A["Boundary produtor<br/>HTTP ou orquestrador"] --> B["Envelope canônico<br/>JobEnvelope e QueuedJobEnvelope"]
+    B --> C["Porta abstrata de fila"]
+    C --> D["Adapter RabbitMQ + Dramatiq"]
+    D --> E["Fila física por papel<br/>pai, filho, ETL, background"]
+    E --> F["Runtime do worker"]
+    F --> G["Bridge transporte -> Job Core"]
+    G --> H["JobCoreExecutor + JobHandlerRegistry"]
+    H --> I["Executor de payload do worker"]
+    I --> J["Comando tipado + handler de domínio"]
+    H --> K["Ledger durável de run e eventos"]
+    J --> L["Resultado terminal"]
+    L --> H

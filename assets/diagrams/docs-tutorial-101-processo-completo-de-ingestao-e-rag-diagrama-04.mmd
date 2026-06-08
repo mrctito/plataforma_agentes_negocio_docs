@@ -1,0 +1,17 @@
+flowchart LR
+    A["src/api/routers/rag_router.py"]
+    B["src/api/services/rag_ingestion_application_service.py"]
+    C["src/services/ingestion_service.py"]
+    D["src/ingestion_layer/main_orchestrator.py"]
+    E["src/ingestion_layer/content_type_dispatcher.py"]
+    F["src/qa_layer/content_qa_system.py"]
+    G["src/qa_layer/qa_question_processor.py"]
+    H["src/orchestrators/qa_runtime_assembly.py"]
+    I["src/qa_layer/rag_engine/intelligent_orchestrator.py"]
+    J["src/qa_layer/rag_engine/retrieval_engine.py"]
+    K["src/qa_layer/rag_engine/generation_engine.py"]
+    L["src/qa_layer/pipeline_cache_manager.py"]
+
+    A --> B --> C --> D --> E
+    A --> F --> G --> H --> I --> J --> K
+    F --> L

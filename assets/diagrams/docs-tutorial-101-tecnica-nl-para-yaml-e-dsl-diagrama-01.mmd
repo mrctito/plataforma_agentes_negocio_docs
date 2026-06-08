@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    actor U as Usuario
+    participant UI as Tela ou API
+    participant ORQ as Orquestrador NL
+    participant CLS as Classificador
+    participant CTX as Resolvedor de Contexto
+    participant CAT as Catalogo de Capacidades
+    participant GEN as Gerador Estruturado
+    participant VEST as Validador Estrutural
+    participant VSEM as Validador Semantico
+    participant REV as Revisor Humano
+    participant PUB as Publicador
+
+    U->>UI: Descreve objetivo em linguagem natural
+    UI->>ORQ: Envia prompt e contexto inicial
+    ORQ->>CLS: Classificar target e ambiguidade
+    CLS-->>ORQ: Target provavel e confianca
+    ORQ->>CTX: Carregar documento base e configuracoes do ambiente
+    CTX-->>ORQ: Contexto resolvido
+    ORQ->>CAT: Obter capacidades permitidas
+    CAT-->>ORQ: Catalogo filtrado
+    ORQ->>GEN: Gerar rascunho estruturado
+    GEN-->>ORQ: AST ou IR preliminar
+    ORQ->>VEST: Validar estrutura
+    VEST-->>ORQ: Erros estruturais ou OK
+    ORQ->>VSEM: Validar semantica de negocio
+    VSEM-->>ORQ: Perguntas, diagnosticos ou OK
+    alt Faltou contexto ou houve ambiguidade
+        ORQ-->>UI: Perguntas de clarificacao
+        UI-->>U: Solicita complemento
+        U->>UI: Responde perguntas
+        UI->>ORQ: Reenvia respostas
+        ORQ->>GEN: Regerar rascunho com contexto completo
+        GEN-->>ORQ: Rascunho revisado
+        ORQ->>VEST: Revalidar estrutura
+        ORQ->>VSEM: Revalidar semantica
+    end
+    ORQ-->>REV: Preview, diff e diagnosticos
+    REV-->>ORQ: Aprovacao para publicar
+    ORQ->>PUB: Publicar artefato final
+    PUB-->>UI: YAML ou DSL publicado
+    UI-->>U: Resultado final

@@ -1,0 +1,10 @@
+flowchart TD
+    A["Problema de varejo"] --> B{"Tipo de necessidade"}
+    B -->|"Canal externo"| C["Tool concreta de provider"]
+    B -->|"Operação de ecommerce"| D["Toolkit Shopify, WooCommerce ou VTEX"]
+    B -->|"Food delivery"| E["Toolkit de pedidos, eventos ou cardápio"]
+    B -->|"Analytics interna"| F["dyn_sql ou UCP discovery"]
+    C --> G["Resposta normalizada ao agente"]
+    D --> G
+    E --> G
+    F --> G

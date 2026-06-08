@@ -1,0 +1,13 @@
+flowchart TD
+    A["YAML com workflows"] --> B["WorkflowParser"]
+    B --> C["WorkflowCompiler"]
+    C --> D["WorkflowSemanticValidator"]
+    D --> E["WorkflowConfigResolver"]
+    E --> F["Workflowagent"]
+    F --> G["WorkflowIntegrityAnalyzer"]
+    G --> H["StateGraph"]
+    H --> I["WorkflowOrchestrator"]
+    I --> J["/workflow/execute"]
+    H --> K["interrupt"]
+    K --> L["/workflow/continue"]
+    I --> M["Background execution runtime"]

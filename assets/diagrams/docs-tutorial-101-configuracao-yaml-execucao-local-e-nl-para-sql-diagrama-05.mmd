@@ -1,0 +1,30 @@
+flowchart LR
+    subgraph L1["Cliente"]
+        U1["Escolhe YAML e pergunta"]
+    end
+
+    subgraph L2["HTTP"]
+        H1["service_api recebe request"]
+        H2["router resolve origem do YAML"]
+    end
+
+    subgraph L3["Contrato"]
+        C1["ConfigurationFactory carrega"]
+        C2["tools_library e user_session validados"]
+        C3["selected_supervisor ou selected_workflow definido"]
+    end
+
+    subgraph L4["Execucao Agentic"]
+        E1["ToolLoader interpreta tool_id"]
+        E2{"dyn_sql ou schema_rag_sql"}
+    end
+
+    subgraph L5["Infra"]
+        I1["SQL parametrizado no banco"]
+        I2["Schema metadata no vector store"]
+        I3["LLM gera SQL"]
+    end
+
+    U1 --> H1 --> H2 --> C1 --> C2 --> C3 --> E1 --> E2
+    E2 --> I1
+    E2 --> I2 --> I3

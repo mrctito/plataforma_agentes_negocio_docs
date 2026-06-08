@@ -1,0 +1,21 @@
+sequenceDiagram
+  participant U as Usuario
+  participant API as agent_router.execute_agent
+  participant CFG as config_resolution
+  participant AUTH as user_auth
+  participant ORCH as AgentOrchestrator
+  participant SUP as AgentSupervisor
+  participant TF as ToolsFactory
+
+  U->>API: POST /agent/execute
+  API->>CFG: resolve_yaml_configuration(encrypted_data)
+  CFG-->>API: yaml_config
+  API->>AUTH: authenticate_with_yaml_config(...)
+  AUTH-->>API: user_code
+  API->>ORCH: execute(task,max_iterations)
+  ORCH->>SUP: initialize()
+  SUP->>TF: resolve tools dos agentes
+  TF-->>SUP: tools resolvidas
+  SUP-->>ORCH: result
+  ORCH-->>API: AgentResponse
+  API-->>U: 200 ou 202

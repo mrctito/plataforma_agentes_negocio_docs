@@ -1,0 +1,15 @@
+flowchart TD
+    A["Operador chama POST de ETL"] --> B["API resolve YAML e autentica"]
+    B --> C["Runtime gera correlation_id, task_id e modo de execução"]
+    C --> D["Job canônico é enfileirado"]
+    D --> E["Worker consome comando ETL"]
+    E --> F["Service valida extract_transform_load"]
+    F --> G["Orquestrador descobre pipelines habilitados"]
+    G --> H{"Mais de um pipeline real?"}
+    H -- Sim --> I["Fan-out por pipeline filho"]
+    H -- Não --> J["Execução sequencial no job atual"]
+    I --> K["Pipeline Apify ou Schema Metadata"]
+    J --> K
+    K --> L["Transformação e persistência"]
+    L --> M["Consolidação de resultados, warnings e erros"]
+    M --> N["Polling, streaming e status final"]

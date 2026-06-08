@@ -1,0 +1,19 @@
+flowchart TD
+    A["POST /agent/execute"] --> B["resolve_yaml_configuration"]
+    B --> C["ConfigurationFactory._finalize_config"]
+    C --> D["Injeta catalogo builtin persistido se tools_library vazio"]
+    D --> E["AgentOrchestrator.execute"]
+    E --> F["AgentSupervisor.initialize/run"]
+    F --> G["ToolsFactory.resolve_agent_tools"]
+    G --> H{"tool_id parametrizada?"}
+    H -- dyn_sql<query_id> --> I["ToolLoader.parse_parameterized_tool"]
+    I --> J["ToolInstantiationEngine._instantiate_parameterized_tool"]
+    J --> K["create_dynamic_sql_tool"]
+    K --> L["DynamicSqlToolFactory.build_tool"]
+    L --> M["SQLDatabase.run_no_throw"]
+    M --> N["Resultado JSON para agente"]
+    H -- schema_rag_sql_* manual --> O["create_sql_schema_rag_tool"]
+    O --> P["VectorStoreFactory + create_llm_from_yaml"]
+    P --> Q["SQL gerado pelo LLM"]
+    Q --> R["Guardrail SQL somente leitura"]
+    R --> N

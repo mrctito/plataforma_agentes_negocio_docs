@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant U as Usuario ou API
+    participant QS as QuestionService
+    participant CQA as ContentQASystem
+    participant QP as QAQuestionProcessor
+    participant IO as IntelligentRAGOrchestrator
+    participant RE as RetrievalEngine
+    participant GE as GenerationEngine
+
+    U->>QS: pergunta + filtros + imagem opcional
+    QS->>CQA: ask_question
+    CQA->>QP: ask_question
+    QP->>IO: intelligent_retrieve
+    IO->>IO: query rewrite
+    IO->>IO: query analysis + routing
+    IO->>RE: executar estrategia
+    RE->>RE: cache, FTS, fusao, rerank, especializacoes
+    RE-->>IO: documentos
+    IO->>IO: ACL + normalize_documents
+    IO->>GE: generate_intelligent_answer
+    GE-->>IO: resposta + tempo de LLM
+    IO-->>QP: payload final
+    QP-->>CQA: resultado com diagnosticos
+    CQA-->>QS: resposta estruturada

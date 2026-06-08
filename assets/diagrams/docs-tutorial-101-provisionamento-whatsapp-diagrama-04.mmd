@@ -1,0 +1,17 @@
+flowchart TB
+    C1["service_api"]
+    C2["whatsapp_provision_router"]
+    C3["permissions PROVISION_WHATSAPP"]
+    C4["ClientDirectory"]
+    C5["MultiTenantWhatsAppManager"]
+    C6["WhatsAppProvisionerAsync"]
+    C7["channel_router webhook ingest"]
+    C8["testes unitarios whatsapp"]
+
+    C1 --> C2
+    C2 --> C3
+    C2 --> C4
+    C2 --> C5
+    C5 --> C6
+    C2 --> C7
+    C2 --> C8

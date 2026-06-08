@@ -1,0 +1,13 @@
+flowchart TD
+    A["Boundary produtor"] --> B["JobEnvelope e QueuedJobEnvelope"]
+    B --> C["AsyncJobQueuePort"]
+    C --> D["DramatiqRabbitMqJobQueue"]
+    D --> E["RabbitMQ com filas v2 por papel"]
+    E --> F["Actors Dramatiq"]
+    F --> G["Bridge transporte -> Job Core"]
+    G --> H["JobCoreExecutor"]
+    H --> I["JobHandlerRegistry"]
+    H --> J["PostgresJobRunStore"]
+    G --> K["AsyncJobPayloadExecutor"]
+    K --> L["AsyncJobCommandFactory + dispatcher"]
+    L --> M["Handlers de domínio"]

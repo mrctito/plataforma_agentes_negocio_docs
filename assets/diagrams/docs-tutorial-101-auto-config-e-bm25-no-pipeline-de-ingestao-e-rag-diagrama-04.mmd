@@ -1,0 +1,24 @@
+flowchart TD
+    P1["DomainSignalProcessor"]
+    P2["DbPayloadBuilder"]
+    P3["DocumentPersistenceManagerMixin"]
+    P4["DomainAutoConfigAggregator"]
+    P5["DomainConfigRepository"]
+    P6["BM25IndexManager"]
+    P7["DomainConfigurationService"]
+    P8["QueryAnalyzer"]
+    P9["AdaptiveRouter"]
+    P10["RetrievalEngine"]
+    P11["IntelligentOrchestrator"]
+
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
+    P4 --> P5
+    P6 --> P10
+    P7 --> P11
+    P7 --> P8
+    P7 --> P9
+    P10 --> P11
+    P11 --> P8
+    P11 --> P9

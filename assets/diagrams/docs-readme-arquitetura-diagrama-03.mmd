@@ -1,0 +1,43 @@
+flowchart LR
+    subgraph Cliente
+        C1["Cliente ou UI"]
+    end
+
+    subgraph API
+        A1["Boundary HTTP"]
+        A2["Resolução de YAML"]
+        A3["Services síncronos"]
+    end
+
+    subgraph Worker
+        W1["WorkerProcessRuntime"]
+        W2["Ingestão"]
+        W3["ETL"]
+    end
+
+    subgraph RuntimeQA
+        R1["ContentQASystem"]
+        R2["QARuntimeAssembly"]
+        R3["Retrieval e Generation"]
+    end
+
+    subgraph Infra
+        I1["RabbitMQ"]
+        I2["Redis"]
+        I3["PostgreSQL"]
+        I4["Vector Store"]
+        I5["Logs"]
+    end
+
+    C1 --> A1 --> A2
+    A2 --> A3
+    A3 --> I1 --> W1 --> W2
+    A3 --> I1 --> W1 --> W3
+    A3 --> R1 --> R2 --> R3
+    W2 --> I2
+    W2 --> I3
+    W2 --> I4
+    W3 --> I2
+    W3 --> I3
+    R3 --> I4
+    R3 --> I5
