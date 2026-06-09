@@ -1071,18 +1071,33 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 
 ### local_tool_catalog do MCP agentic
 
-- Descricao: helper compartilhado para coletar ids MCP declarados no YAML e gerar entradas sintéticas canônicas de catálogo, evitando que assembly, resolvers de runtime e slice MCP reinventem a mesma regra em paralelo.
-- Tags: mcp, catalogo-efetivo, agentic
+- Descricao: helper compartilhado para coletar (apenas LER e deduplicar) os ids MCP declarados em `local_mcp_configuration.tools`. NÃO gera mais entradas sintéticas de catálogo — desde o corte sintético (Fase B/T10), o catálogo MCP é descoberto e persistido no registro builtin (ver `mcp_catalog_builder`), não fabricado em runtime.
+- Tags: mcp, agentic
 - Tipo: helper
 - Arquivo: [src/agentic_layer/mcp/local_tool_catalog.py](../src/agentic_layer/mcp/local_tool_catalog.py)
 - Linguagem: Python
-- Responsabilidade principal: centralizar a leitura de local_mcp_configuration.tools, deduplicar ids MCP declarados e produzir entradas sintéticas compatíveis com tools_library e com o catálogo efetivo do assembly.
+- Responsabilidade principal: expor `collect_declared_mcp_tool_ids` — centralizar a leitura/deduplicação dos ids MCP declarados no YAML, para o proxy/config (`mcp_config_resolver`) e o `workflow_semantic_validator`. Os fabricadores `build_declared_mcp_tool_entry`/`append_declared_mcp_tool_entries` foram REMOVIDOS.
 - Dependencias principais: tipagem Python e contratos leves de dicionário; não depende do client MCP nem do ToolsFactory.
-- Acoplamento forte com dominio?: Medio. E transversal ao slice agentic/MCP, mas continua isolado do transporte e do carregamento real das tools.
-- Uso atual observado: Sim. Consumido por [src/config/agentic_assembly/tool_resolver.py](../src/config/agentic_assembly/tool_resolver.py), [src/agentic_layer/workflow/config_resolver.py](../src/agentic_layer/workflow/config_resolver.py), [src/agentic_layer/supervisor/config_resolver.py](../src/agentic_layer/supervisor/config_resolver.py), [src/config/agentic_assembly/validators/workflow_semantic_validator.py](../src/config/agentic_assembly/validators/workflow_semantic_validator.py) e [src/agentic_layer/mcp/mcp_config_resolver.py](../src/agentic_layer/mcp/mcp_config_resolver.py).
-- Seguro reutilizar como esta?: Sim, sempre que a necessidade for refletir local_mcp_configuration.tools no catálogo efetivo ou no tools_library sem abrir uma implementação local paralela.
-- Riscos ou limitacoes: ele só representa declaração e catálogo sintético; não resolve conexão, não carrega tools reais e não substitui o filtro posterior do MCPToolsResolver.
-- Sugestao de melhoria: manter os testes estruturais cobrindo assembly, validator e runtime juntos para impedir drift entre catálogo sintético e seleção real de tools MCP.
+- Acoplamento forte com dominio?: Baixo. E transversal ao slice agentic/MCP, isolado do transporte e do carregamento real das tools.
+- Uso atual observado: Sim, em 2 pontos legítimos (só leitura de ids): [src/agentic_layer/mcp/mcp_config_resolver.py](../src/agentic_layer/mcp/mcp_config_resolver.py) e [src/config/agentic_assembly/validators/workflow_semantic_validator.py](../src/config/agentic_assembly/validators/workflow_semantic_validator.py). Os 3 resolvers de runtime (tool_resolver, supervisor/config_resolver, workflow/config_resolver) NÃO o usam mais para fabricar catálogo (T10).
+- Seguro reutilizar como esta?: Sim, apenas para LER ids MCP declarados. Para a tool MCP de fato existir e resolver, ela precisa estar no catálogo builtin persistido (rodar o `mcp_catalog_builder`).
+- Riscos ou limitacoes: representa só a declaração de ids; não resolve conexão, não carrega tools reais e não injeta no catálogo. Declarar id no YAML sem ter persistido o catálogo NÃO faz a tool resolver (simetria com tools nativas).
+- Prioridade: Media
+
+### mcp_catalog_builder (descoberta e persistência do catálogo MCP)
+
+- Descricao: componente que faz o catálogo MCP ser DESCOBERTO dos servidores MCP externos configurados e PERSISTIDO no MESMO registro builtin das tools nativas (`integrations.builtin_tool_registry`, `tool_type='mcp'`), com governança por tenant (status active/disabled) e injeção pelo MESMO boundary/fail-closed do `tools_library`. Simetria total com o builder nativo (`tools_library_builder`), sem caminho paralelo.
+- Tags: mcp, catalogo-persistido, agentic, builder
+- Tipo: serviço/builder
+- Arquivo: [src/agentic_layer/mcp/mcp_catalog_builder.py](../src/agentic_layer/mcp/mcp_catalog_builder.py)
+- Linguagem: Python
+- Responsabilidade principal: contatar os servidores configurados (via `MCPConfigResolver.resolve_global` + `MultiServerMCPClient.get_tools(server_name=...)`), descobrir as tools e sincronizá-las no registro builtin via `BuiltinToolCatalogSynchronizer` (reconciliação escopada que não apaga nativas).
+- Gatilho: COMANDO EXPLÍCITO — `python -m src.agentic_layer.mcp.mcp_catalog_builder --yaml <path> [--user-email ...]`. Espelha o builder nativo (roda por comando); NÃO descobre no startup nem por TTL.
+- Servidor offline: descoberta servidor a servidor; servidor indisponível emite `mcp.catalog.server.unavailable` (`logger.exception`), PRESERVA o catálogo persistido daquele servidor e segue com os demais — não aborta a rodada, não apaga o catálogo.
+- Acoplamento forte com dominio?: Medio. Estende o mecanismo de catálogo builtin; depende do client MCP só na descoberta.
+- Uso atual observado: Sim. Único produtor de entradas de catálogo MCP após o corte do sintético (T10). Protegido por [tests/unit/test_02-06-37_mcp_catalog_builder.py](../tests/unit/test_02-06-37_mcp_catalog_builder.py).
+- Seguro reutilizar como esta?: Sim — é o caminho oficial e único para popular/governar tools MCP no catálogo.
+- Riscos ou limitacoes: depende dos servidores externos estarem no ar no momento da descoberta; o que não for descoberto não entra no catálogo (e logo não resolve em runtime), por desenho.
 - Prioridade: Alta
 
 ### tool_logging_support

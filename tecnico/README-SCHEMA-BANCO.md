@@ -20,6 +20,31 @@ Ao final, ele tambem documenta o schema implementado da solucao de integracoes, 
 - tenants e segurança,
 - memória de usuário.
 
+### Estado do modelo de ingestão vetorial `vector_*` (comprovado em runtime — 2026-06-09)
+
+Existe um **modelo novo de ingestão vetorial** (família `vector_*`: `vector_dataset_master`,
+`vector_ingestion_runs`, `vector_ingestion_run_documents`, `vector_active_documents` e tabelas
+filhas de chunks/páginas). Após a migração `migracao-modelo-vetorial-ingestao`, o estado
+**comprovado na fonte de verdade real** (PostgreSQL) é:
+
+- **Escrita ligada e provada:** o caminho assíncrono de ingestão de PDF (com fan-out por
+  documento) GRAVA no modelo novo — abre o run de negócio, registra os documentos vistos no
+  lote (com `publication_action`) e publica o acervo vivo. Provado para o dataset de TESTE
+  `dnit_teste` (tenant `engenharia_dnit`): `vector_ingestion_runs`=1,
+  `vector_ingestion_run_documents`=11, `vector_active_documents`=5.
+- **Leitura da tela e guard do RAG no modelo novo:** a leitura operacional da tela de ingestão
+  (histórico de runs, documentos do lote, acervo vivo, resumo) e o guard de documento vivo do
+  RAG (`ActiveDocumentVersionGuard`) consomem o modelo novo via `VectorActiveArchiveRepository`.
+  A leitura legada de `ingestion_*` no caminho da tela foi cortada (sem fallback).
+- **Corte PARCIAL por dado, não por código:** o modelo novo está POPULADO apenas para o dataset
+  de teste. PRODUÇÃO (`dnit_producao`) ainda **não** foi reconstruída (rebuild), então seu
+  acervo novo está vazio (`vector_active_documents`=0, ponteiros do master nulos). Por isso o
+  guard do RAG é ESTRITO só onde o acervo novo está populado e TOLERANTE onde está vazio,
+  evitando RAG vazio em silêncio na produção.
+- **Tabelas antigas `ingestion_*`:** continuam existindo e são usadas pelo control plane do Job
+  Core, streaming/status ao vivo, worker e manutenção (reconciliação). Elas **não** são mais a
+  fonte de verdade do histórico/acervo de NEGÓCIO no caminho da tela.
+
 ## Que problema este manual resolve
 
 Schema de banco não é detalhe de infraestrutura. Neste projeto, ele é
@@ -779,6 +804,398 @@ Como ler na prática:
 - Check `ingestion_domain_processors_priority_check` garantindo `priority >= 0`.
 - FK `tenant_id` para `tenants.tenant_id` com `ON DELETE SET NULL` e `ON UPDATE CASCADE`.
 
+## Modelo de Ingestão Vetorial `vector_*` (modelo ATIVO — DDL real e de-para)
+
+> **Aviso de status (leia antes de usar esta seção).** Esta seção descreve o **modelo ativo**
+> de ingestão vetorial (família `vector_*`). O resumo do estado comprovado em runtime está em
+> "Estado do modelo de ingestão vetorial `vector_*`", no topo deste manual. Aqui ficam o **DDL
+> real** das tabelas e o **de-para** a partir do modelo antigo `ingestion_*`.
+>
+> - **O corte foi EXECUTADO** (migração `migracao-modelo-vetorial-ingestao`): a escrita da
+>   ingestão de PDF (caminho assíncrono com fan-out) grava no modelo novo, e a leitura da tela e
+>   o guard do RAG consomem o modelo novo via `VectorActiveArchiveRepository`. A leitura legada
+>   de `ingestion_*` no caminho da tela foi cortada (sem fallback).
+> - **Populado por dado, não por código:** o acervo novo está populado para o dataset de TESTE
+>   (`dnit_teste`). PRODUÇÃO (`dnit_producao`) ainda **não** foi reconstruída (rebuild pendente),
+>   então seu acervo novo está vazio até a re-ingestão. O guard do RAG é estrito onde o acervo
+>   está populado e tolerante onde está vazio.
+> - **Tabelas antigas `ingestion_*`:** continuam existindo e servindo ao control plane do Job
+>   Core, streaming/status ao vivo, worker e manutenção; deixaram de ser a fonte de verdade do
+>   histórico/acervo de NEGÓCIO no caminho da tela.
+> - O DDL abaixo é o **DDL real, extraído do banco** via `information_schema` e `pg_constraint`
+>   (reconstruído a partir dos metadados físicos). Não há índice extra além dos que dão suporte às
+>   constraints (7 PRIMARY KEY + 5 UNIQUE).
+> - Fonte original do de-para (documento interno do corte):
+>   `docs/.interno/README-TECNICO-DE-PARA-MODELO-DADOS-INGESTAO-VETORIAL.md`. Se este resumo
+>   divergir do código executável, vale primeiro o código.
+
+### Por que existe um modelo novo
+
+O modelo atual de ingestão mistura quatro ideias diferentes no mesmo eixo: acervo vivo
+publicado, histórico de runs, documento lógico deduplicado e detalhe de conteúdo persistido.
+Na prática isso confunde a operação humana — um run pode mostrar 100 documentos processados
+enquanto o acervo vivo tem só 5, e isso só faz sentido para o runtime por causa do colapso
+por identidade lógica escondida.
+
+O modelo novo parte de uma regra simples e legível:
+
+1. existe um cadastro **master** do acervo ligado ao banco vetorial;
+2. existem **runs** de ingestão desse acervo (histórico, não acervo vivo);
+3. existem **documentos observados** em cada run;
+4. existe uma **projeção explícita** dos documentos atualmente publicados no acervo;
+5. o detalhe físico (páginas, chunks, imagens) do documento ativo fica ligado ao documento
+   publicado, e não a um manifesto híbrido difícil de explicar.
+
+### Tabelas do modelo novo
+
+Quatro tabelas centrais e três tabelas de detalhe de conteúdo ativo:
+
+- `vector_dataset_master`: ficha master do acervo. Responde qual é o acervo, de qual tenant,
+  qual o alvo vetorial, qual o alvo BM25 e qual foi o último run que alterou o acervo publicado.
+- `vector_ingestion_runs`: histórico de execuções de ingestão do acervo (o "boletim" de cada lote).
+- `vector_ingestion_run_documents`: lista de documentos observados dentro de cada run (tudo o
+  que o lote viu, processou, pulou, falhou ou substituiu).
+- `vector_active_documents`: projeção explícita do que está vivo agora no acervo,
+  independentemente de qual run publicou cada documento.
+- `vector_active_document_pages`, `vector_active_document_chunks`,
+  `vector_active_document_images`: conteúdo físico persistido do documento ativo, agora ligado
+  ao documento publicado. Em `vector_active_document_chunks`, o `vector_point_id` carrega, quando
+  existir, o identificador físico do ponto no banco vetorial.
+
+### DDL real (extraído do banco)
+
+> DDL reconstruído a partir dos metadados físicos do PostgreSQL (`information_schema.columns`,
+> `pg_constraint`, `pg_indexes`). Reflete o estado atual das tabelas no banco. Ordem das tabelas
+> ajustada para respeitar dependências de FK ao recriar do zero (master e runs antes das tabelas
+> que as referenciam).
+
+```sql
+CREATE TABLE vector_dataset_master (
+    dataset_id UUID NOT NULL,
+    tenant_code TEXT NOT NULL,
+    vectorstore_id TEXT NOT NULL,
+    vector_provider TEXT NOT NULL,
+    vector_target TEXT NOT NULL,
+    bm25_provider TEXT,
+    bm25_target TEXT,
+    status TEXT NOT NULL,
+    last_published_run_id UUID,
+    last_completed_run_id UUID,
+    last_sync_at TIMESTAMPTZ,
+    if_exists_policy TEXT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT vector_dataset_master_pkey PRIMARY KEY (dataset_id),
+    CONSTRAINT ux_vector_dataset_master_tenant_vector UNIQUE (tenant_code, vectorstore_id)
+);
+
+CREATE TABLE vector_ingestion_runs (
+    run_id UUID NOT NULL,
+    dataset_id UUID NOT NULL,
+    tenant_code TEXT NOT NULL,
+    vectorstore_id TEXT NOT NULL,
+    source_system TEXT,
+    trigger_mode TEXT,
+    if_exists_policy TEXT NOT NULL,
+    status TEXT NOT NULL,
+    correlation_id TEXT,
+    task_id TEXT,
+    queued_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    total_documents INTEGER NOT NULL DEFAULT 0,
+    processed_documents INTEGER NOT NULL DEFAULT 0,
+    skipped_documents INTEGER NOT NULL DEFAULT 0,
+    failed_documents INTEGER NOT NULL DEFAULT 0,
+    total_chunks INTEGER NOT NULL DEFAULT 0,
+    error_summary TEXT,
+    status_message TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT vector_ingestion_runs_pkey PRIMARY KEY (run_id),
+    CONSTRAINT vector_ingestion_runs_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES vector_dataset_master(dataset_id) ON DELETE CASCADE
+);
+
+CREATE TABLE vector_ingestion_run_documents (
+    run_document_id UUID NOT NULL,
+    run_id UUID NOT NULL,
+    dataset_id UUID NOT NULL,
+    tenant_code TEXT NOT NULL,
+    vectorstore_id TEXT NOT NULL,
+    source_system TEXT,
+    source_uri TEXT,
+    external_document_id TEXT,
+    document_path TEXT,
+    document_name TEXT,
+    document_type TEXT,
+    mime_type TEXT,
+    file_size_bytes BIGINT,
+    file_last_modified TIMESTAMPTZ,
+    content_fingerprint TEXT,
+    document_hash TEXT,
+    total_pages INTEGER,
+    chunk_count INTEGER,
+    processing_seconds DOUBLE PRECISION,
+    status TEXT NOT NULL,
+    publication_action TEXT NOT NULL,
+    error_message TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT vector_ingestion_run_documents_pkey PRIMARY KEY (run_document_id),
+    CONSTRAINT vector_ingestion_run_documents_run_id_fkey FOREIGN KEY (run_id) REFERENCES vector_ingestion_runs(run_id) ON DELETE CASCADE,
+    CONSTRAINT vector_ingestion_run_documents_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES vector_dataset_master(dataset_id) ON DELETE CASCADE
+);
+
+CREATE TABLE vector_active_documents (
+    active_document_id UUID NOT NULL,
+    dataset_id UUID NOT NULL,
+    tenant_code TEXT NOT NULL,
+    vectorstore_id TEXT NOT NULL,
+    source_system TEXT,
+    source_uri TEXT,
+    external_document_id TEXT,
+    canonical_document_key TEXT NOT NULL,
+    current_run_id UUID NOT NULL,
+    source_run_document_id UUID NOT NULL,
+    document_path TEXT,
+    document_name TEXT,
+    document_type TEXT,
+    mime_type TEXT,
+    file_size_bytes BIGINT,
+    file_last_modified TIMESTAMPTZ,
+    content_fingerprint TEXT,
+    document_hash TEXT,
+    total_pages INTEGER,
+    vector_document_key TEXT,
+    bm25_document_key TEXT,
+    status TEXT NOT NULL,
+    published_at TIMESTAMPTZ NOT NULL,
+    removed_at TIMESTAMPTZ,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT vector_active_documents_pkey PRIMARY KEY (active_document_id),
+    CONSTRAINT ux_vector_active_documents_dataset_key UNIQUE (dataset_id, canonical_document_key),
+    CONSTRAINT vector_active_documents_current_run_id_fkey FOREIGN KEY (current_run_id) REFERENCES vector_ingestion_runs(run_id) ON DELETE RESTRICT,
+    CONSTRAINT vector_active_documents_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES vector_dataset_master(dataset_id) ON DELETE CASCADE,
+    CONSTRAINT vector_active_documents_source_run_document_id_fkey FOREIGN KEY (source_run_document_id) REFERENCES vector_ingestion_run_documents(run_document_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE vector_active_document_pages (
+    active_page_id UUID NOT NULL,
+    active_document_id UUID NOT NULL,
+    dataset_id UUID NOT NULL,
+    page_number INTEGER NOT NULL,
+    page_label TEXT,
+    page_text TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT vector_active_document_pages_pkey PRIMARY KEY (active_page_id),
+    CONSTRAINT ux_vector_active_document_pages UNIQUE (active_document_id, page_number),
+    CONSTRAINT vector_active_document_pages_active_document_id_fkey FOREIGN KEY (active_document_id) REFERENCES vector_active_documents(active_document_id) ON DELETE CASCADE,
+    CONSTRAINT vector_active_document_pages_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES vector_dataset_master(dataset_id) ON DELETE CASCADE
+);
+
+CREATE TABLE vector_active_document_chunks (
+    active_chunk_id UUID NOT NULL,
+    active_document_id UUID NOT NULL,
+    dataset_id UUID NOT NULL,
+    page_number INTEGER,
+    chunk_index INTEGER NOT NULL,
+    chunk_text TEXT NOT NULL,
+    vector_point_id TEXT,
+    embedding_model TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT vector_active_document_chunks_pkey PRIMARY KEY (active_chunk_id),
+    CONSTRAINT ux_vector_active_document_chunks UNIQUE (active_document_id, chunk_index),
+    CONSTRAINT vector_active_document_chunks_active_document_id_fkey FOREIGN KEY (active_document_id) REFERENCES vector_active_documents(active_document_id) ON DELETE CASCADE,
+    CONSTRAINT vector_active_document_chunks_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES vector_dataset_master(dataset_id) ON DELETE CASCADE
+);
+
+CREATE TABLE vector_active_document_images (
+    active_image_id UUID NOT NULL,
+    active_document_id UUID NOT NULL,
+    dataset_id UUID NOT NULL,
+    page_number INTEGER,
+    image_index INTEGER NOT NULL,
+    storage_uri TEXT,
+    mime_type TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT vector_active_document_images_pkey PRIMARY KEY (active_image_id),
+    CONSTRAINT ux_vector_active_document_images UNIQUE (active_document_id, image_index),
+    CONSTRAINT vector_active_document_images_active_document_id_fkey FOREIGN KEY (active_document_id) REFERENCES vector_active_documents(active_document_id) ON DELETE CASCADE,
+    CONSTRAINT vector_active_document_images_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES vector_dataset_master(dataset_id) ON DELETE CASCADE
+);
+```
+
+### De-para de tabelas
+
+Tabelas atuais que viram tabelas novas:
+
+| Tabela atual (ativa hoje)     | Tabela nova (planejada)          | Regra de destino                                                                                  |
+| ----------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `ingestion_datasets`          | `vector_dataset_master`          | Vira a ficha master do acervo.                                                                    |
+| `ingestion_runs`              | `vector_ingestion_runs`          | Continua como histórico de run, mas passa a ser ligado explicitamente ao master.                  |
+| `ingestion_run_documents`     | `vector_ingestion_run_documents` | Continua como detalhe do lote, mas perde a ambiguidade com manifesto.                             |
+| `ingestion_document_manifest` | `vector_active_documents`        | Deixa de ser manifesto híbrido e vira lista explícita de documentos publicados.                   |
+| `ingestion_document_pages`    | `vector_active_document_pages`   | Passa a ligar ao documento ativo publicado.                                                       |
+| `ingestion_document_chunks`   | `vector_active_document_chunks`  | Passa a ligar ao documento ativo publicado.                                                       |
+| `ingestion_document_images`   | `vector_active_document_images`  | Passa a ligar ao documento ativo publicado.                                                       |
+
+Tabelas atuais cujo conteúdo deixa de ser contrato principal:
+
+| Tabela atual                            | Destino no novo modelo                                              | Motivo                                                                                                       |
+| --------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `ingestion_dataset_generations`         | morre como entidade principal                                      | o modelo novo usa `last_published_run_id` e publicação explícita, sem camada de geração separada.            |
+| `ingestion_document_versions`           | morre como entidade principal                                      | versionamento implícito passa a viver no próprio documento publicado e na relação com o item do run.        |
+| `ingestion_document_source_occurrences` | morre como entidade principal                                      | provenance de origem passa a ficar no documento do run e no documento ativo.                                 |
+| `ingestion_run_slot_leases`             | pode continuar só como infraestrutura de concorrência              | não é modelo de domínio do acervo, fica fora do contrato de leitura do produto.                             |
+| `bm25_indexes`                          | permanece como tabela técnica de materialização física            | continua útil para operação física do índice, mas não define o acervo publicado.                            |
+
+### De-para de campos (por tabela)
+
+`ingestion_datasets` -> `vector_dataset_master`:
+
+| Campo atual              | Campo novo                    | Regra                                                                                              |
+| ------------------------ | ----------------------------- | -------------------------------------------------------------------------------------------------- |
+| `dataset_id`             | `dataset_id`                  | mantém identidade do acervo.                                                                       |
+| `tenant_code`            | `tenant_code`                 | mantém semântica.                                                                                  |
+| `vectorstore_id`         | `vectorstore_id`              | mantém semântica.                                                                                  |
+| `physical_vector_target` | `vector_target`               | vira nome explícito do alvo vetorial.                                                              |
+| `physical_bm25_target`   | `bm25_target`                 | vira nome explícito do alvo BM25.                                                                  |
+| `status`                 | `status`                      | mantém semântica de estado do acervo.                                                              |
+| `if_exists_policy`       | `if_exists_policy`            | mantém semântica operacional.                                                                      |
+| `active_generation_id`   | `last_published_run_id`       | deixa de apontar para geração e passa a apontar para o último run que alterou o acervo publicado.  |
+| `updated_at`             | `last_sync_at` e `updated_at` | `last_sync_at` marca a última sincronização com mudança real; `updated_at` continua trilha da linha. |
+
+`ingestion_runs` -> `vector_ingestion_runs`: mantém praticamente todos os campos com a mesma
+semântica (`run_id`, `tenant_code`, `vectorstore_id`, `source_system`, `task_id`, `queued_at`,
+`started_at`, `finished_at`, contadores, `status`, `correlation_id`, `error_summary`,
+`status_message`, `metadata`). Mudança principal: o `dataset_id`, antes indireto, passa a ser
+**FK explícita obrigatória** para `vector_dataset_master`.
+
+`ingestion_run_documents` -> `vector_ingestion_run_documents`: mantém os campos descritivos do
+item do lote (`run_document_id`, `run_id`, `tenant_code`, `vectorstore_id`, `document_path`,
+`document_name`, `document_type`, `mime_type`, `file_size_bytes`, `document_hash`, `total_pages`,
+`chunk_count`, `processing_seconds`, `status`, `error_message`, `metadata`). Mudanças:
+
+| Campo atual                          | Campo novo               | Regra                                                                                                       |
+| ------------------------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `manifest_id`                        | morre como coluna direta | o vínculo com o documento ativo é resolvido por `source_run_document_id` em `vector_active_documents`.       |
+| `external_document_id` (em metadata) | `external_document_id`   | vira coluna explícita.                                                                                       |
+| `source_uri` (em metadata)           | `source_uri`             | vira coluna explícita.                                                                                       |
+| `source_system` (herdado do run)     | `source_system`          | vira coluna explícita por documento.                                                                         |
+| sem equivalente                      | `content_fingerprint`    | nasce para distinguir conteúdo físico de identidade de origem.                                               |
+| sem equivalente                      | `publication_action`     | nasce para registrar `published`, `updated`, `unchanged`, `removed`, `skipped` ou `failed`.                  |
+
+`ingestion_document_manifest` -> `vector_active_documents`:
+
+| Campo atual                  | Campo novo               | Regra                                                                              |
+| ---------------------------- | ------------------------ | ---------------------------------------------------------------------------------- |
+| `manifest_id`                | `active_document_id`     | deixa de ser manifesto híbrido e vira id do documento publicado.                   |
+| `document_identity_key`      | `canonical_document_key` | vira chave canônica explícita do documento publicado.                              |
+| `last_run_id`                | `current_run_id`         | passa a ser FK obrigatória para o run que publicou a versão atual.                 |
+| `pdf_binary_sha256`          | `content_fingerprint`    | generaliza o fingerprint para qualquer tipo de conteúdo.                           |
+| `ingestion_status`           | `status`                 | reflete estado do documento publicado, sem misturar run com manifesto.            |
+| `last_ingested_at`           | `published_at`           | passa a marcar a publicação atual no acervo.                                       |
+| `active_document_version_id` | morre                    | não existe mais camada separada de versão ativa.                                   |
+| sem equivalente              | `source_run_document_id` | nasce para apontar o item de lote que originou a publicação atual.                 |
+| sem equivalente              | `vector_document_key`    | nasce para identificar o documento no banco vetorial quando existir esse conceito. |
+| sem equivalente              | `bm25_document_key`      | nasce para identificar o documento no índice BM25 quando existir esse conceito.    |
+| sem equivalente              | `removed_at`             | nasce para deleção lógica ou retirada do acervo.                                   |
+
+(Os campos comuns de descrição — `tenant_code`, `vectorstore_id`, `source_system`,
+`document_path`, `document_name`, `document_type`, `mime_type`, `file_size_bytes`,
+`file_last_modified`, `external_document_id`, `document_hash`, `metadata` — mantêm a semântica.)
+
+Tabelas de conteúdo detalhado: `ingestion_document_pages/chunks/images` ->
+`vector_active_document_pages/chunks/images`, trocando o vínculo `manifest_id` por
+`active_document_id`; `vector_active_document_chunks` passa a aceitar `vector_point_id` explícito.
+
+### Campos que morrem e campos que nascem
+
+Morrem no novo contrato principal: `ingestion_datasets.active_generation_id`,
+`ingestion_document_manifest.active_document_version_id`, toda a tabela
+`ingestion_document_versions` (`document_version_id`, `status`, `activated_at`,
+`superseded_at`), `ingestion_document_source_occurrences.canonical_source_key` como eixo
+principal, e qualquer lógica que exija `manifest_id + document_version_id` para descobrir o que
+está ativo. Em resumo: a camada de geração, manifesto híbrido e versão ativa separada deixa de
+ser o centro do modelo.
+
+Nascem: em `vector_dataset_master` — `vector_provider`, `vector_target`, `bm25_provider`,
+`bm25_target`, `last_published_run_id`, `last_completed_run_id`, `last_sync_at`. Em
+`vector_ingestion_run_documents` — `source_uri`, `external_document_id`, `content_fingerprint`,
+`publication_action`. Em `vector_active_documents` — `canonical_document_key`, `current_run_id`,
+`source_run_document_id`, `content_fingerprint`, `vector_document_key`, `bm25_document_key`,
+`removed_at`.
+
+### Regras de gravação (quando o corte ocorrer)
+
+- `vector_dataset_master`: uma linha única por `tenant_code + vectorstore_id`, criada no
+  bootstrap do acervo. Atualizar `vector_target`/`bm25_target` quando o acervo físico mudar;
+  `last_published_run_id` só quando um run alterar de fato o acervo publicado;
+  `last_completed_run_id` quando o run terminar com sucesso (mesmo sem publicar nada novo);
+  `last_sync_at` só quando o estado publicado mudar de verdade.
+- `vector_ingestion_runs`: uma linha por execução pai, com `dataset_id` obrigatório; status
+  atualizado ao longo do run; contadores fechados no término. Nunca é leitura primária do
+  acervo vivo.
+- `vector_ingestion_run_documents`: uma linha por item observado. `status` conta o que aconteceu
+  no processamento; `publication_action` conta o efeito sobre o acervo ativo
+  (`published`/`updated`/`unchanged`/`removed`/`skipped`/`failed`). O vínculo com o documento
+  ativo não é gravado aqui — é resolvido por `source_run_document_id` em `vector_active_documents`.
+  `content_fingerprint` representa o conteúdo físico processado, não a identidade de origem.
+- `vector_active_documents`: uma linha ativa por `dataset_id + canonical_document_key`. Conteúdo
+  novo do mesmo documento atualiza a mesma linha e troca `current_run_id`,
+  `source_run_document_id`, `content_fingerprint`, `document_hash` e `published_at`. Remoção
+  lógica marca `status` e `removed_at` antes de qualquer passo destrutivo físico. É a tabela que
+  a UI deve usar para contar documentos vivos.
+- Tabelas de detalhe: sempre representam a versão atualmente publicada. Ao publicar/atualizar um
+  documento ativo, o detalhe físico é recriado de forma consistente e o detalhe antigo do mesmo
+  `active_document_id` deixa de valer. Chunks ativos carregam `vector_point_id` quando existir.
+
+### Regras de leitura (quando o corte ocorrer)
+
+- **UI administrativa:** separar explicitamente três perguntas — quantos runs existem
+  (`vector_ingestion_runs`), quantos documentos o último run viu
+  (`vector_ingestion_run_documents`) e quantos documentos estão vivos agora
+  (`vector_active_documents`). Resumo do acervo vem de `vector_dataset_master`. É proibido
+  deduzir "documentos vivos" a partir de `vector_ingestion_runs` ou "documentos do lote" a
+  partir de `vector_active_documents`.
+- **Backend de ingestão:** escreve o histórico do lote em `vector_ingestion_runs` e
+  `vector_ingestion_run_documents`; decide publicação olhando o documento ativo por
+  `dataset_id + canonical_document_key`; atualiza `vector_active_documents` só no publish do
+  item; atualiza `vector_dataset_master.last_published_run_id` só quando o lote alterar o acervo
+  publicado; em ingestão incremental, documentos ativos de runs antigos continuam no acervo até
+  serem substituídos ou removidos.
+- **Backend de RAG:** não usa `vector_ingestion_run_documents` como fonte do acervo consultável.
+  Usa `vector_dataset_master` para resolver acervo e target físico, `vector_active_documents`
+  para o conjunto lógico ativo quando precisar de suporte no PostgreSQL, e
+  `vector_active_document_chunks` para trilhas que dependam do conteúdo persistido do documento ativo.
+
+### Ordem única de execução do corte (quando for decidido fazer)
+
+1. criar todas as tabelas novas;
+2. implementar a escrita nova no runtime sem reaproveitar as tabelas antigas como fonte primária;
+3. popular o novo modelo a partir de uma rodada controlada de rebuild do acervo;
+4. apontar a UI apenas para as tabelas novas;
+5. apontar as leituras administrativas e operacionais apenas para as tabelas novas;
+6. bloquear escrita funcional nas tabelas antigas;
+7. remover do código qualquer dependência de leitura funcional das tabelas antigas;
+8. remover as tabelas antigas do contrato de produto e deixá-las aptas para drop definitivo.
+
+O corte precisa ser claro e completo: o sistema novo nasce inteiro, a leitura muda inteira e o
+contrato antigo deixa de valer inteiro. O que não pode existir é convivência longa entre dois
+modelos principais dizendo coisas diferentes sobre o mesmo acervo — exatamente a situação
+transitória de hoje, que esta seção documenta para resolver no futuro.
+
 ## Domínio Interações e Eventos
 
 ### interaction_runs
@@ -1298,7 +1715,7 @@ Em linguagem simples: pense nesse schema como uma prateleira oficial de integrac
 - `status`: estado operacional da tool. O contrato aceito e `active`, `disabled` ou `deprecated`.
 - `discovered_from`: origem da descoberta da tool pelo builder.
 - `factory_function`: nome da funcao de factory responsavel pela geracao, quando existir.
-- `tool_type`: tipo de binding da tool. O DDL limita os valores aceitos a `direct` ou `factory_generated`.
+- `tool_type`: tipo de binding da tool. O DDL aceita `direct`, `factory_generated` ou `mcp`. Tools `mcp` são descobertas/persistidas pela sincronização do catálogo MCP e NÃO têm binding local de execução (são resolvidas em runtime pelo `MCPToolsResolver`).
 - `decorator`: decorator encontrado pelo builder durante a descoberta da tool.
 - `function_name`: nome da funcao real detectada no codigo-fonte.
 - `path_verified`: indica se o path resolvido pelo builder foi validado com sucesso.
@@ -1312,10 +1729,10 @@ Em linguagem simples: pense nesse schema como uma prateleira oficial de integrac
 - Check exigindo `id`, `description`, `tool_description` e `category` nao vazios.
 - Check limitando `status` a `active`, `disabled` ou `deprecated`.
 - Check limitando `factory_returns` aos valores esperados pela factory.
-- Check limitando `tool_type` a `direct` ou `factory_generated`.
+- Check limitando `tool_type` a `direct`, `factory_generated` ou `mcp`.
 - Check garantindo `config` como objeto `jsonb`.
 - Check garantindo `tags` como array `jsonb`.
-- Check de binding impedindo combinacao invalida entre `impl` e `factory_impl`.
+- Check de binding impedindo combinacao invalida entre `impl` e `factory_impl`, isentando `tool_type='mcp'` (que nao possui binding local). Migracao idempotente: `scripts/sql/20260608_alter_builtin_tool_registry_allow_mcp_tool_type.sql` e auto-aplicacao pelo `IntegrationsSchemaBootstrapper.ensure_schema`.
 - Indice `ix_builtin_tool_registry_status_category` em `status, category`.
 - Indice `ix_builtin_tool_registry_updated_at` em `updated_at DESC`.
 - Indice funcional `ix_builtin_tool_registry_lower_id` em `lower(id)`.
