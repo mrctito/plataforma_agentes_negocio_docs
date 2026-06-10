@@ -587,10 +587,9 @@ Causa provável:
 
 ## 16. Evidências no código
 
-- app/ui/static/js/ui-webchat-v3.js
-  - Motivo da leitura: confirmar a lógica real de modo, API key, payload e parse da resposta.
-  - Símbolos relevantes: `_executarPergunta`, `_resolverEncryptedData`, `_resolverApiKey`, `_aplicarModoPreferencialDaEntradaAtual`.
-  - Comportamento confirmado: a UI troca endpoint e formato do corpo conforme o modo.
+- app/ui/static/js/shared/layout-mestre-api.js (fonte única) e app/ui/static/js/shared/embeddable-chat-runtime.js (componente)
+  - Motivo da leitura: confirmar a lógica real de modo, API key, payload e parse da resposta. Desde 2026-06-10 a `ui-webchat-v3.html` é host do componente embutível: o dispatch por modo vive no `enviar()` da fonte única e o componente o consome; o host (`ui-webchat-v3.js`) só repassa contexto/selects (`_aplicarModoPreferencialDaEntradaAtual`, `_resolverApiKeyHost`).
+  - Comportamento confirmado: a fonte única troca endpoint e formato do corpo conforme o modo.
 
 - app/ui/static/js/shared/ui-webchat-runtime-utils.js
   - Motivo da leitura: confirmar parse e leitura de `correlation_id`.

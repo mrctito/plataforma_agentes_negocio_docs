@@ -85,7 +85,7 @@ Esse ponto é importante porque mostra que a stack real do projeto inclui biblio
 
 O runner da API resolve host, porta, workers e debug a partir da configuração FastAPI. Antes de subir o Uvicorn, executa validate_required_infrastructure em modo api. Também adia a ativação de CloudWatch até o ciclo correto do worker, em vez de tratar observabilidade remota como detalhe invisível do bootstrap HTTP.
 
-No boundary principal, src/api/service_api.py monta o app FastAPI, middlewares, CORS, sessão federada, routers administrativos e de produto, arquivos estáticos, endpoints agentic, canais, UCP, AG-UI e o proxy MCP em /mcp.
+No boundary principal, src/api/service_api.py monta o app FastAPI, middlewares, CORS, sessão federada, routers administrativos e de produto, arquivos estáticos, endpoints agentic, canais, UCP e AG-UI. Não há rota /mcp: o projeto é apenas consumidor de MCP (o antigo proxy stdio foi eliminado; servidores stdio viram subprocesso local spawnado pelo cliente MCP).
 
 ### 5.2 Worker
 
@@ -126,7 +126,7 @@ run.sh não assume comportamento default. Ele exige flags explícitas para subir
 
 Responsabilidade: expor contratos HTTP.
 
-Exemplos confirmados: auth, agent, workflow, AG-UI, channels, UCP, logs, admin, Instagram provision, WhatsApp provision e MCP.
+Exemplos confirmados: auth, agent, workflow, AG-UI, channels, UCP, logs, admin, Instagram provision e WhatsApp provision. (Não há router MCP: o consumo de MCP acontece dentro do runtime agentic, sem boundary HTTP próprio.)
 
 ### 6.2 Startup e bootstrap
 
@@ -429,7 +429,7 @@ Tecnologicamente, este projeto parece um backend Python, mas opera como um ecoss
   - Comportamento confirmado: scheduler dedicado com bootstrap próprio.
 - src/api/service_api.py
   - Motivo da leitura: confirmar boundary FastAPI e superfícies montadas.
-  - Comportamento confirmado: routers especializados, arquivos estáticos e /mcp montado no app principal.
+  - Comportamento confirmado: routers especializados e arquivos estáticos montados no app principal; sem rota /mcp (proxy MCP eliminado — projeto apenas consumidor).
 - app/ui/static/js/admin-ingestao.js
   - Motivo da leitura: confirmar que a UI administrativa de ingestão é servida pelo mesmo boundary HTTP da API.
   - Comportamento confirmado: a superfície administrativa integrada consome a API real sem exigir um frontend separado.

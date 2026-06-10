@@ -22,6 +22,16 @@ O recorte executavel confirmado do lado web inclui estas superficies de reuso.
 7. app/ui/static/js/shared/ag-ui-dashboard-validator.js.
 8. app/ui/static/js/shared/ag-ui-retail-demo-page.js.
 
+Existe uma segunda superficie de consumo AG-UI no frontend, **independente do stream `/ag-ui/runs`**: a renderizacao de specs que chegam no **corpo da resposta** dos endpoints de chat (`/rag/execute`, `/agent/execute`). Ela e usada pelo componente global de chat embutivel e suas hosts. As superficies de reuso desse caminho sao:
+
+1. app/ui/static/js/shared/embeddable-chat-spec-runtime.js (deteccao de spec + registry de renderizadores + renderer de Capacidades).
+2. app/ui/static/js/shared/ag-ui-spec-render-bridge.js (ponte ESM que liga os renderizadores oficiais ao componente UMD).
+3. app/ui/static/js/shared/ag-ui-chart-adapter.js + ag-ui-chart-adapter-apexcharts.js (porta de grafico neutra + adapter ApexCharts).
+4. src/api/schemas/ag_ui_capabilities_models.py (contrato fail-closed do **CapabilitiesSpec**).
+5. src/agentic_layer/tools/system_tools/describe_capabilities.py (tool builtin `descrever_capacidades`, auto-injetada em todo supervisor DeepAgent).
+
+Os tres specs reconhecidos nessa superficie sao CapabilitiesSpec (painel de capacidades, novo), DashboardSpec (dashboard dinamico, ja existente) e UISpec (interface generica). Ativacao, ordem de scripts e estado por host — incluindo o fato de que o WebChat v3 **ainda nao** ativa essa renderizacao — estao no guia do componente embutivel, e a porta de grafico esta detalhada em [Registry e adapters](README-TECNICO-AG-UI-REGISTRY-E-ADAPTERS.md).
+
 Detalhamento técnico por etapa:
 
 1. [Fronteira de protocolo](README-TECNICO-AG-UI-FRONTEIRA-DE-PROTOCOLO.md)
@@ -31,6 +41,8 @@ Detalhamento técnico por etapa:
 5. [Domínio varejo demo](README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md)
 6. [Runtime compartilhado do frontend](README-TECNICO-AG-UI-RUNTIME-COMPARTILHADO-DO-FRONTEND.md)
 7. [Replay e auditoria](README-TECNICO-AG-UI-REPLAY-E-AUDITORIA.md)
+
+Como **configurar por YAML** um agente que responde com gráficos (as 3 peças — regra de roteamento no prompt do supervisor, subagente com `response_format` DashboardSpec 1.0 e renderização automática no frontend), com o demo varejo como exemplo comentado: capítulo [35. AG-UI no YAML](README-CONFIGURACAO-YAML.md#35-ag-ui-no-yaml-respostas-com-gráficos-generative-ui--exemplo-real-do-demo-varejo) do manual de configuração YAML.
 
 ## 2. Endpoints publicos
 

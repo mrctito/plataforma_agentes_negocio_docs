@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant TF as ToolsFactory + MCPToolsMerger
+    participant R as MCPConfigResolver
+    participant T as MCPToolsResolver
+    participant C as MultiServerMCPClient
+    participant S as Servidor MCP stdio (subprocesso local)
+
+    TF->>R: resolve_for_agent / resolve_for_workflow
+    R-->>T: conexoes por escopo (stdio: command, args, env)
+    T->>T: consulta cache por tenant e escopo
+    alt cache vazio
+        T->>C: get_tools(connections)
+        C->>S: spawna subprocesso e fala MCP via stdin/stdout
+        S-->>C: tools publicadas
+        C-->>T: lista de BaseTool
+    end
+    T-->>TF: tools MCP filtradas e mescladas as locais

@@ -93,6 +93,20 @@ Cenario: uma tela administrativa quer embutir um sidecar AG-UI sem mudar a stack
 
 O valor desta etapa e industrializar o frontend AG-UI no contexto real do projeto, que hoje e HTML estatico mais JavaScript puro.
 
+## 8.1. Spec-runtime e bridge do componente de chat embutivel
+
+Alem do sidecar que consome o stream `/ag-ui/runs`, existe uma segunda forma de o frontend consumir AG-UI: **renderizar specs que chegam no corpo da resposta** dos endpoints de chat ja usados pelo componente global de chat embutivel. Vale explicar porque sao duas superficies diferentes do mesmo conceito.
+
+- O **sidecar** (secoes anteriores) abre um stream SSE de eventos AG-UI e reconstroi estado incrementalmente. E o caminho de streaming.
+- O **componente de chat embutivel** nao abre stream. Ele recebe a resposta normalizada do backend e **detecta** se ha um spec AG-UI conhecido nela. Se houver, desenha a UI; se nao, mostra texto. E o caminho de spec-na-resposta.
+
+Para isso o componente reusa uma camada compartilhada de **deteccao + registry de renderizadores**, que existe justamente para nao espalhar essa logica por cada tela:
+
+- um **spec-runtime** detecta o spec na resposta e roteia para o renderizador certo. Ele **nao reimplementa** os renderizadores oficiais de DashboardSpec e UISpec — recebe-os por injecao. O unico renderizador novo e o de Capacidades (CapabilitiesSpec), montado com primitivas DOM seguras;
+- um **bridge** em modulo ES e o ponto que `import`a os renderizadores oficiais (que sao ES modules) e os entrega ao spec-runtime (que e UMD), publicando o runtime montado em `window` para o componente consumir. Esse padrao de ponte ESM↔UMD ja e usado em outras partes do projeto, e existe porque o componente, sendo UMD, nao pode importar ES modules diretamente.
+
+A consequencia de reuso e a mesma do restante deste runtime compartilhado: a deteccao, a validacao de seguranca e a delegacao aos renderizadores oficiais ficam **num lugar so**, e qualquer host que carregue o bridge ganha a renderizacao estruturada sem reimplementar nada. Se o bridge nao for carregado, o componente nao encontra o runtime em `window` e renderiza texto — fail-closed identico ao do sidecar quando uma dependencia falta. O detalhe de ativacao, ordem de scripts e estado por host esta no guia do componente embutivel.
+
 ## 9. Evidencias no codigo
 
 - packages/ag-ui-runtime/index.js
@@ -110,3 +124,9 @@ O valor desta etapa e industrializar o frontend AG-UI no contexto real do projet
 - app/ui/static/js/shared/ag-ui-sidecar-chat.js
   - Simbolo relevante: adaptInterruptToReviewContract e buildAgUiResumeInput
   - Comportamento confirmado: adaptacao de interrupcao AG-UI ao painel HIL compartilhado, exigencia de endpoint explicito e montagem do resume oficial.
+- app/ui/static/js/shared/embeddable-chat-spec-runtime.js
+  - Simbolo relevante: createEmbeddableChatSpecRuntime, detectAgUiSpec, validateCapabilitiesSpecPayload
+  - Comportamento confirmado: detecta spec AG-UI na resposta, delega DashboardSpec/UISpec aos renderizadores oficiais injetados e renderiza o CapabilitiesSpec com DOM seguro; spec invalido/desconhecido cai em texto.
+- app/ui/static/js/shared/ag-ui-spec-render-bridge.js
+  - Simbolo relevante: bridge ESM que monta e publica o spec-runtime em window
+  - Comportamento confirmado: importa os renderizadores oficiais ES module e os entrega por injecao ao spec-runtime UMD, publicando window.PrometeuEmbeddableChatSpecRuntime.

@@ -1,11 +1,11 @@
 flowchart TD
     A["YAML com global_mcp_configuration e local_mcp_configuration"] --> B["Resolver de configuracao MCP"]
     B --> C["Configuracao normalizada por escopo"]
-    C --> D["Carregamento de tools MCP"]
+    C --> H{"Transporte do servidor?"}
+    H -->|"stdio"| I["Cliente MCP spawna subprocesso local (command/args/env)"]
+    H -->|"http / sse / websocket"| J["Conexao direta ao servidor remoto (url)"]
+    I --> D["Carregamento de tools MCP"]
+    J --> D
     D --> E["Cache por tenant e escopo"]
     E --> F["Merge com tools locais"]
     F --> G["Agente ou workflow executa"]
-    C --> H{"Servidor stdio?"}
-    H -->|"Sim"| I["Conversao para URL local /mcp"]
-    I --> J["Proxy HTTP autenticado"]
-    J --> K["Processo MCP via stdio"]

@@ -86,6 +86,22 @@ Cenario: o produto quer adicionar um execution_kind novo para um modulo financei
 
 O valor desta etapa e permitir crescimento do slice sem reescrever o core a cada novo dominio.
 
+## 8.1. Porta de grafico (ChartAdapter): o mesmo principio aplicado ao frontend
+
+O conceito de "registry + adapter explicito" que governa os executionKinds no backend tambem aparece no **frontend**, em escala menor, na renderizacao de graficos do dashboard AG-UI. Vale explicar porque e a mesma ideia arquitetural, so que do lado da tela.
+
+O renderizador de dashboard (que desenha KPIs, tabelas e graficos a partir de uma DashboardSpec) **nao pode** depender de uma biblioteca concreta de grafico. Se ele importasse a lib direto, trocar de lib no futuro exigiria mexer no renderizador. Para evitar isso, existe uma **porta neutra de grafico**, a `ChartAdapter`:
+
+- a porta define um **modelo neutro** chamado `ChartModel`, que descreve um grafico em termos genericos: `kind` (o tipo: barra, linha, pizza ou rosca), `series` (os numeros), `categories` (os rotulos de texto) e `options` (titulo, cores, altura);
+- a porta mantem um **registry simples**: um unico lugar guarda qual adapter de grafico esta ativo;
+- a porta **nao conhece** nenhuma lib de grafico. Ela so fala em `ChartModel`.
+
+Quem conhece a lib de fato e o **adapter concreto**. Hoje existe um unico adapter, baseado em ApexCharts, e ele e o **unico** arquivo que sabe a API dessa lib. Ao carregar no browser, esse adapter se **auto-registra** como o adapter ativo da porta.
+
+A consequencia pratica e a mesma do registry de executionKinds: **trocar de lib de grafico = escrever outro adapter que implemente a mesma porta e registra-lo; zero mudanca no renderizador**. Isso e arquitetura hexagonal (o `CLAUDE.md §6` do repositorio): o nucleo (renderizador) fala com uma porta neutra, e a tecnologia concreta (a lib) entra por um adapter substituivel. Essa fronteira e protegida por um teste de regressao de acoplamento, que falha se o renderizador voltar a depender da lib direto.
+
+Onde isso se conecta com o resto deste slice: os specs DashboardSpec validados pelos adapters de dominio (retail_demo) descrevem widgets como `bar_chart`, `line_chart` e `donut_chart`; a porta de grafico mapeia esses tipos de widget para o `kind` neutro e entrega ao adapter ativo. A renderizacao desses dashboards no **componente global de chat embutivel** depende exatamente dessa porta — detalhe de ativacao no guia do componente embutivel.
+
 ## 9. Evidencias no codigo
 
 - src/api/services/ag_ui_adapter_registry.py
@@ -103,3 +119,12 @@ O valor desta etapa e permitir crescimento do slice sem reescrever o core a cada
 - src/api/services/ag_ui_workflow_adapter.py
   - Simbolo relevante: AgUiWorkflowAdapter.execute
   - Comportamento confirmado: workflow usa LangGraphAgent oficial no caminho padrao e executor dedicado para resume estruturado, sem runtime paralelo fora de LangGraph.
+- app/ui/static/js/shared/ag-ui-chart-adapter.js
+  - Simbolo relevante: porta ChartAdapter, ChartModel, registry (setActiveChartAdapter / getActiveChartAdapter), buildChartModel, WIDGET_TYPE_TO_CHART_KIND
+  - Comportamento confirmado: porta neutra de grafico que nao conhece nenhuma lib; mapeia bar_chart/line_chart/donut_chart para kind neutro e guarda o adapter ativo num registry unico.
+- app/ui/static/js/shared/ag-ui-chart-adapter-apexcharts.js
+  - Simbolo relevante: createApexChartsAdapter e auto-registro no carregamento
+  - Comportamento confirmado: unico adapter concreto, conhece a API do ApexCharts e se auto-registra como adapter ativo da porta.
+- tests/frontend/ag_ui_chart_adapter_contract.test.js
+  - Simbolo relevante: teste de regressao de desacoplamento
+  - Comportamento confirmado: falha se o renderizador de dashboard voltar a depender da lib de grafico direto, em vez da porta neutra.

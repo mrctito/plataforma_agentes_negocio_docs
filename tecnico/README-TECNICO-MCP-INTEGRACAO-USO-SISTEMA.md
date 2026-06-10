@@ -5,9 +5,10 @@
 > externos e as transforma em **tools de agente/workflow**, exatamente simétricas às tools
 > nativas do catálogo builtin. O eixo de hospedagem (servidor `qa_system_server`, gateway
 > `MCPGatewayManager`, permissões `MCP_SERVERS_*`) **foi removido por completo** (commit Fase A
-> `5c075a946`). Qualquer menção a hospedar/gerenciar servidor MCP próprio é legado e não vale
-> mais. A única assimetria legítima preservada é o **proxy stdio em `/mcp`** — necessidade
-> física do transporte stdio do padrão MCP (ver §5.5 e §6.2).
+> `5c075a946`). O **proxy stdio→HTTP em `/mcp`** — que era a última assimetria — **também foi
+> removido**: hoje o transporte `stdio` é **direto**, com o subprocesso do servidor MCP
+> spawnado localmente pelo próprio cliente MCP (ver §3.3 e §6.2). Qualquer menção a hospedar,
+> gerenciar ou fazer proxy de servidor MCP é legado e não vale mais.
 
 ## 1. O que é esta feature
 
@@ -33,8 +34,8 @@ resolve isso em camadas:
 - configuração declarativa (YAML-first);
 - normalização por escopo (global, supervisor local, agente/workflow local);
 - **descoberta e persistência do catálogo** de tools MCP no mesmo registro builtin das nativas;
-- carga das tools MCP em runtime, com cache, e merge ao conjunto local;
-- proxy do transporte apenas quando o servidor usa stdio (assimetria física legítima).
+- carga das tools MCP em runtime, com cache, e merge ao conjunto local — conectando **direto**
+  ao servidor externo em qualquer transporte (no `stdio`, o subprocesso é local).
 
 ## 3. Conceitos necessários para entender
 
@@ -50,9 +51,14 @@ O resolver trabalha com três camadas para agentes e duas para workflows.
 
 Servidores são mesclados por id. Se o overlay trouxer o mesmo id do base, o merge é profundo. Se trouxer id novo, ele é acrescentado ao conjunto respeitando a ordem.
 
-### 3.3 Proxy stdio
+### 3.3 Transporte stdio direto (subprocesso local)
 
-Quando o transporte é stdio, o resolver não devolve o bloco command e args como conexão final do consumo agentic. Ele devolve uma conexão streamable_http apontando para /mcp, com query params que identificam o YAML físico e o escopo.
+Quando o transporte é `stdio`, o resolver devolve a conexão **final e direta**: `command` e
+`args` obrigatórios, mais `env`, `cwd`, `encoding` e `encoding_error_handler` quando declarados
+(`MCPConfigResolver._inject_stdio_settings`). Quem consome essa conexão é o
+`MultiServerMCPClient` (lib `langchain-mcp-adapters`), que **spawna o subprocesso local** do
+servidor MCP na hora de carregar as tools. Não existe conversão para `streamable_http`, nem
+rota `/mcp`, nem query params `yaml_config`/`mcp_scope` — esse proxy foi removido.
 
 ### 3.4 Catálogo persistido e governado (não mais sintético)
 
@@ -64,7 +70,7 @@ Agora o catálogo de tools MCP é **descoberto** dos servidores configurados e *
 **mesmo registro builtin** das tools nativas (`integrations.builtin_tool_registry`), com
 `tool_type='mcp'`. Ele é governado igual às nativas: cada tenant pode ter a tool `active` ou
 `disabled`, e a injeção no runtime passa pelo **mesmo boundary com fail-closed** do
-`tools_library` (ver §6.1 e §9.4).
+`tools_library` (ver §6.1 e §9.3).
 
 A descoberta acontece por **comando explícito** (espelhando o builder nativo), nunca no startup
 nem por TTL:
@@ -122,19 +128,18 @@ Transportes suportados pelo código lido:
 
 Comportamento por transporte:
 
-- stdio: convertido para streamable_http local com url apontando para /mcp.
+- stdio: conexão **direta** — `command` e `args` obrigatórios; `env`, `cwd`, `encoding` e
+  `encoding_error_handler` entram quando declarados. O subprocesso é spawnado localmente pelo
+  `MultiServerMCPClient`; campos de `url`/timeout não se aplicam.
 - sse: timeout e sse_read_timeout entram como valores numéricos.
 - http e streamable_http: timeout e sse_read_timeout entram como timedelta.
 - websocket: o resolver aceita o transport, mas o comportamento operacional detalhado desse cliente não foi confirmado além da normalização da conexão.
 
-### 4.3 Requisitos adicionais do caminho stdio
+### 4.3 Requisito operacional do caminho stdio
 
-O stdio convertido depende de dois requisitos rígidos:
-
-- _config_metadata precisa existir no YAML.
-- _config_metadata.yaml_source precisa apontar para arquivo físico, não memory:// nem inline://.
-
-Se isso falhar, o resolver não consegue gerar a query yaml_config para o proxy e aborta a resolução.
+Como o subprocesso roda **na mesma máquina/container** do processo que executa o agente (API ou
+worker), o executável declarado em `command` (ex.: `uvx`, `npx`) precisa existir nesse ambiente.
+Se o spawn falhar, a carga de tools falha e **propaga** (ver §4.4) — não há fallback.
 
 ### 4.4 Carga e cache de tools no runtime agentic
 
@@ -209,14 +214,6 @@ remove entradas MCP dos servidores que foram contatados com sucesso (predicado
 `reconcile_obsolete_predicate`), preservando tools MCP de servidores offline e todas as tools
 não-MCP.
 
-### 5.5 McpStdioProxyService
-
-Responsabilidade: expor via HTTP um conjunto de tools provenientes de servidores MCP stdio.
-
-Recebe: Request HTTP com X-API-Key, yaml_config e parâmetros de escopo.
-
-Entrega: listagem e execução de tools como servidor MCP streamable_http.
-
 ## 6. Pipeline ou fluxo principal
 
 ### 6.1 Fluxo agentic
@@ -237,22 +234,26 @@ Entrega: listagem e execução de tools como servidor MCP streamable_http.
    da MCP com warning, evento `mcp.tools.merge.conflict_ignored`).
 7. O runtime final executa vendo o conjunto combinado.
 
-### 6.2 Fluxo stdio via /mcp
+### 6.2 Fluxo stdio (subprocesso local)
 
-1. O resolver materializa uma conexão local streamable_http apontando para /mcp.
-2. A FastAPI monta mcp_http_proxy_app em /mcp.
-3. A camada ASGI valida X-API-Key com PermissionKeys.MCP_TOOLS_INVOKE.
-4. O serviço do proxy parseia yaml_config e mcp_scope da query string.
-5. O serviço resolve o YAML físico via resolve_yaml_configuration.
-6. O serviço autentica o request com base no YAML e na permissão da operação.
-7. O serviço injeta user_email e correlation_id na user_session.
-8. O serviço resolve o MCP daquele escopo e filtra apenas conexões stdio.
-9. O builder do catálogo lista tools nos servidores stdio e publica um catálogo em memória.
-10. list_tools devolve as tools publicadas; call_tool roteia para o servidor certo e executa a tool real.
+O stdio **não tem fluxo paralelo**: ele percorre o mesmo pipeline do §6.1. A única diferença
+está no passo 5 (carga):
+
+1. O resolver entrega a conexão stdio direta (`command`, `args`, `env`...) ao
+   `MCPToolsResolver`.
+2. No `get_tools`, o `MultiServerMCPClient` **spawna o subprocesso local** do servidor MCP e
+   fala o protocolo MCP via stdin/stdout.
+3. O ciclo de vida do subprocesso pertence ao cliente MCP (lib `langchain-mcp-adapters`);
+   nenhuma chamada passa por HTTP local.
 
 ## 7. Ordem de execução real
 
-O ponto importante é que o proxy stdio não usa a configuração MCP resolvida no momento do bootstrap da API. Ele reavalia o YAML por request. Isso torna a resolução aderente ao YAML físico e ao contexto de autenticação da chamada, mas também significa que o problema operacional pode estar tanto na configuração estática quanto no request que chegou ao proxy.
+A configuração MCP **não** é resolvida no bootstrap da API. Ela é reavaliada a cada
+materialização de tools de um escopo (agente/workflow), e a carga em si é amortizada pelo cache
+por tenant+escopo com TTL `cache_ttl_s` (§4.4). Consequência diagnóstica: um problema pode estar
+na configuração YAML do escopo, no catálogo persistido, no cache ou no próprio servidor externo
+(processo stdio ou endpoint remoto) — nunca em um boundary HTTP intermediário, que não existe
+mais.
 
 ## 8. Configurações que mudam o comportamento
 
@@ -334,37 +335,18 @@ Campos de saída confirmados:
 - cache_ttl_s
 - connections
 
-### 9.2 Contrato do proxy HTTP
+### 9.2 Contrato de permissões
 
-Query params confirmados:
+**Não existem permissões específicas de MCP** no catálogo de autorização
+(`src/api/security/permissions.py` não contém nenhuma chave `MCP_*`). As permissões
+`MCP_SERVERS_*` (eixo de hospedagem, Fase A `5c075a946`) e `MCP_TOOLS_LIST`/`MCP_TOOLS_INVOKE`
+(exclusivas do proxy stdio) foram removidas junto com os respectivos eixos. O consumo de tools
+MCP é autorizado pelos mesmos boundaries dos endpoints agentic que disparam a execução (ex.:
+`/agent/execute`), sem permissão adicional. O guard
+`tests/unit/test_02-06-36_mcp_hosting_axis_removed_guard.py` falha se essas permissões órfãs
+voltarem.
 
-- yaml_config
-- mcp_scope
-- supervisor_id quando scope=agent
-- agent_id quando scope=agent
-- workflow_id quando scope=workflow
-
-Headers relevantes:
-
-- X-API-Key (obrigatório no boundary ASGI).
-- x-correlation-id **obrigatório**. O proxy **não gera** mais um correlation_id local: se o
-  header estiver ausente ou inválido, o request **falha** com `McpHttpProxyError` (ver §12.2 e
-  `_resolve_base_correlation_id`). O proxy preserva o `correlation_id` oficial recebido — ele
-  nunca inventa identificador.
-
-### 9.3 Contrato de permissões
-
-Permissões confirmadas no catálogo de autorização (Fase A removeu as permissões de hospedagem):
-
-- MCP_TOOLS_LIST (`mcp.tools.list`)
-- MCP_TOOLS_INVOKE (`mcp.tools.invoke`)
-
-As permissões `MCP_SERVERS_START`, `MCP_SERVERS_STOP` e `MCP_SERVERS_HEALTH` **não existem
-mais**: eram do eixo de hospedagem (gateway), removido por completo no commit Fase A
-`5c075a946`. O caminho canônico do proxy stdio usa `MCP_TOOLS_LIST` na listagem e
-`MCP_TOOLS_INVOKE` na execução.
-
-### 9.4 Contrato do catálogo persistido (builtin)
+### 9.3 Contrato do catálogo persistido (builtin)
 
 - Tabela: `integrations.builtin_tool_registry` (mesma das tools nativas).
 - Discriminante: `tool_type='mcp'`.
@@ -378,41 +360,15 @@ mais**: eram do eixo de hospedagem (gateway), removido por completo no commit Fa
 
 ## 10. O que acontece em caso de sucesso
 
-### 10.1 Runtime agentic
-
-O agente ou workflow recebe um conjunto de BaseTool já enriquecido com tools MCP. Se houver cache válido, esse conjunto é reaproveitado. Se não houver, ele é carregado na hora.
-
-### 10.2 Proxy stdio
-
-O cliente HTTP consegue listar tools e invocar a tool correta. O proxy registra logs de listagem e execução com correlation_id e server_id.
+O agente ou workflow recebe um conjunto de BaseTool já enriquecido com tools MCP. Se houver cache válido, esse conjunto é reaproveitado. Se não houver, ele é carregado na hora — conectando direto ao servidor externo (no stdio, spawnando o subprocesso local).
 
 ## 11. O que acontece em caso de erro
 
 ### 11.1 Erros de configuração
 
-Erros como transport inválido, missing url, missing command, missing args, cache_ttl_s inválido, tool_name_prefix inválido, yaml_source ausente ou escopo incompleto geram exceção explícita.
+Erros como transport inválido, missing url, missing command, missing args, cache_ttl_s inválido ou tool_name_prefix inválido geram exceção explícita na resolução.
 
-### 11.2 Erros de autenticação e permissão
-
-No proxy, ausência ou invalidez de X-API-Key no boundary HTTP gera resposta JSON com status apropriado. Depois disso, o serviço ainda autentica o request com o YAML resolvido e a permissão da operação.
-
-### 11.3 Erros de catálogo ou roteamento
-
-- Tool desconhecida no proxy gera McpHttpProxyError com log de erro.
-- Servidor ausente no roteamento gera erro.
-- Ausência de conexões stdio após a filtragem gera erro explícito.
-
-### 11.4 Erros de comunicação com stdio
-
-O cliente stdio usa retry com tenacity.
-
-- stop_after_attempt(5)
-- wait_exponential com multiplicador 1, mínimo 1 e máximo 10
-- retry em OSError, RuntimeError e TimeoutError
-
-Isso vale tanto para list_tools quanto para call_tool.
-
-### 11.5 Erros na descoberta do catálogo (mcp_catalog_builder)
+### 11.2 Erros na descoberta do catálogo (mcp_catalog_builder)
 
 - Servidor MCP indisponível durante a descoberta: **não** aborta a rodada. O builder registra
   `mcp.catalog.server.unavailable`, preserva o catálogo persistido daquele servidor e segue
@@ -422,7 +378,7 @@ Isso vale tanto para list_tools quanto para call_tool.
 - `user_email` ausente (multi-tenant): `SystemExit` no `main()` — informe `--user-email` ou
   `user_session.user_email` no YAML.
 
-### 11.6 Carga de tools MCP no runtime falha (simetria com nativas)
+### 11.3 Carga de tools MCP no runtime falha (simetria com nativas)
 
 Diferente do comportamento antigo: a falha de carga **não** vira lista vazia silenciosa. O
 `MCPToolsResolver` faz `logger.exception` e **propaga** (`RuntimeError`), quebrando a execução —
@@ -449,20 +405,15 @@ principais eventos confirmados no código:
 - `mcp.tools.cache.hit` / `mcp.tools.cache.updated` — cache de tools MCP;
 - `mcp.tools.selection.applied` / `mcp.tools.selection.failed` — seleção/filtragem de tools
   solicitadas;
-- `mcp.tools.merge.conflict_ignored` — tool MCP descartada por conflito de nome com tool local;
-- eventos do proxy stdio: listagem, chamada e execução por servidor, e erros de tool
-  desconhecida, servidor ausente e ausência de conexões stdio.
+- `mcp.tools.merge.conflict_ignored` — tool MCP descartada por conflito de nome com tool local.
 
 ### 12.2 Correlation id
 
-O proxy stdio **exige** o header `x-correlation-id` (`_resolve_base_correlation_id`): se o
-header estiver ausente ou inválido, o request **falha** com `McpHttpProxyError` — o proxy
-**não** gera identificador local. A partir do `correlation_id` oficial recebido, ele recompõe o
-`correlation_id` final com base no `user_email` da sessão (`compose_correlation_id`) e segue
-logando nesse id. Em outras palavras: o `correlation_id` nasce no chamador (o
-`MCPToolsResolver`/runtime agentic, que tem o id oficial), é enviado no header, e o proxy apenas
-preserva e propaga — nunca inventa. Isso respeita o contrato canônico de `correlation_id`
-(nascido uma única vez no boundary do processo).
+O slice MCP **não tem boundary HTTP próprio**: ele roda inteiro dentro do processo
+correlacionado que o chamou (a execução do agente/workflow). `MCPConfigResolver` e
+`MCPToolsResolver` herdam o `correlation_id` oficial via `BaseCorrelationComponent` e o gravam
+em todos os eventos `mcp.*` — nenhum componente do slice cria, deriva ou substitui
+identificador, respeitando o contrato canônico de `correlation_id`.
 
 ### 12.3 Onde começar a investigar
 
@@ -476,34 +427,31 @@ Se a tool não aparece no runtime agentic:
 - verificar logs de falha do MCPToolsResolver (`mcp.tools.load.failed` — agora a falha
   **propaga**, não some).
 
-Se o problema é no /mcp:
+Se o problema é com servidor stdio:
 
-- verificar query params yaml_config e mcp_scope;
-- verificar X-API-Key;
-- verificar se o YAML físico existe e contém _config_metadata.yaml_source válido;
-- verificar se há servidores stdio habilitados naquele escopo.
+- verificar se o executável de `command` existe no ambiente do processo (API/worker) e se
+  `args`/`env` estão corretos — falha de spawn aparece como `mcp.tools.load.failed` e propaga;
+- verificar se o servidor está `enabled` naquele escopo após o merge de camadas.
 
 ## 13. Limites e pegadinhas
 
-### 13.1 O proxy stdio não é cacheado por escopo
-
-No código lido, o catálogo do proxy é cacheado apenas por tenant_key. Isso pode ser suficiente quando o tenant usa o mesmo conjunto stdio em todos os escopos, mas é uma limitação importante se diferentes escopos do mesmo tenant publicarem catálogos distintos.
-
-### 13.2 O projeto não hospeda MCP (eixo de gateway removido)
+### 13.1 O projeto não hospeda nem faz proxy de MCP (eixo servidor removido por inteiro)
 
 O `MCPGatewayManager` e o servidor `qa_system_server` **não existem mais** (Fase A, commit
-`5c075a946`). Não há, no runtime, nenhum caminho em que o projeto suba/gerencie um servidor MCP
-próprio. O único componente que expõe HTTP é o **proxy stdio em `/mcp`**, e ele existe apenas
-para dar transporte HTTP a servidores MCP **stdio** externos — não para hospedar tools do
-projeto como MCP. Esta é a única assimetria legítima preservada (ver §5.5 e §6.2).
+`5c075a946`), e o **proxy stdio em `/mcp` também não** (junto com seu router e a montagem no
+`service_api.py`). Não há, no runtime, nenhum caminho em que o projeto suba, gerencie ou
+intermedie um servidor MCP. O papel do projeto é **exclusivamente cliente**: todos os
+transportes conectam direto ao servidor externo. O guard
+`tests/unit/test_02-06-36_mcp_hosting_axis_removed_guard.py` falha se os módulos do
+servidor/proxy voltarem a ser importáveis.
 
-### 13.3 Falha de carga de tool MCP é visível (não some mais)
+### 13.2 Falha de carga de tool MCP é visível (não some mais)
 
 Antes, algumas falhas de carga viravam lista vazia e davam a impressão de que “MCP sumiu”. Isso
 **acabou** (Fase A, T5): a falha de carga de tool MCP no runtime **propaga** e quebra a
 execução, igual a uma tool nativa que não monta. A degradação invisível foi eliminada.
 
-### 13.4 Catálogo MCP precisa ser descoberto antes de usar
+### 13.3 Catálogo MCP precisa ser descoberto antes de usar
 
 Simetria pedida e legítima: declarar uma tool MCP no YAML **não basta**. Sem rodar o
 `mcp_catalog_builder` para descobrir e persistir o catálogo, a tool não resolve — exatamente
@@ -531,37 +479,37 @@ Ação: rodar a descoberta — `python -m src.agentic_layer.mcp.mcp_catalog_buil
 --user-email <email>` — e confirmar no banco que a tool foi gravada com `tool_type='mcp'` e
 `status='active'` para o tenant. Só depois disso ela resolve.
 
-### Sintoma: stdio configurado com YAML inline falha
+### Sintoma: tools de servidor stdio falham ao carregar
 
-Confirmação: yaml_source ausente, memory:// ou inline://.
+Confirmação: evento `mcp.tools.load.failed` na correlação, com erro de spawn/comunicação do
+subprocesso (a execução quebra — a falha propaga).
 
-Ação: usar YAML físico para o caminho do proxy stdio.
-
-### Sintoma: listagem do proxy funciona, mas chamada da tool falha
-
-Confirmação: a tool aparece em routing, mas call_tool retorna erro do servidor stdio.
-
-Ação: revisar command, args, env e disponibilidade do processo publicado pelo servidor MCP.
+Ação: revisar `command`, `args` e `env` do servidor no YAML e confirmar que o executável existe
+no ambiente do processo que roda o agente (API/worker). Lembrar que MCPs stdio em JavaScript
+exigem Node.js no container (`ENABLE_NODEJS` no Dockerfile).
 
 ## 15. Diagramas
 
-### 15.1 Sequência do caminho stdio
+### 15.1 Sequência do caminho stdio direto
 
-![15.1 Sequência do caminho stdio](../assets/diagrams/docs-readme-tecnico-mcp-integracao-uso-sistema-diagrama-01.svg)
+![15.1 Sequência do caminho stdio direto](../assets/diagrams/docs-tecnico-readme-tecnico-mcp-integracao-uso-sistema-diagrama-01.svg)
 
-O diagrama mostra que o proxy reabre o contexto do YAML e da autenticação a cada request. Isso é importante para diagnóstico, porque um mesmo problema pode nascer da query, da segurança, do YAML ou do processo stdio.
+O diagrama mostra que o caminho stdio é direto: a conexão resolvida carrega `command`/`args`/
+`env` e o próprio cliente MCP spawna o subprocesso na carga das tools. Para diagnóstico, os
+pontos de falha possíveis são a configuração do escopo, o cache e o subprocesso em si — não há
+boundary HTTP intermediário.
 
 ## 16. Como colocar para funcionar
 
 ### 16.1 Pré-requisitos confirmados
 
-- A API FastAPI precisa estar em execução.
-- O YAML precisa existir em arquivo físico quando houver uso de stdio.
 - O YAML precisa trazer global_mcp_configuration ou local_mcp_configuration compatíveis.
 - **O catálogo MCP precisa ter sido descoberto/persistido** com o `mcp_catalog_builder` antes da
-  execução agentic (sem isso, a tool MCP não resolve — §3.4 e §13.4).
-- O cliente precisa enviar X-API-Key com permissão apropriada (e, no proxy stdio,
-  `x-correlation-id` obrigatório).
+  execução agentic (sem isso, a tool MCP não resolve — §3.4 e §13.3).
+- Para servidores stdio: o executável de `command` precisa existir no ambiente do processo que
+  executa o agente (§4.3).
+- A autenticação é a normal dos endpoints agentic (X-API-Key ou YAML), sem nada específico de
+  MCP (§9.2).
 
 ### 16.2 Passo a passo mínimo para um caso remoto HTTP
 
@@ -624,31 +572,33 @@ multi_agents:
             - "agora_mcp_agora_search"
 ```
 
-O que esperar: o resolver converterá o stdio para uma URL local /mcp com parâmetros de escopo; o proxy assumirá a listagem e a execução real.
+O que esperar: o resolver entrega a conexão stdio direta (`command`, `args`); na carga das
+tools, o `MultiServerMCPClient` spawna o subprocesso local `uvx agora-mcp` e descobre as tools
+por stdin/stdout.
 
 ### 16.4 Como validar que funcionou
 
-- Verificar logs de carregamento de tools MCP no runtime agentic.
-- Verificar logs do proxy stdio ao listar ou chamar tool.
+- Verificar logs de carregamento de tools MCP no runtime agentic (`mcp.tools.load.completed`).
 - Confirmar que a tool aparece no conjunto final do agente ou workflow sem warning de conflito de nome.
 
 ## 17. Exemplos práticos guiados
 
-### 17.1 Exemplo real de proxy gerado para agente
+### 17.1 Exemplo real de conexão stdio resolvida (direta)
 
-Os testes unitários confirmam que um servidor stdio pode virar uma URL como:
+O teste `TestMcpStdioDirectResolution` (`tests/unit/test_02-04-51_mcp_resolvers.py`) prova que
+um servidor stdio declarado no YAML resolve como conexão direta, sem `url`:
 
-```text
-http://localhost:9000/mcp?yaml_config=app%2Fyaml%2Ftest-config.yaml&mcp_scope=agent&supervisor_id=sup&agent_id=agent
+```python
+{
+    "transport": "stdio",
+    "command": "uvx",
+    "args": ["agora-mcp"],
+    "env": {"FEWSATS_API_KEY": "abc"},
+}
 ```
 
-### 17.2 Exemplo real de proxy gerado para workflow
-
-Os testes confirmam também o formato:
-
-```text
-http://127.0.0.1:8001/mcp?yaml_config=app%2Fyaml%2Ftest-config.yaml&mcp_scope=workflow&workflow_id=wf
-```
+O mesmo teste afirma explicitamente que a presença de `url` na conexão stdio seria regressão
+(indicaria a volta da ponte HTTP local removida).
 
 ## 18. Explicação 101
 
@@ -656,45 +606,39 @@ Do ponto de vista técnico simples, o sistema faz três perguntas antes de usar 
 
 1. Quais servidores MCP existem para este YAML?
 2. Neste escopo específico, quais tools desse universo devem ser vistas?
-3. O acesso será direto por transporte remoto ou indireto por /mcp no caso stdio?
+3. O servidor é remoto (http/sse/websocket, via URL) ou local (stdio, subprocesso spawnado
+   pelo cliente)?
 
-Quando essas três respostas estão coerentes, o agente usa a tool como se ela fosse parte do seu conjunto normal de ferramentas.
+Em todos os casos a conexão é direta. Quando essas três respostas estão coerentes, o agente usa a tool como se ela fosse parte do seu conjunto normal de ferramentas.
 
 ## 19. Checklist de entendimento
 
 - Entendi o papel de MCPConfigResolver.
-- Entendi a diferença entre carga agentic e proxy stdio.
+- Entendi que o stdio é subprocesso local spawnado pelo cliente MCP, sem proxy HTTP.
 - Entendi o papel de local_mcp_configuration.tools no catálogo efetivo.
-- Entendi o comportamento de cache no runtime agentic e no proxy.
-- Entendi como o /mcp autentica e resolve o YAML.
-- Entendi os erros duros e as degradações silenciosas do desenho atual.
+- Entendi o comportamento de cache no runtime agentic.
+- Entendi que falha de carga de tool MCP propaga (simetria com as tools nativas).
 
 ## 20. Evidências no código
 
 - src/agentic_layer/mcp/mcp_config_resolver.py
-  - Símbolos relevantes: resolve_for_agent, resolve_for_workflow, _build_local_http_proxy_connection.
-  - Comportamento confirmado: merge por escopo, transports suportados e geração da URL /mcp para stdio.
+  - Símbolos relevantes: resolve_for_agent, resolve_for_workflow, _inject_stdio_settings, _build_connection_entry.
+  - Comportamento confirmado: merge por escopo, transports suportados, expansão de placeholders (expand_placeholders) e conexão stdio direta com command/args/env/cwd/encoding preservados.
 - src/agentic_layer/mcp/mcp_tools_resolver.py
   - Símbolos relevantes: _resolve_tools, _load_tools, merge_tools.
-  - Comportamento confirmado: cache por tenant e escopo, carga via MultiServerMCPClient e descarte de conflito por nome.
+  - Comportamento confirmado: cache por tenant e escopo, carga via MultiServerMCPClient (que spawna o subprocesso no stdio), falha de carga propagada e descarte de conflito por nome.
 - src/agentic_layer/supervisor/mcp_tools_merger.py
   - Símbolos relevantes: merge_for_agent, merge_for_workflow.
   - Comportamento confirmado: ponto de incorporação das tools MCP ao runtime.
 - src/agentic_layer/supervisor/tools_factory.py
   - Símbolos relevantes: resolve_workflow_node_tools, resolve_agent_tools_with_context.
   - Comportamento confirmado: tools locais são resolvidas primeiro e depois enriquecidas com MCP.
-- src/agentic_layer/mcp/http_proxy/mcp_stdio_http_proxy.py
-  - Símbolos relevantes: McpStdioProxyService, McpStdioClient, McpStdioToolCatalogBuilder.
-  - Comportamento confirmado: proxy stdio com autenticação, retry, catálogo em memória e roteamento por tool.
-- src/api/routers/mcp_http_proxy_router.py
-  - Símbolos relevantes: McpHttpProxyApp, McpHttpProxyServer.
-  - Comportamento confirmado: servidor MCP HTTP streamable e validação de X-API-Key no boundary ASGI.
 - src/api/service_api.py
-  - Símbolo relevante: mount de /mcp.
-  - Comportamento confirmado: proxy MCP faz parte do runtime HTTP principal.
-- src/config/agentic_assembly/tool_resolver.py
-  - Símbolo relevante: _append_local_mcp_tools.
-  - Comportamento confirmado: local_mcp_configuration.tools entra no catálogo efetivo do assembly.
+  - Comportamento confirmado: **não** há montagem de rota `/mcp` — o comentário canônico do arquivo registra que o projeto é apenas consumidor de MCP e que rota e proxy foram eliminados.
+- src/api/security/permissions.py
+  - Comportamento confirmado: nenhuma permissão `MCP_*` no catálogo de autorização.
 - tests/unit/test_02-04-51_mcp_resolvers.py
-  - Motivo da leitura: confirmar exemplos executáveis de merge, cache e geração da URL do proxy.
-  - Comportamento confirmado: casos de agente e workflow para stdio convertido em /mcp.
+  - Símbolo relevante: TestMcpStdioDirectResolution.
+  - Comportamento confirmado: servidor stdio resolve como conexão direta (transport stdio, command/args/env, sem url) para agente e workflow.
+- tests/unit/test_02-06-36_mcp_hosting_axis_removed_guard.py
+  - Comportamento confirmado: módulos do servidor/proxy (`http_proxy`, `mcp_http_proxy_router`) não são importáveis e as permissões órfãs (`MCP_SERVERS_*`, `MCP_TOOLS_*`) não existem; o caminho oficial de consumo permanece importável.

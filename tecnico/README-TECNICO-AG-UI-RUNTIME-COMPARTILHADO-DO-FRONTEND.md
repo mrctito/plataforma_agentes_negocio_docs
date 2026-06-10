@@ -100,8 +100,29 @@ Para investigar o runtime frontend:
 5. confira se specs generativas passam por PrometeuComponentRegistry antes de renderizar
 6. em HIL, garanta que o contrato de resume exista antes de clicar em aprovar ou rejeitar
 
+## 7.1. Spec-runtime e bridge do componente de chat embutível
+
+O runtime compartilhado tem duas formas de consumir AG-UI no frontend, e elas não se confundem:
+
+- **sidecar (seções acima):** consome o stream SSE de `/ag-ui/runs`, reconstrói estado incremental e renderiza timeline/HIL;
+- **spec-na-resposta:** o componente global de chat embutível **não** abre stream — detecta um spec AG-UI no corpo da resposta normalizada dos endpoints de chat (`/rag/execute`, `/agent/execute`) e o renderiza. É a superfície usada pela renderização estruturada do componente.
+
+A camada de detecção+render é compartilhada para não duplicar lógica por tela:
+
+**Spec-runtime** (`embeddable-chat-spec-runtime.js`, UMD): `detectAgUiSpec(payload)` procura um spec conhecido na raiz e em contêineres convencionais (`ag_ui`, `agUi`, `structured`, `ui_spec`, `spec`, `data`, `result`) e classifica como `capabilities`, `dashboard` ou `uiSpec`. `renderInto(detection, container)` delega: DashboardSpec e UISpec vão para os renderizadores **oficiais** injetados (`createAgUiDashboardRenderer` / `createAgUiUiSpecRenderer`), que rodam o próprio validador fail-closed; o CapabilitiesSpec é validado por `validateCapabilitiesSpecPayload` (espelha o contrato Pydantic: `specType="capabilities"`, `version="1.0"`, `title`, `intro`, `groups[]`, `suggestions[]`, `safety` com 4 flags `false`) e renderizado por primitivas DOM seguras (`createTextElement`/`replaceChildrenSafe`, sem `innerHTML` de conteúdo do agente, chips `<button>` sem `onclick` inline). Conteúdo inseguro (HTML/JS/SQL/segredo) reprova o spec → o componente cai em texto.
+
+**Bridge** (`ag-ui-spec-render-bridge.js`, ESM): é o único ponto que `import`a os renderizadores oficiais (ES modules) e as primitivas seguras, monta o spec-runtime por injeção de fábrica e publica `window.PrometeuEmbeddableChatSpecRuntime`. Existe porque o componente e o spec-runtime são UMD (carregados por `<script>` clássico) e não podem importar ES modules; o bridge (`type="module"`, deferido) faz a ponte. Fail-closed: bridge ausente = `window.PrometeuEmbeddableChatSpecRuntime` indefinido = componente renderiza texto. O componente resolve esse runtime de forma lazy no momento do render, tolerando o defer do bridge.
+
+Ordem de carregamento, ativação por flag (`renderStructured`, `welcomeCapabilities`) e estado real por host: ver o guia do componente embutível, seção 18.1.
+
 ## 8. Evidências no código
 
+- app/ui/static/js/shared/embeddable-chat-spec-runtime.js
+  - Motivo: detecção + registry de renderizadores AG-UI para o chat embutível.
+  - Comportamento confirmado: `detectAgUiSpec` classifica o spec; DashboardSpec/UISpec delegam aos renderizadores oficiais injetados; CapabilitiesSpec é validado fail-closed e renderizado com DOM seguro.
+- app/ui/static/js/shared/ag-ui-spec-render-bridge.js
+  - Motivo: ponte ESM↔UMD que liga os renderizadores oficiais ao spec-runtime.
+  - Comportamento confirmado: importa os renderizadores ES module, injeta-os no spec-runtime e publica `window.PrometeuEmbeddableChatSpecRuntime`; ausência do bridge degrada para texto.
 - packages/ag-ui-runtime/official-http-client.js
   - Motivo: wrapper oficial do cliente AG-UI no pacote Plataforma de Agentes de IA.
   - Comportamento confirmado: AG-UI usa POST com corpo JSON, preserva X-Correlation-Id e transforma o stream com `@ag-ui/client`.

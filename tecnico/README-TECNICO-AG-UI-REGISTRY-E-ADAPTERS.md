@@ -62,8 +62,37 @@ Quando um executionKind não funciona:
 2. valide se o adapter suporta resume ou apenas execução simples
 3. verifique se a falha veio do domínio do adapter ou do catálogo de registro
 
+## 6.1. Porta de gráfico `ChartAdapter` (registry + adapter no frontend)
+
+O mesmo padrão registry+adapter do backend reaparece no frontend, na renderização de gráficos do dashboard AG-UI. É uma fronteira hexagonal pequena, mas com contrato real e teste de regressão.
+
+**Modelo neutro.** `ChartModel` descreve um gráfico independente de lib: `kind` (`bar` | `line` | `pie` | `donut`, conjunto fechado), `series` (`number[]` para série única ou `[{name, data:number[]}]` multi-série), `categories` (`string[]`, sempre texto) e `options` (`{title?, stacked?, height?, colors?}`).
+
+**Porta + registry.** `ag-ui-chart-adapter.js` (UMD, `window.AgUiChartAdapter`) expõe:
+
+- `WIDGET_TYPE_TO_CHART_KIND` — mapa fechado de tipo de widget do DashboardSpec para `kind` neutro: `bar_chart→bar`, `line_chart→line`, `donut_chart→donut`. KPI/tabela/ranking/insight **não** são gráfico de lib e não aparecem aqui;
+- `buildChartModel(widget, theme)` — converte um widget já resolvido (com números em `series`/`categories`, diretos ou no bloco `data`) no `ChartModel`. Sem dados numéricos válidos, devolve `null` e o renderer cai no placeholder (fail-closed);
+- `setActiveChartAdapter` / `registerChartAdapter` / `getActiveChartAdapter` — registry de slot único do adapter ativo. `registerChartAdapter` só aceita objeto que cumpra a interface mínima (`isAvailable`, `supports`, `render`, `destroy`).
+
+A porta **não importa nenhuma lib de gráfico**. Esse é o invariante que o teste de acoplamento protege.
+
+**Adapter concreto.** `ag-ui-chart-adapter-apexcharts.js` (UMD) é o **único** arquivo que conhece a API do ApexCharts. Mapeia `ChartModel` → opções ApexCharts (`bar/line/pie/donut`) e, ao carregar no browser, **se auto-registra** como adapter ativo via `registerChartAdapter`. Dependência opcional: se `window.ApexCharts` (vendor em `js/vendor/apexcharts.min.js`, v5.14.0) não existir, `isAvailable()` é `false` e o renderer degrada para placeholder/texto sem quebrar.
+
+**Segurança.** O adapter desliga todo caminho de HTML: `dataLabels`/`tooltip`/`legend`/`labels`/`xaxis` usam texto puro, `legend.formatter` devolve `String(...)` sem markup, `tooltip.custom` é `undefined`, `toolbar` off. O gráfico desenha SVG só de número e texto já validados — não vira vetor de injeção.
+
+**Trocar de lib** = escrever outro adapter implementando a mesma interface e registrá-lo; zero mudança no renderer (`ag-ui-dashboard-renderer.js`, que fala só com `window.AgUiChartAdapter`). A renderização desses gráficos no componente global de chat embutível depende dessa porta — ver o guia do componente, seção 18.1.
+
 ## 7. Evidências no código
 
+- app/ui/static/js/shared/ag-ui-chart-adapter.js
+  - Motivo: porta neutra + registry de gráfico no frontend.
+  - Comportamento confirmado: `ChartModel`, `WIDGET_TYPE_TO_CHART_KIND`, `buildChartModel` e o registry de adapter ativo; a porta não importa nenhuma lib.
+- app/ui/static/js/shared/ag-ui-chart-adapter-apexcharts.js
+  - Motivo: único adapter concreto.
+  - Comportamento confirmado: mapeia `ChartModel` para ApexCharts, auto-registra-se e desabilita HTML em tooltip/labels/legend.
+- tests/frontend/ag_ui_chart_adapter_contract.test.js
+  - Motivo: proteção do desacoplamento renderer↔lib.
+  - Comportamento confirmado: regressão falha se o renderer voltar a depender da lib de gráfico direto.
 - src/api/services/ag_ui_adapter_registry.py
   - Motivo: catálogo explícito do slice.
   - Comportamento confirmado: o registry padrão registra apenas deepagent, workflow, retail_demo e erp_backoffice_demo.

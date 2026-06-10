@@ -98,6 +98,14 @@ O slice atual tem sete capacidades estruturais importantes, todas confirmadas no
 
 Isso muda o enquadramento correto da feature. O AG-UI deste repositorio nao e apenas a demo de varejo. A demo de varejo e a vitrine mais tangivel do slice. Mas a infraestrutura ja serve tambem como boundary agentic mais amplo, com executionKind para deepagent, workflow e dominios governados.
 
+Existe ainda uma **segunda forma** de consumir AG-UI no frontend, que nao depende do stream `/ag-ui/runs`: renderizar specs AG-UI que chegam **no corpo da resposta** dos endpoints de chat. Esse caminho e usado pelo **componente global de chat embutivel** (`PrometeuEmbeddableChatRuntime`) e pelas telas que o hospedam — a pagina oficial de WebChat (`ui-webchat-v3.html`, host do componente desde 2026-06-10), o host de exemplo (`ui-admin-plataforma-webchat.html`) e a bancada de teste (`ui-embeddable-chat-test.html`). Quando o agente devolve um spec conhecido, o componente o desenha como UI visual; quando devolve so texto, mostra texto. Os specs reconhecidos sao tres:
+
+- **CapabilitiesSpec** — painel "o que voce faz / sobre o que falo", com cards de assuntos e perguntas-exemplo clicaveis. Emitido pela tool builtin `descrever_capacidades`, auto-injetada em todo supervisor DeepAgent. Nunca expoe nomes internos de ferramenta ou subdominio.
+- **DashboardSpec** — dashboard dinamico governado (KPIs, tabelas, rankings e graficos reais).
+- **UISpec** — interface generica governada, delegada ao renderizador oficial.
+
+Atualizacao 2026-06-10: o **WebChat v3** (`ui-webchat-v3.html`) migrou para o componente embutivel (motor proprio removido) e carrega a cadeia AG-UI completa antes do componente — a renderizacao estruturada esta **ativa** nele, comprovada em runtime real. O detalhe de ativacao, seguranca e estado por tela esta no guia do componente embutivel.
+
 ## 8. O que a feature disponibiliza
 
 Do ponto de vista de produto, o AG-UI entrega tres camadas de valor.

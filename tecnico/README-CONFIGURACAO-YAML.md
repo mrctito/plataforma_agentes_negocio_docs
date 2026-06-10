@@ -9,6 +9,8 @@ Para a trilha completa e separada por finalidade sobre configuração declarativ
 
 Este arquivo continua sendo o manual geral de configuração YAML, mas os dois documentos acima passam a ser a entrada principal para o recorte específico de agentes, workflows e ETL sem programação.
 
+Para o recorte de **respostas com gráficos (AG-UI / Generative UI) configuradas por YAML**, a entrada é o capítulo [35. AG-UI no YAML](#35-ag-ui-no-yaml-respostas-com-gráficos-generative-ui--exemplo-real-do-demo-varejo) deste manual, com aprofundamento de protocolo em [README-TECNICO-AG-UI.md](./README-TECNICO-AG-UI.md).
+
 ## 1. O que é esta feature
 
 A configuração YAML é o contrato operacional da plataforma. Ela descreve como o produto deve se comportar, em qual contexto de cliente, com quais segredos, quais pipelines, quais recursos de RAG, qual topologia agentic e sob quais regras de governança.
@@ -579,3 +581,46 @@ O que observar: metadata.tenant_id e caminhos derivados não são aceitos como c
 - tools/vscode-agentic-language-server/server/src/agentic_yaml_lsp/analysis_service.py: lido para confirmar a lista explícita de chaves top-level governadas por alvo no tooling do YAML agentic.
 
 - .sandbox/relatorio-contrato-yaml-codigo-2026-05-02.md: relatório forense derivado exclusivamente do código para consolidar chaves top-level confirmadas, obrigatórias condicionais, rejeições explícitas e lacunas de afirmação segura.
+
+
+## 35. AG-UI no YAML: respostas com gráficos (Generative UI) — exemplo real do demo varejo
+
+### 35.1. O que é, em 101
+
+AG-UI (Agent-Generated UI, ou Generative UI) é a capacidade de o agente responder não só com texto, mas com uma **especificação declarativa de interface** — um JSON chamado *spec* — que o frontend da plataforma transforma em widgets reais: gráficos de linha, barras, donut, KPIs e tabelas de ranking. O ponto central deste capítulo: **essa capacidade é configurada inteiramente no YAML**, sem escrever uma linha de Python ou JavaScript. O exemplo canônico vivo é o [app/yaml/rag-config-pdv-vendas-demo.yaml](../../app/yaml/rag-config-pdv-vendas-demo.yaml) (demo varejo PDV), que traz comentários extensos explicando a configuração no próprio arquivo.
+
+### 35.2. As 3 peças da configuração no YAML
+
+A resposta com gráfico nasce de três peças declaradas no YAML, que trabalham em sequência:
+
+**Peça 1 — Regra de roteamento no prompt do supervisor.** O prompt do supervisor DeepAgent ensina quando a resposta merece gráfico (pedido explícito de dashboard/gráfico/visualização, ou resposta natural em série temporal, ranking comparativo, mix de composição) e manda delegar ao subagente especialista, devolvendo como resposta final **exatamente** o JSON gerado por ele — sem texto em volta e sem cerca de código markdown. Esse "verbatim" não é estilo: o detector do frontend opera sobre o JSON puro da resposta; qualquer prosa ou \`\`\` em volta quebra a detecção e o usuário recebe texto cru em vez de gráfico.
+
+**Peça 2 — Subagente especialista com `response_format`.** No demo varejo é o `subdominio_dashboard_dinamico`. Três chaves fazem o trabalho:
+
+- `response_format`: um JSON Schema estrito (contrato **DashboardSpec 1.0**) com `version`, `title`, `layout`, `widgets`, `dataSources`, `narrative`, `refreshPolicy` e `safety`. O modelo é *forçado* pelo runtime a produzir essa estrutura — é schema validado, não convenção de prompt.
+- `tools`: somente as consultas `dyn_sql` aprovadas para dashboard (no demo: `pdv_dashboard_series_vendas_periodo`, `pdv_dashboard_ranking_dimensoes`, `pdv_dashboard_mix_pagamento_entrega`). Cada `dataSource` do spec referencia um desses `queryId` com parâmetros declarados — não existe SQL livre.
+- `safety` dentro do spec: `htmlAllowed`, `scriptAllowed`, `freeSqlAllowed`, `secretsAllowed` e `correlationIdAllowed` sempre `false`. O spec descreve **dados e widgets**, nunca código executável — é isso que torna seguro renderizar o que um LLM gerou.
+
+**Peça 3 — Renderização no frontend (nada a configurar por tela).** As telas da plataforma já carregam a pilha de renderização: o `embeddable-chat-spec-runtime.js` inspeciona a resposta do agente e, ao encontrar um objeto com a assinatura do DashboardSpec (`version: "1.0"` + `widgets`), delega ao `ag-ui-dashboard-renderer.js`, que desenha os gráficos com ApexCharts através de uma porta neutra de gráficos (`ag-ui-chart-adapter*.js`). O WebChat host oficial (`ui-admin-plataforma-webchat.html`) e a bancada do componente embutível já incluem esses scripts.
+
+Tipos de widget aceitos pelo contrato e renderizados hoje: `kpi`, `line_chart`, `bar_chart`, `donut_chart` e `ranking`.
+
+### 35.3. Os dois caminhos de runtime até o gráfico
+
+1. **No corpo da resposta do chat** (`/agent/execute`, `/rag/execute`): o supervisor devolve o DashboardSpec como resposta final, o componente de chat embutível detecta e renderiza os gráficos na própria conversa. É o caminho exercitado pelo webchat.
+2. **No canvas dedicado AG-UI** (`POST /ag-ui/runs`): a página `ui-admin-plataforma-ag-ui-dashboard-dinamico.html` consome a borda HTTP dedicada do protocolo AG-UI, que emite eventos de materialização (`retail.dashboard.spec.started` … `retail.dashboard.render.ready`) em stream — a experiência completa de dashboard dinâmico, com validação e execução das queries no backend.
+
+### 35.4. Erros a evitar (comprovados em runtime)
+
+- JSON dentro de cerca de código markdown ou com texto antes/depois → a detecção falha e o chat mostra texto.
+- Referenciar `queryId` fora da lista de tools do subagente → o spec é rejeitado na validação.
+- Qualquer flag de `safety` em `true` → rejeição fail-closed.
+- Declarar `ui_specs` no topo do supervisor → localização rejeitada; o único caminho aceito é `multi_agents[].ag_ui.ui_specs` (ver capítulo 15 sobre localizações rejeitadas).
+- Editar o bloco `multi_agents` (governado) sem recarimbar o hash → drift `AGENTIC_AST_GOVERNED_YAML_DRIFT` em runtime. Re-stamp oficial: `python scripts/refresh_agentic_governed_hash.py <yaml> --target deepagent_supervisor --write`. Atenção: o re-stamp reserializa o arquivo e **apaga comentários** — reaplique os comentários depois.
+
+### 35.5. Onde aprofundar (cross-reference)
+
+- Protocolo AG-UI completo (endpoints, eventos, registry, replay): [README-TECNICO-AG-UI.md](./README-TECNICO-AG-UI.md)
+- O demo varejo em detalhe (capabilities, adapter, materialização): [README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md](./README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md)
+- Ativação por host e ordem de scripts do componente de chat: GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md
+- O YAML exemplo comentado: [app/yaml/rag-config-pdv-vendas-demo.yaml](../../app/yaml/rag-config-pdv-vendas-demo.yaml)
