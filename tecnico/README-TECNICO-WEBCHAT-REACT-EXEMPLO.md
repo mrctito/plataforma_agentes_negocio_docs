@@ -10,7 +10,7 @@ A base real para esta implementação está nos seguintes pontos do repositório
 - `src/api/routers/rag_router.py` — o backend expõe o endpoint `/rag/execute` e delega para o runtime oficial do RAG. O corpo é o envelope `{ operation: 'ask', payload: { ... } }`.
 - `src/api/routers/crypto_router.py` — o endpoint `/crypto/session-key` gera a chave pública efêmera usada para proteger a chave Fernet.
 
-> Se você precisa de uma interface React inteira própria (sem usar o componente embutível), o guia completo, com polling assíncrono e HIL, é o GUIA-INTEGRADOR-CHAT-PLATAFORMA.md.
+> Se você precisa de uma interface React inteira própria (sem usar o componente embutível), o guia completo, com polling assíncrono e HIL, é o [GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](../usuario/GUIA-INTEGRADOR-CHAT-PLATAFORMA.md).
 
 ## 2. Como montar um cliente React mínimo
 

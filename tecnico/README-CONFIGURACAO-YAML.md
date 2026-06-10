@@ -622,5 +622,5 @@ Tipos de widget aceitos pelo contrato e renderizados hoje: `kpi`, `line_chart`, 
 
 - Protocolo AG-UI completo (endpoints, eventos, registry, replay): [README-TECNICO-AG-UI.md](./README-TECNICO-AG-UI.md)
 - O demo varejo em detalhe (capabilities, adapter, materialização): [README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md](./README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md)
-- Ativação por host e ordem de scripts do componente de chat: GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md
+- Ativação por host e ordem de scripts do componente de chat: [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md)
 - O YAML exemplo comentado: [app/yaml/rag-config-pdv-vendas-demo.yaml](../../app/yaml/rag-config-pdv-vendas-demo.yaml)

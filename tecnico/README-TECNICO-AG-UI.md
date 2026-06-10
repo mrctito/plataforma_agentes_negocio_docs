@@ -30,7 +30,7 @@ Existe uma segunda superficie de consumo AG-UI no frontend, **independente do st
 4. src/api/schemas/ag_ui_capabilities_models.py (contrato fail-closed do **CapabilitiesSpec**).
 5. src/agentic_layer/tools/system_tools/describe_capabilities.py (tool builtin `descrever_capacidades`, auto-injetada em todo supervisor DeepAgent).
 
-Os tres specs reconhecidos nessa superficie sao CapabilitiesSpec (painel de capacidades, novo), DashboardSpec (dashboard dinamico, ja existente) e UISpec (interface generica). Ativacao, ordem de scripts e estado por host — incluindo o fato de que o WebChat v3 **ainda nao** ativa essa renderizacao — estao no guia do componente embutivel, e a porta de grafico esta detalhada em [Registry e adapters](README-TECNICO-AG-UI-REGISTRY-E-ADAPTERS.md).
+Os tres specs reconhecidos nessa superficie sao CapabilitiesSpec (painel de capacidades, novo), DashboardSpec (dashboard dinamico, ja existente) e UISpec (interface generica). Ativacao, ordem de scripts e estado por host — incluindo o fato de que o WebChat v3 **ainda nao** ativa essa renderizacao — estao no [guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md), e a porta de grafico esta detalhada em [Registry e adapters](README-TECNICO-AG-UI-REGISTRY-E-ADAPTERS.md).
 
 Detalhamento técnico por etapa:
 
@@ -893,7 +893,7 @@ Em termos praticos, a investigacao costuma seguir esta ordem.
 
 ## 18. Como terceiros devem integrar
 
-Para uma leitura de produto SDK, com explicacao 101, quickstart, seguranca, varejo/vendas, migracao ERP e matriz de eventos, use primeiro GUIA-AG-UI-SDK-TERCEIROS.md. Esta secao permanece como resumo tecnico dentro do manual completo.
+Para uma leitura de produto SDK, com explicacao 101, quickstart, seguranca, varejo/vendas, migracao ERP e matriz de eventos, use primeiro [GUIA-AG-UI-SDK-TERCEIROS.md](../usuario/GUIA-AG-UI-SDK-TERCEIROS.md). Esta secao permanece como resumo tecnico dentro do manual completo.
 
 O caminho recomendado para um integrador e este.
 

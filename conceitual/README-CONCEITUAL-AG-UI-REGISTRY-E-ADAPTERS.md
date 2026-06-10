@@ -100,7 +100,7 @@ Quem conhece a lib de fato e o **adapter concreto**. Hoje existe um unico adapte
 
 A consequencia pratica e a mesma do registry de executionKinds: **trocar de lib de grafico = escrever outro adapter que implemente a mesma porta e registra-lo; zero mudanca no renderizador**. Isso e arquitetura hexagonal (o `CLAUDE.md §6` do repositorio): o nucleo (renderizador) fala com uma porta neutra, e a tecnologia concreta (a lib) entra por um adapter substituivel. Essa fronteira e protegida por um teste de regressao de acoplamento, que falha se o renderizador voltar a depender da lib direto.
 
-Onde isso se conecta com o resto deste slice: os specs DashboardSpec validados pelos adapters de dominio (retail_demo) descrevem widgets como `bar_chart`, `line_chart` e `donut_chart`; a porta de grafico mapeia esses tipos de widget para o `kind` neutro e entrega ao adapter ativo. A renderizacao desses dashboards no **componente global de chat embutivel** depende exatamente dessa porta — detalhe de ativacao no guia do componente embutivel.
+Onde isso se conecta com o resto deste slice: os specs DashboardSpec validados pelos adapters de dominio (retail_demo) descrevem widgets como `bar_chart`, `line_chart` e `donut_chart`; a porta de grafico mapeia esses tipos de widget para o `kind` neutro e entrega ao adapter ativo. A renderizacao desses dashboards no **componente global de chat embutivel** depende exatamente dessa porta — detalhe de ativacao no [guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md).
 
 ## 9. Evidencias no codigo
 

@@ -13,7 +13,7 @@ O ponto importante é que o fluxo não começa em React. Ele começa no backend 
 
 Esse desenho é o mesmo usado pelo **componente global de chat embutível** (`PrometeuEmbeddableChatRuntime`) e pelo cliente HTTP canônico (`layout-mestre-api.js`), que já fazem chamadas reais para o backend.
 
-Antes de escrever um cliente React do zero, vale lembrar: se o seu React puder carregar os scripts compartilhados da plataforma, o caminho recomendado é **embutir o componente** (ver GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md). Este exemplo React do zero é para quem precisa de uma interface 100% própria; o guia completo desse caso é o GUIA-INTEGRADOR-CHAT-PLATAFORMA.md.
+Antes de escrever um cliente React do zero, vale lembrar: se o seu React puder carregar os scripts compartilhados da plataforma, o caminho recomendado é **embutir o componente** (ver [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md)). Este exemplo React do zero é para quem precisa de uma interface 100% própria; o guia completo desse caso é o [GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](../usuario/GUIA-INTEGRADOR-CHAT-PLATAFORMA.md).
 
 ## 2. Que problema ela resolve
 

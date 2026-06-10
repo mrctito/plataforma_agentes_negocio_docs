@@ -8,9 +8,9 @@ montagem do payload".
 O caminho oficial hoje passa pelo **componente global de chat embutível**
 (`PrometeuEmbeddableChatRuntime`) e pelo **cliente HTTP canônico** `layout-mestre-api.js`.
 Quem precisa entender a sequência ponta a ponta (handshake → cifra → envio → polling)
-deve ler junto o GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md
+deve ler junto o [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md)
 e, para uma interface 100% própria sem o componente, o
-GUIA-INTEGRADOR-CHAT-PLATAFORMA.md.
+[GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](../usuario/GUIA-INTEGRADOR-CHAT-PLATAFORMA.md).
 
 ## 1. Onde o fluxo real está confirmado no código
 
@@ -240,7 +240,7 @@ async function enviarPerguntaRag({ baseUrl, yamlText, question, userEmail, apiKe
 ```
 
 > Para o caminho assíncrono completo (HTTP 202 + polling em `/api/v1/status`), veja o
-> exemplo vanilla no GUIA-INTEGRADOR-CHAT-PLATAFORMA.md.
+> exemplo vanilla no [GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](../usuario/GUIA-INTEGRADOR-CHAT-PLATAFORMA.md).
 
 ## 5. Diagnóstico rápido
 

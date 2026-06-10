@@ -80,7 +80,7 @@ A porta **não importa nenhuma lib de gráfico**. Esse é o invariante que o tes
 
 **Segurança.** O adapter desliga todo caminho de HTML: `dataLabels`/`tooltip`/`legend`/`labels`/`xaxis` usam texto puro, `legend.formatter` devolve `String(...)` sem markup, `tooltip.custom` é `undefined`, `toolbar` off. O gráfico desenha SVG só de número e texto já validados — não vira vetor de injeção.
 
-**Trocar de lib** = escrever outro adapter implementando a mesma interface e registrá-lo; zero mudança no renderer (`ag-ui-dashboard-renderer.js`, que fala só com `window.AgUiChartAdapter`). A renderização desses gráficos no componente global de chat embutível depende dessa porta — ver o guia do componente, seção 18.1.
+**Trocar de lib** = escrever outro adapter implementando a mesma interface e registrá-lo; zero mudança no renderer (`ag-ui-dashboard-renderer.js`, que fala só com `window.AgUiChartAdapter`). A renderização desses gráficos no componente global de chat embutível depende dessa porta — ver o [guia do componente](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md), seção 18.1.
 
 ## 7. Evidências no código
 

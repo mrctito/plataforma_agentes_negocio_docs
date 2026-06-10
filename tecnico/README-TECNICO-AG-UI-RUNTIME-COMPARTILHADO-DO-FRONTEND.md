@@ -113,7 +113,7 @@ A camada de detecção+render é compartilhada para não duplicar lógica por te
 
 **Bridge** (`ag-ui-spec-render-bridge.js`, ESM): é o único ponto que `import`a os renderizadores oficiais (ES modules) e as primitivas seguras, monta o spec-runtime por injeção de fábrica e publica `window.PrometeuEmbeddableChatSpecRuntime`. Existe porque o componente e o spec-runtime são UMD (carregados por `<script>` clássico) e não podem importar ES modules; o bridge (`type="module"`, deferido) faz a ponte. Fail-closed: bridge ausente = `window.PrometeuEmbeddableChatSpecRuntime` indefinido = componente renderiza texto. O componente resolve esse runtime de forma lazy no momento do render, tolerando o defer do bridge.
 
-Ordem de carregamento, ativação por flag (`renderStructured`, `welcomeCapabilities`) e estado real por host: ver o guia do componente embutível, seção 18.1.
+Ordem de carregamento, ativação por flag (`renderStructured`, `welcomeCapabilities`) e estado real por host: ver o [guia do componente embutível](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md), seção 18.1.
 
 ## 8. Evidências no código
 

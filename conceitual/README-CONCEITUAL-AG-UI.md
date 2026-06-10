@@ -104,7 +104,7 @@ Existe ainda uma **segunda forma** de consumir AG-UI no frontend, que nao depend
 - **DashboardSpec** — dashboard dinamico governado (KPIs, tabelas, rankings e graficos reais).
 - **UISpec** — interface generica governada, delegada ao renderizador oficial.
 
-Atualizacao 2026-06-10: o **WebChat v3** (`ui-webchat-v3.html`) migrou para o componente embutivel (motor proprio removido) e carrega a cadeia AG-UI completa antes do componente — a renderizacao estruturada esta **ativa** nele, comprovada em runtime real. O detalhe de ativacao, seguranca e estado por tela esta no guia do componente embutivel.
+Atualizacao 2026-06-10: o **WebChat v3** (`ui-webchat-v3.html`) migrou para o componente embutivel (motor proprio removido) e carrega a cadeia AG-UI completa antes do componente — a renderizacao estruturada esta **ativa** nele, comprovada em runtime real. O detalhe de ativacao, seguranca e estado por tela esta no [guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md).
 
 ## 8. O que a feature disponibiliza
 
@@ -207,7 +207,7 @@ Para software houses de food service, varejo e ERP, isso tem um efeito direto: a
 
 ## 12. Como terceiros podem usar
 
-Para o caminho pratico de SDK, leia GUIA-AG-UI-SDK-TERCEIROS.md. Ele consolida explicacao 101, primeiro run, seguranca, varejo/vendas, adaptacao ERP e matriz de eventos.
+Para o caminho pratico de SDK, leia [GUIA-AG-UI-SDK-TERCEIROS.md](../usuario/GUIA-AG-UI-SDK-TERCEIROS.md). Ele consolida explicacao 101, primeiro run, seguranca, varejo/vendas, adaptacao ERP e matriz de eventos.
 
 Terceiros ou outras equipes internas podem usar o slice de tres formas diferentes.
 
