@@ -314,6 +314,92 @@ Isso transforma o parsing em um runtime governado, não em uma decisão fixa. O 
 
 Também elimina fallback escondido por conveniência. Quando uma engine indisponível está em `mode=default` ou `mode=always`, o runtime pode falhar fechado. Quando a option permite indisponibilidade, a engine vira uma `DisabledPdfParsingEngine` observável, e não um desvio silencioso.
 
+### 8.7. Contrato canônico enriquecido (v2) e coleta de estrutura governada por YAML
+
+> Estado comprovado em runtime (run real Docling sobre PDFs reais). Recursos estruturais
+> permanecem **desligados por default**: nada disto muda o comportamento de hoje enquanto o YAML não
+> ligar os flags.
+
+**O que é o contrato canônico.** Toda engine de parsing devolve o mesmo objeto tipado,
+`PdfParsingEngineResult` (em `src/ingestion_layer/pdf_tools/pdf_parsing_engine_contract.py`). É sobre
+ele que o pipeline trabalha — o core nunca toca `DoclingDocument` ou `Element` do Unstructured
+diretamente. A versão do contrato é registrada em `metadata_contract_version`, hoje **2**.
+
+**Campos estruturais (novos, opcionais, aditivos — contrato v2).** Além dos campos atuais (texto,
+tabelas, sumários, qualidade), o resultado pode transportar, **quando os recursos estão ligados por
+YAML**:
+
+- `structured_blocks`: blocos/elementos tipados (texto + categoria + página + bbox + ordem de leitura
+  + provenance);
+- `sections`: hierarquia de seções (título + nível + página);
+- `structured_images`: imagens estruturadas (página + bbox + tipo);
+- `engine_provenance`: engine + versão + configuração efetivamente aplicada;
+- `extraction_issues`: erros/avisos da extração;
+- `PdfParsedTable.bbox`: posição da tabela na página.
+
+Todos têm default vazio (`()`/`None`): se o recurso estiver desligado, o objeto é idêntico ao de
+hoje. Os tipos são dataclasses imutáveis (frozen+slots), o que permite que a estrutura atravesse o
+subprocesso do Docling por serialização JSON sem perda (ver 8.8).
+
+**Coleta governada por YAML, simétrica entre engines.** A estrutura só é coletada quando o YAML liga
+o recurso da engine:
+
+- **Docling** — `processing.parsing.docling.do_table_structure` (TableFormer), `do_ocr`,
+  `force_backend_text`, `generate_picture_images`. Com `force_backend_text=true` e tudo desligado (o
+  default), o Docling usa o caminho rápido só-texto e **não** coleta estrutura. Quando algum recurso
+  é ligado, o caminho rico coleta blocos/seções/imagens do `DoclingDocument` e mapeia tabelas com
+  bbox.
+- **Unstructured** — `processing.parsing.unstructured.infer_table_structure` (default `false`). Lido
+  por `get_pdf_unstructured_config`, simétrico a `get_pdf_docling_config`. Quando ligado, coleta
+  `category`/`coordinates`/`text_as_html` e produz a mesma estrutura canônica do Docling.
+
+As duas engines produzem **os mesmos tipos** do contrato — não há pipeline paralelo. A leitura de
+config é tipada nos dois lados (sem navegação de dict cru).
+
+**Capacidade declarada x efetiva (sem mentir).** O perfil de capacidade de cada engine declara o que
+ela **sabe** entregar; o resultado também reporta o que a execução **de fato** entregou:
+`engine_effective_output_mode` (`text_only`/`text_plus_tables`/`structured`) e
+`engine_effective_capabilities`. Assim, uma execução que não produziu estrutura (ex.: PDF escaneado
+sem OCR) é reportada como `text_only` mesmo que o perfil declare `text_plus_tables`.
+
+### 8.8. Travessia do subprocesso do Docling
+
+O Docling roda isolado em subprocesso. O processo filho serializa o resultado com `asdict` (todos os
+campos do contrato, inclusive os estruturais novos); o processo pai reconstrói o objeto em
+`_rebuild_result` (`docling_pdf_parsing_subprocess.py`), campo a campo, incluindo blocos, seções,
+imagens, provenance, erros e o bbox de cada tabela. Provado em runtime: a estrutura coletada in-process
+chega íntegra ao processo pai (sem perda na ponte).
+
+### 8.9. Propagação ao metadata e observabilidade da estrutura
+
+`PdfExtractionApplicationService.apply_engine_result_to_metadata` propaga os campos estruturais ao
+`storage_document.metadata` de forma **aditiva** (só grava o que existe; estrutura vazia não altera o
+metadata de hoje). Em seguida emite o evento canônico **`ingestion.pdf.structure.persistence`**, que
+compara, por tipo, a estrutura **detectada** pela engine com a **preservada** no metadata
+(`structure_detected` x `structure_preserved`, `structure_loss`, `decision_reason`). Esse evento torna
+visível, no log, a perda silenciosa de estrutura que antes não aparecia.
+
+O log `ingestion.pdf.metadata.pages_info.updated` foi corrigido para reportar a contagem **real** de
+imagens (`structured_images`, não o resumo legado vazio), as seções reais (`sections_detected`) e o
+**modo efetivo** ao lado do declarado — evitando que o log engane o operador.
+
+### 8.10. `merge_strategy` removida (config morta)
+
+A chave `processing.parsing.merge_strategy` (valor `nao_perde_sinal`) era lida mas **não tinha
+consumidor de runtime** (não havia fusão multi-engine). Foi removida de todos os YAMLs e do código. O
+orquestrador escolhe **uma** engine vencedora por `failure_policy`/`mode`/score; não funde saídas.
+Fusão multi-engine real, se um dia for desejada, é uma decisão à parte.
+
+### 8.11. Limitação conhecida — PDF escaneado precisa de OCR
+
+A estrutura textual completa (texto, tabelas, seções) só é extraída de **PDF nativo** (com camada de
+texto). Em **PDF escaneado/imagem** (sem camada de texto), o Docling enxerga o layout e as imagens,
+mas o texto e as tabelas só aparecem com **`do_ocr=true`** — que continua **desligado por default**.
+O OCR é pesado (na ordem de dezenas de segundos por página) e, no preset atual, perde acentuação em
+português. A política de detecção de PDF escaneado e de qualidade de OCR é uma decisão de produto
+(tratada à parte); enquanto não decidida, o comportamento conservador é não rodar OCR
+automaticamente.
+
 ## 9. Manifesto e retomada de extração
 
 `PdfExtractionApplicationService.extract_pdf_text` é o coração operacional da extração.

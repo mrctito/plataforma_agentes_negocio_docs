@@ -421,6 +421,8 @@ A recomendação é que novas telas usem a API pública principal.
 
 ## 18.1 Renderização AG-UI estruturada (Capacidades, Dashboard e UISpec)
 
+> Para um tutorial passo a passo — como configurar o YAML, quais widgets existem, como testar e as 10 dúvidas de quem está começando — veja [TUTORIAL-101-GENERATIVE-UI.md](TUTORIAL-101-GENERATIVE-UI.md). Esta seção foca no contrato do componente; o tutorial foca em como usar.
+
 ### O que é, em uma frase
 
 Quando a resposta do backend traz um **spec AG-UI conhecido** (um bloco de dados estruturado que descreve uma interface, e não só texto), o componente **desenha esse spec como UI visual** dentro da bolha do assistente — cards de capacidades, gráficos, KPIs, tabelas — em vez de mostrar um JSON cru ou um texto seco. Se a resposta **não** traz spec reconhecido, o componente continua mostrando texto, exatamente como antes. Esse é o ponto central: a feature é **aditiva e invisível para quem só usa texto**.
@@ -586,6 +588,65 @@ envia `payloadText` ao backend. Serve para hosts que enriquecem a pergunta com c
 que não deve poluir a conversa (caso DNIT: contexto de projeto e arquivos anexado à
 pergunta). O histórico e os eventos carregam **os dois** textos, para auditoria. Sem a
 opção, o comportamento é o padrão (envia o que exibe).
+
+## 18.5A buildPayloadText: bind permanente de campos da tela
+
+Enquanto o `payloadText` de §18.5 é passado por chamada (você enriquece manualmente cada
+invocação de `perguntar()`), o hook `buildPayloadText` é um bind **permanente** registrado
+uma única vez na criação do componente. A partir daí, todo envio feito pelo input embutido
+(botão Enviar, tecla Enter) passa automaticamente pelo hook antes de sair.
+
+**Quando usar:** quando a tela host tem contexto dinâmico que deve acompanhar toda pergunta
+digitada pelo usuário — projeto aberto, filtros ativos, arquivos selecionados, período de
+análise. O usuário não precisa repassar esse contexto manualmente; ele está sempre presente.
+
+**Contrato:**
+
+```javascript
+const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
+  // ... outras configs ...
+  buildPayloadText: (perguntaDigitada) => {
+    const contexto = obterContextoAtualDaTela(); // função da SUA página host
+    if (!contexto) return perguntaDigitada;       // sem contexto: envia normal
+    return contexto + '\n\nPergunta do usuário:\n' + perguntaDigitada;
+  },
+});
+```
+
+- A função recebe o texto digitado no input.
+- Deve devolver uma string: o texto que será enviado ao backend.
+- A bolha do chat exibe o texto original digitado (`perguntaDigitada`), não o enriquecido.
+- O log interno (rastreável pelo `correlation_id`) carrega os dois, para auditoria.
+- Se o hook lançar exceção, o componente captura silenciosamente e envia o texto original — o fallback garante que o envio não quebra.
+
+**Precedência:** se `perguntar()` for chamado com `{ payloadText }` explícito (§18.5), esse
+valor tem precedência sobre o hook. O hook só é acionado quando não há `payloadText` por
+chamada.
+
+**Exemplo real: tela de projetos DNIT**
+(`app/ui/static/js/dnit-project-detail.js`, linhas ~1483 e ~1608-1614)
+
+A tela registra o hook na criação do componente:
+```javascript
+buildPayloadText: (pergunta) => this.chatComporPayloadText(pergunta),
+```
+
+E a função de composição monta o payload enriquecido com o contexto da sessão:
+```javascript
+chatComporPayloadText(pergunta) {
+  const contexto = (this._chatContextoSessao || '').trim();
+  if (!contexto) return pergunta;
+  return contexto + '\n\nPergunta do usuário:\n' + pergunta;
+}
+```
+
+O `_chatContextoSessao` é atualizado pela tela à medida que o usuário abre projetos e
+seleciona arquivos — o componente não conhece esse dado, só chama o hook a cada envio.
+
+**Nota de dívida:** `dnit-project-detail.js` ainda usa um runtime paralelo próprio (não o
+componente `PrometeuEmbeddableChatRuntime`), por decisão registrada em §35.1. O padrão
+`buildPayloadText` é o contrato correto para qualquer nova host que precise de bind de
+contexto — o DNIT será migrado para ele quando a dívida for quitada.
 
 ## 18.6 messageActions: ações da host por mensagem
 

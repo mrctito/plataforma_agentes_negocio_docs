@@ -22,6 +22,190 @@ Sem um pipeline especializado, o produto sofreria com três perdas graves.
 - Perda de governança, porque OCR, parsing e chunking aconteceriam de forma opaca.
 - Perda comercial, porque clientes corporativos medem a maturidade da plataforma pela capacidade real de lidar com PDF complexo.
 
+## 2-A. Capítulo introdutório — por que a ingestão "ingênua" não funciona (e por que isto NÃO é overengineering)
+
+> Este capítulo existe porque 99% das pessoas que olham este pipeline pela primeira vez pensam:
+> *"isso tudo é trabalho desnecessário; dá pra fazer com 10 linhas de LangChain ou 3 prompts numa
+> ferramenta de IA"*. A intenção aqui é mostrar, com profundidade técnica e exemplos concretos de
+> documentos como os do **DNIT** (normas, especificações de serviço — ES, métodos de ensaio — ME,
+> instruções, projetos de engenharia rodoviária), **exatamente onde** essa abordagem rasa quebra,
+> **listando todos os problemas**, e depois fazer o **cara-crachá**: cada etapa que implementamos aqui
+> contra a dor real que ela resolve. Quem ler até o fim entende que cada estágio não é enfeite — é a
+> resposta a uma falha que aparece **no primeiro documento técnico de verdade**.
+
+### 2-A.1. O que é a "ingestão ingênua" (o pipeline de 10 linhas)
+
+O pipeline ingênuo — o que está em quase todo tutorial e em quase todo serviço online de "RAG em 5
+minutos" — tem exatamente quatro passos:
+
+1. **Carregar o PDF** (um loader genérico, ex.: `PyPDFLoader`).
+2. **Extrair o texto** (uma única engine, leitura linear página a página).
+3. **Quebrar em pedaços** (chunking por tamanho fixo, ex.: 1000 caracteres com 200 de sobreposição).
+4. **Gerar embeddings e jogar num banco vetorial**; na pergunta, busca por similaridade de cosseno e
+   manda os top-k pedaços para o LLM responder.
+
+Isso **funciona numa demo**: um PDF nascido digital, de uma coluna, texto limpo, sem tabela, sem
+imagem, pergunta simples. O problema é que **documento técnico real não é assim** — e o pior é que a
+ingestão ingênua **não falha com erro**: ela falha **em silêncio**. O lixo entra, a busca traz o pedaço
+errado, e o LLM responde com confiança uma informação **incorreta**. Em engenharia, norma e contrato,
+**resposta errada com aparência de certa é o pior resultado possível** — e é o resultado padrão da
+abordagem rasa.
+
+### 2-A.2. Por que documentos técnicos (DNIT) são tão difíceis — todos os problemas
+
+Os problemas se acumulam em **seis camadas**. Nenhuma sozinha, mas todas juntas, é o que mata o pipeline
+ingênuo.
+
+#### (1) Problemas do arquivo — o PDF como "container", não como documento
+
+- **Nascido digital × escaneado × híbrido.** O mesmo `.pdf` pode ter texto nativo, ser **imagem pura de
+  papel escaneado** (zero texto extraível), ou ser **híbrido** (corpo digital + anexos, carimbos,
+  ARTs e assinaturas escaneados). Um loader único trata os três igual e perde o escaneado inteiro.
+- **Camada de texto "fantasma".** Muitos PDFs trazem uma camada de OCR antiga e ruim embutida. O
+  extrator lê esse lixo como se fosse texto bom — parece que extraiu, mas o conteúdo é gibberish.
+- **Ordem de leitura quebrada.** O PDF **não garante** ordem lógica de leitura. A extração linear
+  embaralha blocos; em página de **duas colunas** (comum em normas), mistura a coluna da esquerda com a
+  da direita, gerando frases Frankenstein.
+- **Cabeçalho, rodapé e numeração repetidos** em todas as páginas viram ruído que se infiltra no meio
+  das frases e polui os chunks ("...DNIT 031/2006-ES 12 o teor de ligante...").
+- **Hifenização de quebra de linha.** Palavras cortadas no fim da linha ("compacta-\nção") viram dois
+  tokens quebrados; sem correção, "compactação" some do índice.
+- **Fontes embutidas sem mapeamento Unicode.** O texto extraído vira símbolos errados (caracteres
+  trocados, acentos perdidos), corrompendo termos técnicos.
+- **Rotação de página.** Tabelões e plantas entram em paisagem dentro de um documento retrato; a
+  extração ingênua lê torto ou não lê.
+- **Watermarks, carimbos e números de processo** sobrepostos ao conteúdo confundem tanto OCR quanto
+  parsing.
+
+#### (2) Problemas de estrutura técnica — o que esses documentos de fato carregam
+
+- **Tabelas — o problema número um.** Especificação DNIT é feita de tabela: faixas granulométricas,
+  traços, limites de ensaio, tolerâncias. Essas tabelas têm **células mescladas, cabeçalhos
+  hierárquicos e linhas com múltiplos valores**. A extração linear **achata** a tabela: o número
+  "0,5" perde a amarração "limite superior de % passante na peneira X para a faixa C". Uma tabela
+  achatada vira uma sopa de números **semanticamente inútil** — e o embedding dela não responde nada.
+- **Numeração normativa hierárquica.** Cláusulas "5.3.2.1", "6.2", subitens "a) b) c)". O sentido de um
+  parágrafo **depende do número da cláusula** a que pertence. Cortar o texto longe do seu número perde a
+  âncora normativa.
+- **Referências cruzadas.** Uma norma remete a outra ("conforme item 7.4", "ver Tabela 3", "atender à
+  DNIT 005/2003-TER"). A resposta correta muitas vezes exige **seguir a referência**; um pedaço isolado
+  não tem essa ligação.
+- **Unidades, grandezas e faixas.** "MPa", "kg/m³", "%", tolerâncias "± 0,5", intervalos "entre 4% e
+  7%". Pergunta factual de engenharia é quase sempre **numérica e condicional** ("qual o teor de ligante
+  da faixa C?"). Similaridade de cosseno **não entende faixa nem "está dentro de"**.
+- **Fórmulas e equações.** Índices, símbolos, frações. A extração de texto destrói a notação; o
+  embedding não a representa.
+- **Figuras técnicas: seções transversais, perfis, ábacos, plantas, detalhes.** Em projeto de
+  engenharia, **a informação está no desenho**, não no texto corrido. Extrair só texto perde 100% dessa
+  evidência.
+- **Notas de rodapé, legendas e observações** que **modificam** o sentido da tabela/figura, mas ficam
+  fisicamente distantes dela na página.
+- **Listas de requisitos.** "Deverá atender: a)...; b)...; c)...". Cortar no meio perde requisitos —
+  numa norma, perder um requisito é perder a conformidade.
+- **Terminologia e siglas densas.** CBUQ, ISC/CBR, granulometria, ES/ME/TER, número da norma. Modelos de
+  embedding genéricos têm **baixa densidade semântica** nesses termos, e o número da norma é um
+  **identificador exato** que vetor nenhum casa bem.
+- **Documentos longos e versionados.** Normas com dezenas de páginas; a resposta está **espalhada**. E a
+  **versão importa** (a revisão de 2006 difere da anterior) — misturar versões gera resposta errada.
+
+#### (3) Por que a EXTRAÇÃO DE TEXTO ingênua falha (o passo "extrair texto")
+
+- Uma **única engine** não cobre digital + escaneado + tabela ao mesmo tempo. A que é boa em texto
+  nativo é ruim em tabela; a que é boa em layout pode ser cara ou indisponível.
+- **Sem OCR**, o escaneado entra vazio. **Com OCR em tudo**, você degrada o PDF digital bom (rasteriza
+  texto perfeito) e **explode o custo**.
+- **Sem detecção de tabela**, toda tabela vira texto corrido sem relação linha×coluna.
+- **Sem preservar página e estrutura**, você perde a âncora de auditoria — não consegue dizer "isto está
+  na página 12, item 5.3", que é **obrigatório** em contexto normativo.
+
+#### (4) Por que o CHUNKING ingênuo falha (o passo "quebrar em pedaços")
+
+- **Tamanho fixo corta no lugar errado:** parte uma tabela no meio, separa a cláusula do seu número,
+  separa o requisito da sua condição, e gruda o fim de uma seção com o começo de outra **não
+  relacionada**. Cada um desses cortes gera um chunk que **mente** sobre o conteúdo.
+- **Sem metadata** (página, seção, tipo de conteúdo), o pedaço **não pode ser filtrado nem citado**: a
+  resposta fica sem fonte auditável.
+- **Sem estratégia por tipo**, tabela, texto corrido e lista são cortados do mesmo jeito — o pior jeito
+  para os três.
+
+#### (5) Por que EMBEDDING + busca vetorial ingênua falha (o passo "embeddings + banco vetorial")
+
+- **Embedding genérico representa mal** número, faixa, unidade e sigla técnica — justamente o que a
+  pergunta de engenharia precisa.
+- **Cosseno traz "parecido no assunto", não "responde à pergunta".** Para "qual o teor de ligante da
+  faixa C?", o trecho certo pode **não** ser o mais próximo da pergunta em linguagem natural.
+- **Gap de vocabulário.** O usuário pergunta com as palavras dele; a norma usa o termo técnico. Os
+  vetores não casam. E há identificadores **exatos** (número da norma, código de ensaio, sigla) que
+  **só** correspondência de palavra-chave (BM25/FTS) acerta — busca puramente vetorial erra.
+- **Sem rerank**, o top-k vem com ruído e o trecho certo fica em 8º lugar — **fora** da janela de
+  contexto que vai pro LLM.
+- **Só vetor** perde o casamento exato; **só palavra-chave** perde a paráfrase. Sem **busca híbrida**,
+  você perde um dos dois sempre.
+
+#### (6) Por que a RESPOSTA (RAG) ingênua falha mesmo com retrieval razoável
+
+- **Sem reescrita/expansão da pergunta**, pergunta curta ou ambígua recupera mal.
+- **Sem roteamento**, toda pergunta é tratada igual (factual × analítica × tabular pedem caminhos
+  diferentes).
+- **Sem citação/âncora**, a resposta **não é auditável** — inaceitável em norma, contrato e laudo.
+- **Contexto poluído** por chunks ruins faz o LLM **alucinar** ou **misturar normas/versões**.
+- **Sem ACL/escopo pós-retrieval**, mistura documentos de projetos ou clientes diferentes — vazamento
+  de informação.
+
+### 2-A.3. Cara-crachá — cada etapa do NOSSO pipeline × a dor que ela resolve
+
+Aqui está o ponto central: **cada estágio deste projeto existe porque um dos problemas acima é real e
+aparece cedo**. A coluna "dor que resolve" remete às camadas da seção 2-A.2.
+
+#### Lado da INGESTÃO (este manual)
+
+| Etapa implementada | Dor que resolve (seção 2-A.2) | Como e por quê |
+| --- | --- | --- |
+| **OCR document-level seletivo** (heurística antes de rasterizar) — §8.2, `pdf_document_ocr_service` | (1) escaneado/híbrido; texto fantasma | Detecta que o PDF "parece escaneado/vazio" e **só então** roda OCR no documento — recupera o escaneado **sem** degradar o digital bom nem pagar OCR à toa. |
+| **Fila determinística de engines plug-and-play** (Docling, PyMuPDF4LLM, Unstructured, GMFT, OCRmyPDF…) — §8.2, `pdf_parsing_engine_resolver`, `deterministic_lego_pdf_parsing_engine` | (3) engine única não cobre tudo | Em vez de um parser só, uma **bancada ordenada por YAML**: a engine boa em layout/tabela entra quando faz sentido; a próxima só é acionada por **sinal objetivo** de falha/insuficiência. Sem hardcode, sem fallback implícito. |
+| **Extração estruturada de tabelas** (engines de tabela na fila) — §8.2, `pdf_parsing_runtime_builder` | (2) tabelas achatadas | Preserva a relação **linha×coluna**, mantendo o número amarrado ao seu cabeçalho e à sua faixa — a tabela deixa de virar "sopa de números". |
+| **Pós-processamento textual** (hifenização, ruído, cabeçalho/rodapé) — §8.3 | (1) hifenização, rodapé, ordem | Limpa **sem destruir** estrutura: junta palavras quebradas, tira o ruído repetido de página, melhora o texto para chunking e busca. |
+| **OCR complementar** (só nas páginas que ficaram vazias) — §8.4 | (1)/(3) lacunas pontuais | Completa o que faltou **sem** sobrescrever o texto já bom — equilíbrio entre cobertura e custo/qualidade. |
+| **Trilha multimodal** (imagens/figuras → OCR visual + descrição + chunk visual) — §8.5, `pdf_multimodal_application_service` | (2) figuras, seções, plantas, ábacos | Recupera a evidência que está **no desenho**, não no texto corrido — com `strict_mode` explícito para quando a leitura visual é obrigatória. |
+| **Chunking por estratégia** (Strategy Pattern por tipo de conteúdo, com metadata de página/seção) — §8.6, `pdf_chunking_service` | (4) corte no lugar errado; falta de metadata | Não corta tabela/cláusula/requisito no meio e **carimba página, seção e tipo** em cada chunk — o pedaço fica **citável e filtrável**. |
+| **Enriquecimento de domínio** (cadeia de processadores por prioridade) — §8.6 | (2)/(6) terminologia e filtro de negócio | Acrescenta metadata especializada que melhora relevância e permite filtrar por contexto de negócio no retrieval. |
+| **Manifesto operacional + checkpoint + artefatos** — §8.7, §6.8 | auditabilidade e custo de reprocesso | Conta a história por etapa (engine usada, decisão de OCR, status multimodal), permite **retomar** e **auditar** — em vez de uma caixa-preta. |
+| **Persistência + indexação na esteira comum** — §8.7, `DocumentIndexingExecutor.finalize` | fechar o ciclo | Liga o PDF processado ao acervo consultável com metadata canônica — o chunk vira **valor de produto**, não arquivo solto. |
+
+#### Lado da RECUPERAÇÃO/RESPOSTA (RAG) — ver `README-CONCEITUAL-RAG-PIPELINE-COMPLETO.md`
+
+| Etapa implementada | Dor que resolve (seção 2-A.2) | Como e por quê |
+| --- | --- | --- |
+| **Reescrita da consulta** (query rewrite) — RAG §9.4 | (6) pergunta curta/ambígua; (5) gap de vocabulário | Reescreve/expande a pergunta do usuário para o vocabulário do acervo antes de buscar. |
+| **Análise + roteamento** (query analysis/router) — RAG §9.5 | (6) toda pergunta tratada igual | Distingue factual × analítica × tabular e manda cada uma pelo caminho certo. |
+| **Self-query / multi-query** — RAG §7.8/§7.9 | (5) um ângulo de busca não basta | Recupera por **vários ângulos**/filtros, aumentando a chance de achar o trecho certo. |
+| **Busca híbrida (semântica + BM25/FTS)** — RAG §7.6/§7.7, §9.6 | (5) cosseno perde o exato; keyword perde a paráfrase | Casa **paráfrase** (vetor) **e** identificador exato (número da norma, código de ensaio, sigla) ao mesmo tempo. |
+| **Rerank pós-retrieval** — RAG §7.11, §9.7 | (5) trecho certo fora do top-k | Reordena os candidatos e **puxa o trecho certo para dentro** da janela de contexto. |
+| **Cache semântico** — RAG §7.10 | custo e latência | Reaproveita respostas de perguntas semanticamente equivalentes. |
+| **ACL pós-retrieval** — RAG §7.12 | (6) vazamento entre escopos | Garante que cada resposta só use documentos que aquele usuário/projeto pode ver. |
+| **Metadata de domínio gerada na ingestão, usada no retrieval** — RAG §7.13 | (2)/(6) filtro e prioridade | Usa o que foi enriquecido na ingestão para filtrar e priorizar na busca. |
+| **Geração final com citação/âncora** — RAG §9.8 | (6) resposta não auditável | Responde **citando a fonte** (documento, página, seção) — auditável, requisito de norma/contrato. |
+
+### 2-A.4. Por que isto NÃO é overengineering
+
+A sensação de "trabalho desnecessário" vem de medir o pipeline contra a **demo**, não contra o
+**documento real**. Cada etapa acima **só existe porque o caminho ingênuo falha exatamente ali** — e
+falha **calado**, devolvendo resposta errada com cara de certa. Tirar qualquer estágio reabre uma falha
+concreta:
+
+- Sem OCR seletivo → o edital escaneado entra **vazio** e o sistema "não acha" o que está no acervo.
+- Sem fila de engines / tabelas → a faixa granulométrica vira sopa de números e a resposta numérica é
+  **inventada**.
+- Sem chunking com metadata → a resposta **não cita a fonte**, e ninguém aprova uma norma sem fonte.
+- Sem híbrida + rerank → a pergunta com número de norma traz o documento **errado**.
+- Sem ACL → um projeto **vê o documento de outro**.
+
+Em uma frase: o pipeline raso é barato de escrever e **caríssimo de operar** — a conta vem em forma de
+resposta errada, retrabalho de investigação e perda de confiança do cliente. O que parece
+"overengineering" é, na verdade, a **diferença entre uma demo e um produto** que aguenta documento
+técnico de verdade. O resto deste manual detalha, etapa por etapa, **como** cada um desses estágios foi
+implementado.
+
 ## 3. Visão executiva
 
 Para liderança, este pipeline importa porque ele protege a parte mais frágil da cadeia de valor: a entrada de conhecimento documental. Se a ingestão do PDF falha ou empobrece o conteúdo, todo o resto fica comprometido. O RAG responde pior, a auditoria perde explicabilidade, o suporte gasta mais tempo em investigação e o cliente percebe baixa confiabilidade.

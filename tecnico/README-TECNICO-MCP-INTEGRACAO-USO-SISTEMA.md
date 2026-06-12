@@ -600,6 +600,32 @@ um servidor stdio declarado no YAML resolve como conexão direta, sem `url`:
 O mesmo teste afirma explicitamente que a presença de `url` na conexão stdio seria regressão
 (indicaria a volta da ponte HTTP local removida).
 
+### 17.2 Exemplo PRONTO para rodar (arquivo dedicado)
+
+Há um YAML de exemplo, comentado passo a passo, que mostra um agente DeepAgent com uma tool
+**nativa** (`calculator`) convivendo com tools de um **MCP público** (AWS Knowledge, remoto e sem
+login) no MESMO agente:
+
+```
+app/yaml/rag-config-mcp-publico-exemplo.yaml
+```
+
+Para colocá-lo no ar (servidor MCP precisa estar acessível):
+
+```bash
+# 1) descobrir e persistir o catálogo MCP (uma vez)
+python -m src.agentic_layer.mcp.mcp_catalog_builder \
+  --yaml app/yaml/rag-config-mcp-publico-exemplo.yaml --user-email voce@exemplo.com
+
+# 2) subir a API e conversar com o agente apontando este YAML
+./run.sh +a
+```
+
+Os mesmos passos, em forma documentada e NÃO ativa, aparecem dentro do demo de varejo
+(`app/yaml/rag-config-pdv-vendas-demo.yaml`, bloco comentado acima do agente `subdominio_vendas`)
+e como convivência real no agente `research_assistant` do modelo
+(`app/yaml/system/rag-config-modelo.yaml`).
+
 ## 18. Explicação 101
 
 Do ponto de vista técnico simples, o sistema faz três perguntas antes de usar MCP:
@@ -610,6 +636,28 @@ Do ponto de vista técnico simples, o sistema faz três perguntas antes de usar 
    pelo cliente)?
 
 Em todos os casos a conexão é direta. Quando essas três respostas estão coerentes, o agente usa a tool como se ela fosse parte do seu conjunto normal de ferramentas.
+
+### 18.1 Analogia com as tools nativas (a ideia central)
+
+Pense nas tools como **tomadas** na régua do agente. Uma tool **nativa** já vem instalada na régua
+de fábrica (descoberta lendo o código local, determinística). Uma tool **MCP** é uma tomada de uma
+**régua externa** (o servidor MCP) que você pluga na sua. Depois de plugada, **o agente não sente
+diferença**: chama `search_documentation` igualzinho a `calculator`. Por isso elas convivem na mesma
+lista `tools:` do agente — o sistema classifica cada id por `tool_type` (`mcp` vai pelo caminho MCP,
+o resto é nativa) e entrega tudo junto.
+
+A diferença está **só na hora de instalar**, não na hora de usar:
+
+| | Tool nativa | Tool MCP |
+| --- | --- | --- |
+| Como é descoberta | lendo o código local (sempre disponível) | contatando um servidor externo (precisa estar no ar) |
+| Quando entra no catálogo | builder nativo (`tools_library_builder`) | builder MCP (`mcp_catalog_builder`), por comando explícito |
+| Onde fica registrada | catálogo builtin (`tool_type='factory_generated'`) | mesmo catálogo builtin (`tool_type='mcp'`) |
+| Como o agente a usa | `tools:` / seleção por escopo | idêntico — `tools:` + `local_mcp_configuration.tools` |
+| Se falhar ao carregar | falha visível (erro no log) | **falha visível também** (mesma política) |
+
+Em uma frase: **"o que a tool nativa tem, a MCP tem; o que ela não tem, a MCP não tem"** — a única
+assimetria legítima é a natureza da descoberta (local vs remota), tratada pelo `mcp_catalog_builder`.
 
 ## 19. Checklist de entendimento
 
@@ -642,3 +690,63 @@ Em todos os casos a conexão é direta. Quando essas três respostas estão coer
   - Comportamento confirmado: servidor stdio resolve como conexão direta (transport stdio, command/args/env, sem url) para agente e workflow.
 - tests/unit/test_02-06-36_mcp_hosting_axis_removed_guard.py
   - Comportamento confirmado: módulos do servidor/proxy (`http_proxy`, `mcp_http_proxy_router`) não são importáveis e as permissões órfãs (`MCP_SERVERS_*`, `MCP_TOOLS_*`) não existem; o caminho oficial de consumo permanece importável.
+
+## 21. FAQ — primeiras dúvidas de quem está começando (for dummies)
+
+Esta FAQ nasceu das dúvidas reais de quem chega na plataforma para montar um agente. As que são
+sobre **MCP** estão respondidas aqui; as **vizinhas** (gerais de agente/AG-UI) têm o ponteiro para
+o documento certo, para não duplicar conteúdo.
+
+### Sobre MCP (respondidas aqui)
+
+**P: Posso misturar tool nativa e tool MCP no mesmo agente?**
+Sim. Tudo entra no conjunto de tools do agente; o sistema classifica cada id por `tool_type` e
+entrega nativas + MCP juntas. As nativas ficam em `tools:`; as MCP do escopo ficam em
+`local_mcp_configuration.tools` (ver §8.2). Veja o exemplo pronto em §17.2.
+
+**P: Declarei a tool MCP no YAML e dá "ferramenta não encontrada". Por quê?**
+Porque a tool MCP **ainda não está no catálogo**. Diferente da nativa (que o código já conhece), a
+MCP precisa ser **descoberta** uma vez, contatando o servidor, com o `mcp_catalog_builder` (§8.4).
+Sem esse passo, o id MCP não existe e a resolução falha — de propósito, igual a uma tool nativa
+inexistente (ver §13.2 e §13.3).
+
+**P: O servidor MCP precisa estar no ar?**
+Para **descobrir o catálogo** (rodar o builder) e para **usar a tool em runtime**, sim — é uma régua
+externa. Se o servidor cair durante a descoberta, o catálogo anterior é **preservado** e o sistema
+loga `mcp.catalog.server.unavailable` sem apagar nada (§5.4 e §11.2).
+
+**P: Onde acho um MCP público para testar sem credencial?**
+O modelo já referencia o **AWS Knowledge MCP** (`https://knowledge-mcp.global.api.aws`), remoto via
+`http` e sem login — bom para o primeiro teste. Há um YAML de exemplo pronto (§17.2).
+
+**P: Qual a diferença entre `transport: http` e `transport: stdio`?**
+`http` (e `sse`/`websocket`) = servidor **remoto**, você informa a `url`. `stdio` = servidor
+**local** que o cliente MCP **sobe como subprocesso** (`command`/`args`/`env`), sem `url` (§3.3,
+§4.2). Em ambos a conexão é **direta** — o projeto não faz proxy.
+
+**P: O projeto pode HOSPEDAR um servidor MCP, ou expor uma rota `/mcp`?**
+Não. Este projeto é **apenas consumidor** de MCP; o lado servidor e o proxy `/mcp` foram removidos
+por inteiro (§13.1). Hospedar MCP é legado e não vale mais.
+
+**P: Como ligo/desligo uma tool MCP por cliente (tenant)?**
+Pelo mesmo mecanismo das nativas: o catálogo builtin governa `status` por tenant. Uma tool MCP
+`disabled` simplesmente não é injetada. Não há caminho paralelo (§3.4, §9.3).
+
+### Vizinhas (gerais de agente/AG-UI) — onde achar a resposta
+
+Estas não são de MCP; estão documentadas em outros manuais (consulte o índice em
+`docs/tecnico/README.md`):
+
+- **"DeepAgent ou Workflow, qual uso?"** → `README-DEEPAGENTS-SUPERVISOR` e `README-AGENTE-WORKFLOW`.
+- **"Como meu agente faz um gráfico aparecer na tela (AG-UI/Generative UI)?"** e **"como garanto que
+  o JSON do gráfico não seja reescrito pelo LLM?"** → docs de AG-UI / Generative UI e o contrato
+  `DashboardSpec` (ver o demo `rag-config-pdv-vendas-demo.yaml`, regra "repasse idêntico").
+- **"Por que `tools_library` tem que chegar vazia?"** (falha fechada) → `README-TOOLS-LIB`.
+- **"Como dou dados via SQL sem o supervisor explodir?" (`dyn_sql` inline vs registro)** →
+  `README-TECNICO-DYNAMIC-SQL-TOOLS`.
+- **"Eu preciso criar o `correlation_id`?"** (não — nasce no boundary e só se propaga) →
+  `.claude/rules/log-instructions.md`.
+- **"Como passo segredos (DSN/API key) sem vazar no YAML?"** (placeholders `${ENV}` via
+  `security_keys`) → docs de segurança/`security_keys`.
+- **"Como valido o YAML antes de rodar?"** (fluxo assembly `validate → confirm`, AST) →
+  `README-AST-AGENTIC-DESIGNER`.

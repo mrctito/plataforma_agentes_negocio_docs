@@ -30,7 +30,9 @@ Existe uma segunda superficie de consumo AG-UI no frontend, **independente do st
 4. src/api/schemas/ag_ui_capabilities_models.py (contrato fail-closed do **CapabilitiesSpec**).
 5. src/agentic_layer/tools/system_tools/describe_capabilities.py (tool builtin `descrever_capacidades`, auto-injetada em todo supervisor DeepAgent).
 
-Os tres specs reconhecidos nessa superficie sao CapabilitiesSpec (painel de capacidades, novo), DashboardSpec (dashboard dinamico, ja existente) e UISpec (interface generica). Ativacao, ordem de scripts e estado por host — incluindo o fato de que o WebChat v3 **ainda nao** ativa essa renderizacao — estao no [guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md), e a porta de grafico esta detalhada em [Registry e adapters](README-TECNICO-AG-UI-REGISTRY-E-ADAPTERS.md).
+Os tres specs reconhecidos nessa superficie sao CapabilitiesSpec (painel de capacidades), DashboardSpec (dashboard dinamico) e UISpec (interface generica). Ativacao, ordem de scripts e estado por host estao no [guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md) — incluindo o status atual: `ui-webchat-v3.html` tem o wiring AG-UI **ativo** desde 2026-06-10 (Fase B), com gate falha-fechada que exige o spec runtime resolvido. A porta de grafico esta detalhada em [Registry e adapters](README-TECNICO-AG-UI-REGISTRY-E-ADAPTERS.md).
+
+O tutorial de entrada para quem vai configurar AG-UI pela primeira vez (como fazer o agente devolver dashboard via YAML, os tres specs, bind de campos, FAQ) esta em [TUTORIAL-101-GENERATIVE-UI.md](../usuario/TUTORIAL-101-GENERATIVE-UI.md).
 
 Detalhamento técnico por etapa:
 
@@ -43,6 +45,62 @@ Detalhamento técnico por etapa:
 7. [Replay e auditoria](README-TECNICO-AG-UI-REPLAY-E-AUDITORIA.md)
 
 Como **configurar por YAML** um agente que responde com gráficos (as 3 peças — regra de roteamento no prompt do supervisor, subagente com `response_format` DashboardSpec 1.0 e renderização automática no frontend), com o demo varejo como exemplo comentado: capítulo [35. AG-UI no YAML](README-CONFIGURACAO-YAML.md#35-ag-ui-no-yaml-respostas-com-gráficos-generative-ui--exemplo-real-do-demo-varejo) do manual de configuração YAML.
+
+## 1A. Contrato de geração do spec no caminho do chat embutível
+
+Esta seção detalha como um spec AG-UI nasce no backend e chega ao componente `PrometeuEmbeddableChatRuntime` (Superfície A). Difere do fluxo `/ag-ui/runs` (Superfície B, SSE) em transporte, ciclo de vida e configuração.
+
+### 1A.1. Como o DashboardSpec é gerado via `response_format`
+
+O mecanismo é a instrução `response_format` em JSON Schema aplicada a um subagente dentro de um supervisor DeepAgent. Essa instrução força a LLM a devolver a resposta inteiramente como JSON válido segundo o esquema fornecido, sem texto antes, sem markdown.
+
+O ciclo de vida completo:
+
+1. O usuário envia uma pergunta pelo chat embutível (`/rag/execute` ou `/agent/execute`).
+2. O supervisor DeepAgent roteia a pergunta para o subagente especializado em dashboard.
+3. A LLM do subagente gera o JSON do DashboardSpec 1.0 conforme o `response_format` declarado no YAML.
+4. O backend devolve o JSON no corpo da resposta HTTP normal (sem stream, sem SSE).
+5. O componente recebe a resposta já normalizada.
+6. `embeddable-chat-spec-runtime.js` executa `detectAgUiSpec(payload)`: procura o spec na raiz e em chaves container (`ag_ui`, `structured`, `data`, `result`); classifica como `dashboard` se encontrar `version: "1.0"` + `widgets`.
+7. O spec passa pelo validador fail-closed de DashboardSpec (`ag-ui-dashboard-validator.js`).
+8. Se válido, o renderer de DashboardSpec (`ag-ui-dashboard-renderer.js`) monta o DOM — widgets, gráficos (ApexCharts), KPIs, tabelas, rankings — na bolha do assistente.
+9. Qualquer falha em qualquer etapa acima aciona o fallback: o componente exibe o conteúdo como texto. A tela nunca quebra.
+
+O contrato das 3 peças obrigatórias no YAML do subagente:
+
+- `prompt`: instrui a LLM a devolver JSON puro, sem texto extra, sem markdown, proibindo HTML/JS/CSS/SQL livre.
+- `tools`: lista apenas as queries `dyn_sql` aprovadas (o subagente não pode executar SQL arbitrário).
+- `response_format`: JSON Schema com `const: "1.0"` no campo `version` e os campos obrigatórios do DashboardSpec (`version`, `title`, `layout`, `widgets`, `dataSources`, `narrative`, `refreshPolicy`, `safety`).
+
+Exemplo real desta estrutura em producao: `app/yaml/rag-config-pdv-vendas-demo.yaml`, subagente `subdominio_dashboard_dinamico` (linhas 504-606+).
+
+### 1A.2. Como o CapabilitiesSpec é gerado
+
+O CapabilitiesSpec nao exige configuracao especial no YAML. A tool builtin `descrever_capacidades` (em `src/agentic_layer/tools/system_tools/describe_capabilities.py`) e **auto-injetada em todo supervisor DeepAgent**. Quando o usuario pergunta sobre as capacidades do agente, o supervisor chama essa tool, que le os subagentes declarados em `multi_agents[]` e monta o CapabilitiesSpec a partir dos campos `name` e `description` de cada subagente.
+
+O spec e emitido como resposta normal do endpoint de chat. O componente detecta o marcador `specType: "capabilities"` (constante `SPEC_TYPE_CAPABILITIES` em `embeddable-chat-spec-runtime.js`), valida e renderiza o painel de capacidades.
+
+Guardrails do CapabilitiesSpec: quatro flags de segurança (`htmlAllowed`, `scriptAllowed`, `sqlAllowed`, `secretsAllowed`) devem ser todas `false`; o validador fail-closed rejeita o spec se qualquer flag vier diferente. O backend usa `src/api/schemas/ag_ui_capabilities_models.py` para garantir o contrato antes de emitir.
+
+### 1A.3. O campo `multi_agents[].ag_ui.ui_specs` (implementado, sem uso exercitado)
+
+Os modelos internos (AST, validators, compilacao) reconhecem um campo `ag_ui.ui_specs` por subagente que permitiria declarar specs de interface diretamente no YAML por subagente. Ao verificar o repositorio em 2026-06-12, **nenhum arquivo YAML no projeto usa esse campo**. Esta implementado no codigo mas nao exercitado por nenhum exemplo real. O caminho comprovado e operacional hoje e o `response_format` descrito em 1A.1.
+
+### 1A.4. Deteccao no frontend: como o componente decide o tipo do spec
+
+O modulo `embeddable-chat-spec-runtime.js` executa `detectAgUiSpec(payload)` em cada resposta. A funcao:
+
+1. Verifica se o payload e um objeto plano.
+2. Monta uma lista de candidatos: o proprio payload + o conteudo de chaves container convencionais (`ag_ui`, `agUi`, `agui`, `structured`, `ui_spec`, `uiSpec`, `spec`, `data`, `result`).
+3. Chama `classifyCandidate(candidato)` em cada um, que retorna `{ type, spec }` ou `null`.
+4. Retorna o primeiro que casar. Se nenhum casar, retorna `null` e o componente renderiza texto.
+
+`classifyCandidate` identifica o tipo por:
+- `specType === 'capabilities'` → CapabilitiesSpec.
+- presenca de `version` + `widgets` em formato esperado → DashboardSpec.
+- marcadores do UISpec → UISpec.
+
+Esse mecanismo nao inventa contrato de backend — apenas detecta padroes conhecidos na resposta normalizada, qualquer que seja o container que o backend usou.
 
 ## 2. Endpoints publicos
 

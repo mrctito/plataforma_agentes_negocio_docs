@@ -679,6 +679,54 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Sugestao de melhoria: separar melhor as fabricas por tipo de componente para reduzir o tamanho do modulo.
 - Prioridade: Alta
 
+### PdfParsingEngineResult, PdfParsedTable e contrato canonico de parsing PDF (v2)
+
+- Descricao: contrato tipado unico que TODA engine de parsing de PDF (Docling, Unstructured, PyMuPDF, etc.) devolve, sobre o qual o pipeline trabalha sem tocar objetos especificos de lib (DoclingDocument/Element). Na versao 2 (aditiva) transporta tambem estrutura rica opcional: `structured_blocks` (texto+categoria+pagina+bbox+ordem+provenance), `sections`, `structured_images`, `engine_provenance`, `extraction_issues` e `PdfParsedTable.bbox`. Inclui o normalizador `normalize_pdf_parsing_engine_result` (preenche contrato minimo, `metadata_contract_version=2`, capacidade declarada x efetiva) e os modelos auxiliares `PdfBoundingBox`/`PdfStructuredBlock`/`PdfSectionNode`/`PdfStructuredImage`/`PdfEngineProvenance`/`PdfExtractionIssue`.
+- Tags: ingestao, pdf, contrato, parsing
+- Tipo: contrato/modelo
+- Arquivo: [src/ingestion_layer/pdf_tools/pdf_parsing_engine_contract.py](../src/ingestion_layer/pdf_tools/pdf_parsing_engine_contract.py)
+- Linguagem: Python
+- Responsabilidade principal: padronizar o resultado de qualquer engine de parsing de PDF e permitir troca/composicao de engines sem reescrever o downstream; transportar estrutura de forma aditiva e versionada.
+- Dependencias principais: nenhuma de lib de PDF (modulo de contrato puro, dataclasses frozen+slots).
+- Acoplamento forte com dominio?: Medio. E o contrato do slice de parsing PDF, mas e a fronteira correta para qualquer engine nova de PDF.
+- Uso atual observado: Sim. Construido por todas as engines em `src/ingestion_layer/pdf_tools/*_pdf_parsing_engine.py` e pelo subprocesso Docling; consumido pelo orquestrador `DeterministicLegoPdfParsingEngine` e por `PdfExtractionApplicationService`.
+- Seguro reutilizar como esta?: Sim, dentro do slice de parsing PDF. Para adicionar engine nova, devolver este contrato; campos estruturais sao opcionais (default vazio) e so se preenchem com recurso ligado por YAML.
+- Riscos ou limitacoes: e `frozen+slots`; campos novos so podem ser adicionados ao FIM com default. A estrutura textual completa so vem de PDF nativo (PDF escaneado exige `do_ocr=true`, desligado por default).
+- Sugestao de melhoria: ao evoluir, manter a regra aditiva (nenhum campo atual removido/renomeado/reordenado) e subir `metadata_contract_version`.
+- Prioridade: Alta
+
+### run_pdf_subprocess (runner generico de subprocesso de parsing PDF) e pdf_parsing_result_codec
+
+- Descricao: runner UNICO e neutro de engine que executa um worker de parsing de PDF em subprocesso, com supervisor de polling, cancelamento cooperativo, timeout e encerramento seguro do filho (`terminate`->`wait`->`kill`->`wait`, NUNCA um 2o `communicate` — evita `flush of closed file` mascarando o timeout). Parametrizado por `command`/`payload_bytes`/`engine_name`/`log_subject`/`rebuild_fn`/`timeout_seconds`/`ensure_not_cancelled`/`logger`; emite eventos canonicos `ingestion.pdf.<engine>.subprocess.{started,timeout,cancelled,failed,logical_error,start_failed}` (pid, returncode, duration_ms) via builder canonico e so PROPAGA `correlation_id`. Devolve `PdfSubprocessOutcome(result, duration_ms)`. O modulo irmao `pdf_parsing_result_codec` hospeda a VOLTA generica do boundary: `decode_worker_response`, `build_failure_message`, `decode_preview` e `rebuild_pdf_parsing_engine_result` (+ coercers/reconstrutores de bbox/blocos/secoes/imagens/provenance/issues).
+- Tags: ingestao, pdf, subprocesso, parsing, reuso, observabilidade
+- Tipo: helper/runtime
+- Arquivo: [src/ingestion_layer/pdf_tools/pdf_subprocess_runner.py](../src/ingestion_layer/pdf_tools/pdf_subprocess_runner.py), [src/ingestion_layer/pdf_tools/pdf_parsing_result_codec.py](../src/ingestion_layer/pdf_tools/pdf_parsing_result_codec.py)
+- Linguagem: Python
+- Responsabilidade principal: centralizar a supervisao de subprocesso de parsing de PDF e a reconstrucao do resultado, para que cada engine nao reimplemente spawn/IPC/timeout/cancelamento/log (anti-duplicacao REUSO-001).
+- Dependencias principais: [src/ingestion_layer/telemetry/log_vocabulary.py](../src/ingestion_layer/telemetry/log_vocabulary.py) (`build_ingestion_pdf_log_context`), [src/ingestion_layer/pdf_tools/pdf_parsing_engine_contract.py](../src/ingestion_layer/pdf_tools/pdf_parsing_engine_contract.py).
+- Acoplamento forte com dominio?: Medio. E generico de engine de PDF em subprocesso; nasceu para acomodar `unstructured` no futuro sem nova variante de supervisor.
+- Uso atual observado: Sim. Consumido por `docling_pdf_parsing_subprocess.run_docling_pdf_parse_in_subprocess` (one-shot, levanta em falha) e por `tabula_subprocess.run_tabula_read_pdf` (best-effort, captura e devolve `[]`).
+- Seguro reutilizar como esta?: Sim, para qualquer engine de PDF que rode worker em subprocesso. A engine fornece `rebuild_fn` (Docling reconstroi `PdfParsingEngineResult`; Tabula extrai frames) e decide a politica de falha (levantar vs best-effort).
+- Riscos ou limitacoes: e supervisor one-shot por chamada (um documento por subprocesso); o pool de workers de vida longa e a engine nativa in-thread (pymupdf4llm/OCR) NAO usam este runner ainda (T7/T8 do plano, adiadas). Caso de decode invalido com returncode 0 levanta sem evento dedicado.
+- Sugestao de melhoria: evoluir para modo "pool de vida longa" (T8) reusando o mesmo supervisor; acomodar `unstructured` quando entrar.
+- Prioridade: Alta
+
+### get_pdf_docling_config e get_pdf_unstructured_config
+
+- Descricao: getters tipados e simetricos da configuracao de cada engine de parsing PDF a partir do YAML (`processing.parsing.docling` / `processing.parsing.unstructured`), via snapshot canonico. Substituem navegacao manual de dict cru e garantem que os recursos estruturais (TableFormer/`do_table_structure`, `infer_table_structure`, OCR, imagens) sejam ligados SO por YAML, com default conservador (desligado).
+- Tags: ingestao, pdf, yaml, config
+- Tipo: helper
+- Arquivo: [src/utils/pdf_config_resolver.py](../src/utils/pdf_config_resolver.py)
+- Linguagem: Python
+- Responsabilidade principal: leitura YAML-first tipada e simetrica da config das engines de parsing PDF.
+- Dependencias principais: snapshot tipado `PdfRuntimeSnapshot` ([src/utils/pdf_runtime_snapshot.py](../src/utils/pdf_runtime_snapshot.py)).
+- Acoplamento forte com dominio?: Medio. Especifico do slice de parsing PDF.
+- Uso atual observado: Sim. `get_pdf_docling_config` no runtime builder; `get_pdf_unstructured_config` no resolver de engines (liga `infer_table_structure` ao construtor).
+- Seguro reutilizar como esta?: Sim. Para uma engine nova com config propria, espelhar este padrao (getter tipado + secao no snapshot).
+- Riscos ou limitacoes: nao deve usar `.get()` para mascarar chave obrigatoria ausente.
+- Sugestao de melhoria: manter a simetria entre engines ao adicionar novas.
+- Prioridade: Media
+
 ### wrap_ingestion_write_logging_pool e wrap_ingestion_write_logging_connection
 
 - Descricao: proxies canonicos para logar mutacoes SQL em tabelas `ingestion_*` logo apos `INSERT`, `UPDATE` e `DELETE`, inferindo identificador principal, chaves de contexto e distinguindo falha transitória recuperável de falha terminal sem criar logging paralelo por repositorio.
