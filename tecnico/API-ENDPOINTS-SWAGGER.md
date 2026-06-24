@@ -294,6 +294,23 @@ Os contratos mais importantes confirmados no código são:
     `documents` (página de documentos anotados com a origem); `page`,
     `page_size` e `name_filter` paginam/filtram apenas a parte `documents`.
     Devolve o `correlation_id` no corpo e no header `X-Correlation-Id`.
+- POST /admin/vector-store/documents (200): lista, paginada e filtrável
+  por nome, os documentos ingeridos (acervo VIVO) de um vector store. É a
+  superfície administrativa equivalente ao `data_sources` acima, mas sob a
+  permissão `admin.vector.preview` (ADMIN_VECTOR_PREVIEW) em vez de
+  `RAG_ASK`, e devolve só a lista de documentos (não as `sources`). O alvo
+  é resolvido pelo YAML: o serviço usa `vector_store.id` do YAML informado
+  (em `yaml_path` ou `yaml_content`) e o tenant resolvido do mesmo YAML;
+  `vectorstore_id` no corpo só é necessário para sobrescrever o id do YAML.
+  Reflete a tabela `vector_active_documents` com status `active` (consulta
+  server-side: filtro por nome e paginação rodam no banco, pensados para
+  acervos grandes), nunca uma varredura do store físico. A resposta traz
+  `total`, `total_pages`, `page`, `page_size`, `tenant_code`,
+  `vectorstore_id`, `name_filter` aplicado e `items` (cada item com
+  `active_document_id`, `document_name`, `document_path`,
+  `ingestion_status`, `updated_at` e, quando disponíveis, `total_pages` e
+  `file_size_bytes`). Devolve o `correlation_id` no corpo e no header
+  `X-Correlation-Id`. Exemplo completo em §20 (Exemplo 4).
 - POST /api/auth/local/password-reset/request: aceita o e-mail da conta,
   responde 202 para evitar enumeração de usuários e delega o envio do
   link para a camada transacional interna baseada no provider oficial
@@ -524,6 +541,78 @@ Um operador tenta abrir o HTML do portal Swagger sem credencial. O teste
 unitário confirma que o app devolve 401. Quando a credencial existe mas
 não carrega swagger.read, a resposta correta é 403.
 
+### Exemplo 4. Listar documentos ingeridos de um vector store
+
+Um operador quer ver, página a página, quais documentos estão no acervo
+vivo de um vector store. Ele chama `POST /admin/vector-store/documents`
+informando o YAML que descreve o vector store (aqui o YAML de produção do
+DNIT) e a credencial administrativa pelo header `X-API-Key`. O alvo é
+resolvido pelo próprio YAML: `vector_store.id` (`dnit_producao`) e o
+tenant (`engenharia_dnit`) saem do YAML, então não é preciso mandar
+`vectorstore_id` no corpo.
+
+Pedido (sem filtro de nome, primeira página de 5):
+
+```bash
+curl -X POST "http://localhost:5555/admin/vector-store/documents" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <access_key_administrativa>" \
+  -d '{
+    "yaml_path": "app/yaml/rag-config-mrctito-dnit-ingest-producao-200.yaml",
+    "user_email": "operador@empresa.com",
+    "page": 1,
+    "page_size": 5
+  }'
+```
+
+Resposta `200 OK` (header `X-Correlation-Id` igual ao `correlation_id` do
+corpo; lista truncada para 2 itens por brevidade):
+
+```json
+{
+  "status": "success",
+  "message": "394 documento(s) no acervo; exibindo a página 1 de 79.",
+  "correlation_id": "20260624_113152-235a824a-d094-41c2-84e8-d8d2b0bd137d",
+  "tenant_code": "engenharia_dnit",
+  "vectorstore_id": "dnit_producao",
+  "name_filter": null,
+  "page": 1,
+  "page_size": 5,
+  "total": 394,
+  "total_pages": 79,
+  "items": [
+    {
+      "active_document_id": "8bac53c9-a562-420e-9f7d-ebeb97caebe4",
+      "document_name": "656_manual_de_tecnicas_de_conclaves.pdf",
+      "document_path": "/.../1G6NwAN0wxUdYC9I8y0IfndiVGSyT_MFx",
+      "total_pages": null,
+      "file_size_bytes": null,
+      "ingestion_status": "active",
+      "updated_at": "2026-06-23T06:00:02.379555+00:00"
+    },
+    {
+      "active_document_id": "756adc7a-d57a-46d9-9cc2-766751021ccf",
+      "document_name": "698-manual-de-projeto-de-obras-de-arte-especiais-1.pdf",
+      "document_path": "/.../1iJeNoXc-udd7m2WoMQEnMXW7iFt5RtrJ",
+      "total_pages": null,
+      "file_size_bytes": null,
+      "ingestion_status": "active",
+      "updated_at": "2026-06-23T05:50:13.720080+00:00"
+    }
+  ],
+  "timestamp": "2026-06-24T14:33:05.763445Z"
+}
+```
+
+Para procurar por nome, basta acrescentar `name_filter` (case-insensitive,
+casa parte do nome). Com `"name_filter": "pontes"` no mesmo pedido, o
+`total` cai de 394 para 14 e a resposta passa a refletir só os documentos
+cujo nome contém "pontes" (ex.: `709_manual_de_inspecao_de_pontes_rodoviarias.pdf`,
+`DNIT 010_2024 – PRO - Inspeções em pontes e viadutos...pdf`). O filtro e a
+paginação rodam no banco (`vector_active_documents`, status `active`), não
+no navegador — por isso o endpoint aguenta acervos grandes sem trazer tudo
+de uma vez.
+
 ## 21. Explicação 101
 
 Em linguagem simples, esta API é a recepção organizada da plataforma.
@@ -704,6 +793,16 @@ O que fica confirmado:
   - Comportamento confirmado: /admin/background-executions publica
     leitura de requests, schedules, runs, eventos, HIL e cancelamento de
     agenda por permission key administrativa.
+- src/api/routers/admin/vector_preview_router.py
+  - Motivo da leitura: confirmar o contrato de listagem de documentos
+    ingeridos de um vector store.
+  - Comportamento confirmado: POST /admin/vector-store/documents responde
+    200 com a lista paginada/filtrável do acervo vivo, sob a permissão
+    admin.vector.preview; o serviço AdminVectorPreviewService.list_documents
+    resolve tenant + vector_store.id pelo YAML e consulta server-side a
+    tabela vector_active_documents (status active). Comprovado em runtime
+    real com o YAML do DNIT (correlation_id 20260624_113152-235a824a-...,
+    total=394, sem erro no log).
 - src/api/routers/client_portal_router.py
   - Motivo da leitura: confirmar importação remota de Swagger pelo
     portal do cliente.
