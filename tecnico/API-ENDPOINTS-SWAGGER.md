@@ -282,7 +282,18 @@ Os contratos mais importantes confirmados no código são:
   assíncrono.
 - POST /rag/etl: aceita ETL em 202 e delega ao worker.
 - POST /rag/execute: dispatcher unificado que pode devolver 200 ou 202
-  conforme a operação.
+  conforme a operação. O campo `operation` aceita: `ingest`, `ask`,
+  `delete`, `etl` e `data_sources`. O payload muda conforme a operação;
+  o YAML cifrado vai sempre em `payload.encrypted_data`.
+  - operation `data_sources` (200): lista os data sources ingeridos no
+    vector store do YAML. Mesma segurança do `ask` (`RAG_ASK`) — quem pode
+    consultar o RAG pode chamar esta. Reflete o acervo VIVO/registrado
+    (tabela `vector_active_documents`, status `active`), não uma varredura
+    do store físico. A resposta traz `sources` (fontes distintas
+    `source_system` + `source_uri` com `document_count` por fonte) e
+    `documents` (página de documentos anotados com a origem); `page`,
+    `page_size` e `name_filter` paginam/filtram apenas a parte `documents`.
+    Devolve o `correlation_id` no corpo e no header `X-Correlation-Id`.
 - POST /api/auth/local/password-reset/request: aceita o e-mail da conta,
   responde 202 para evitar enumeração de usuários e delega o envio do
   link para a camada transacional interna baseada no provider oficial
@@ -662,7 +673,10 @@ O que fica confirmado:
 - src/api/routers/rag_operations_router.py
   - Motivo da leitura: dispatcher unificado do domínio RAG.
   - Comportamento confirmado: /rag/execute pode responder 200 ou 202
-    conforme a operação.
+    conforme a operação. Operações suportadas: `ingest`, `ask`, `delete`,
+    `etl`, `data_sources`. A operação `data_sources` responde 200 com a
+    lista de fontes e documentos vivos do vector store do YAML, sob a
+    mesma permissão do `ask` (`RAG_ASK`).
 - src/api/routers/streaming_router.py
   - Motivo da leitura: polling e SSE de status.
   - Comportamento confirmado: /status/{task_id},

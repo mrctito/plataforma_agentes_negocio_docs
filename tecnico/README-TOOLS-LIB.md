@@ -705,10 +705,25 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Responsabilidade principal: centralizar a supervisao de subprocesso de parsing de PDF e a reconstrucao do resultado, para que cada engine nao reimplemente spawn/IPC/timeout/cancelamento/log (anti-duplicacao REUSO-001).
 - Dependencias principais: [src/ingestion_layer/telemetry/log_vocabulary.py](../src/ingestion_layer/telemetry/log_vocabulary.py) (`build_ingestion_pdf_log_context`), [src/ingestion_layer/pdf_tools/pdf_parsing_engine_contract.py](../src/ingestion_layer/pdf_tools/pdf_parsing_engine_contract.py).
 - Acoplamento forte com dominio?: Medio. E generico de engine de PDF em subprocesso; nasceu para acomodar `unstructured` no futuro sem nova variante de supervisor.
-- Uso atual observado: Sim. Consumido por `docling_pdf_parsing_subprocess.run_docling_pdf_parse_in_subprocess` (one-shot, levanta em falha) e por `tabula_subprocess.run_tabula_read_pdf` (best-effort, captura e devolve `[]`).
-- Seguro reutilizar como esta?: Sim, para qualquer engine de PDF que rode worker em subprocesso. A engine fornece `rebuild_fn` (Docling reconstroi `PdfParsingEngineResult`; Tabula extrai frames) e decide a politica de falha (levantar vs best-effort).
+- Uso atual observado: Sim. Consumido por `docling_pdf_parsing_subprocess.run_docling_pdf_parse_in_subprocess` (one-shot, levanta em falha). (Fase 2/T9: o consumidor `tabula_subprocess.run_tabula_read_pdf` foi removido junto com o caminho morto camelot/tabula do `PdfTableService` — sem consumidor de produção.)
+- Seguro reutilizar como esta?: Sim, para qualquer engine de PDF que rode worker em subprocesso. A engine fornece `rebuild_fn` (Docling reconstroi `PdfParsingEngineResult`) e decide a politica de falha (levantar vs best-effort).
 - Riscos ou limitacoes: e supervisor one-shot por chamada (um documento por subprocesso); o pool de workers de vida longa e a engine nativa in-thread (pymupdf4llm/OCR) NAO usam este runner ainda (T7/T8 do plano, adiadas). Caso de decode invalido com returncode 0 levanta sem evento dedicado.
 - Sugestao de melhoria: evoluir para modo "pool de vida longa" (T8) reusando o mesmo supervisor; acomodar `unstructured` quando entrar.
+
+### build_pdf_worker_command / write_worker_result_json (canal de stdout limpo dos workers de subprocesso de PDF)
+
+- Descricao: helper UNICO que garante que o STDOUT de um worker de parsing de PDF em subprocesso carregue EXCLUSIVAMENTE o JSON de resultado que o pai le (`decode_worker_response`). Causa raiz: o logging do projeto usa `StreamHandler(sys.stdout)` e o log de bootstrap (`system_config.env_file.loaded`) dispara JA na importacao do pacote pai `src.ingestion_layer`, antes de qualquer codigo do worker — contaminando o stdout com linhas de log JSON que, caindo depois do result, faziam o decoder (que le de tras pra frente) confundir log com result e o PDF "falhar" de forma nao deterministica. Solucao: `build_pdf_worker_command(worker_module)` monta o comando de spawn como um launcher `python -c "<bootstrap stdlib>; runpy.run_module(worker)"`; o bootstrap, ANTES de importar `src`, salva o fd de stdout original (publicado na env var `PDF_WORKER_RESULT_FD`) e redireciona o fd 1 do processo inteiro para stderr (`os.dup2(2,1)`). A partir dai todo log/print/escrita nativa C vai para stderr; o worker escreve o result SO no fd salvo via `write_worker_result_json(payload)`. O protocolo com o pai nao muda (o pai continua lendo o result no stdout/pipe) e o `decode_worker_response` NAO e enfraquecido.
+- Tags: ingestao, pdf, subprocesso, parsing, stdout, observabilidade, reuso
+- Tipo: helper/runtime
+- Arquivo: [src/ingestion_layer/pdf_tools/pdf_worker_stdout_channel.py](../src/ingestion_layer/pdf_tools/pdf_worker_stdout_channel.py)
+- Linguagem: Python
+- Responsabilidade principal: isolar o canal de resultado (stdout) do canal de log (stderr) nos workers de subprocesso de PDF, em um unico ponto compartilhado, sem cada worker reimplementar o redirecionamento (anti-duplicacao REUSO-001).
+- Dependencias principais: apenas stdlib (`os`, `sys`, `json`, `runpy`) — proposital: o bootstrap precisa rodar antes de tocar `src`.
+- Acoplamento forte com dominio?: Baixo. E generico de qualquer worker de subprocesso que use o protocolo `{"result": ...}` no stdout.
+- Uso atual observado: Sim. `build_pdf_worker_command` e consumido pelas engines `docling_pdf_parsing_subprocess`, `pymupdf4llm_pdf_parsing_engine`, `custom_pdf_parsing_engine` e `unstructured_pdf_parsing_engine` (substitui `[sys.executable, "-m", _WORKER_MODULE]`); `write_worker_result_json` e usado pelos 4 workers de subprocesso correspondentes.
+- Seguro reutilizar como esta?: Sim, para qualquer worker de subprocesso de PDF spawnado pelo launcher. Quem chamar `write_worker_result_json` sem ter sido spawnado pelo launcher falha explicito (env var ausente), por contrato.
+- Riscos ou limitacoes: o redirecionamento e do processo inteiro (todo stdout vira stderr); por isso o result so pode sair pelo helper. Especifico do protocolo de stdout do parsing de PDF.
+- Prioridade: Alta
 - Prioridade: Alta
 
 ### get_pdf_docling_config e get_pdf_unstructured_config
@@ -737,7 +752,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Responsabilidade principal: instrumentar pools e conexoes `psycopg` para que writes do dominio de ingestao contem a historia certa no log canonico, com foco em tabelas `ingestion_*`.
 - Dependencias principais: `psycopg`, [src/telemetry/ingestion/observability_severity.py](../src/telemetry/ingestion/observability_severity.py), [src/ingestion_layer/telemetry/log_vocabulary.py](../src/ingestion_layer/telemetry/log_vocabulary.py), logger canonico do projeto.
 - Acoplamento forte com dominio?: Medio. O helper e especifico do slice de ingestao, mas resolve um problema transversal de observabilidade do dominio.
-- Uso atual observado: Sim. Consumido por [src/ingestion_layer/telemetry/db_persistence_adapter.py](../src/ingestion_layer/telemetry/db_persistence_adapter.py), [src/ingestion_layer/telemetry/db_runtime.py](../src/ingestion_layer/telemetry/db_runtime.py), [src/telemetry/ingestion/ingestion_runs_repository.py](../src/telemetry/ingestion/ingestion_runs_repository.py), [src/telemetry/ingestion/dataset_lifecycle_repository.py](../src/telemetry/ingestion/dataset_lifecycle_repository.py) e [src/telemetry/job_runs/canonical_job_runs_manager.py](../src/telemetry/job_runs/canonical_job_runs_manager.py).
+- Uso atual observado: Sim. Consumido por [src/ingestion_layer/telemetry/db_persistence_adapter.py](../src/ingestion_layer/telemetry/db_persistence_adapter.py), [src/ingestion_layer/telemetry/db_runtime.py](../src/ingestion_layer/telemetry/db_runtime.py), [src/telemetry/ingestion/ingestion_runs_repository.py](../src/telemetry/ingestion/ingestion_runs_repository.py), [src/telemetry/ingestion/vector_active_archive_repository.py](../src/telemetry/ingestion/vector_active_archive_repository.py) e [src/telemetry/job_runs/canonical_job_runs_manager.py](../src/telemetry/job_runs/canonical_job_runs_manager.py).
 - Seguro reutilizar como esta?: Sim, sempre que o objetivo for observar mutacoes em tabelas `ingestion_*` sem reinventar proxies de pool ou de conexao.
 - Riscos ou limitacoes: ele nao substitui retry nem corrige semantica de negocio; so deve ser usado quando o write real pertence ao dominio de ingestao e o caller ja usa o logger canonico.
 - Sugestao de melhoria: manter novos repositorios do slice plugando neste helper em vez de abrir proxies locais por tabela ou por adapter.
@@ -995,7 +1010,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Responsabilidade principal: abstrair leitura e escrita de arquivos persistidos do projeto sem expor SDK concreto ao dominio.
 - Dependencias principais: `boto3` opcional, SDK Azure Blob opcional, `tenacity`, logging do projeto
 - Acoplamento forte com dominio?: Medio. E generico na infraestrutura, mas hoje aparece ligado a artefatos de projeto.
-- Uso atual observado: Sim. Usado por [src/api/services/dnit_projects_service.py](../src/api/services/dnit_projects_service.py) e coberto por [tests/unit/test_02-03-10_dnit_projects_router.py](../tests/unit/test_02-03-10_dnit_projects_router.py).
+- Uso atual observado: Sim. Usado por [src/api/services/gesdoc_projects_service.py](../src/api/services/gesdoc_projects_service.py) e coberto por [tests/unit/test_02-03-10_gesdoc_projects_router.py](../tests/unit/test_02-03-10_gesdoc_projects_router.py).
 - Seguro reutilizar como esta?: Sim, quando a necessidade for storage de arquivo persistido com o contrato ja suportado.
 - Riscos ou limitacoes: ainda conhece convencoes do projeto e nao substitui um storage universal para qualquer binario do sistema.
 - Sugestao de melhoria: isolar ainda mais naming e convencoes de path por dominio.
@@ -1424,6 +1439,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Linguagem: JavaScript
 - Responsabilidade principal: encapsular renderização do chat, envio de perguntas, polling assíncrono, exportação de estado e publicação de eventos para a página hospedeira.
 - Capacidades adicionadas em 2026-06-10 (Fases A/B da migração, provadas em runtime): HIL completo (normalização fail-closed via `HilContract`, painel `HilReviewPanel`, bloqueio de envio com pendência, 2 caminhos de decisão via fonte única `enviarDecisaoHil`/`enviarResumeHil`); cancelamento (`cancelar()`/`cancel()` sync e async, `signal` na fonte única); modo `agent` puro (sem coerção para `qa`); markdown seguro + sanitização de segredos (helpers únicos em `WebchatRuntimeUtils`); apiKey resolvida de `authentication.access_key` do YAML via `PrometeuYamlExtractor` quando não há `setApiKey` (falha fechada, erro visível); hidratação (`restaurarConversa`/`inserirMensagemExterna`, re-hidratando pendência HIL); opção `payloadText` (bolha limpa × payload enriquecido); `messageActions` (ações da host por mensagem, `label`+`onSelect`+`quando` opcional). Eventos novos: `hil-pending`, `hil-decision-sent`, `hil-decision-completed`, `hil-decision-failed`, `send-cancelled`, `conversation-restored`.
+- Sessões de conversa (headless, 2026-06-13): o componente conhece a sessão ATIVA (`sessionId` em `obterEstadoAtual()` e carimbado em todo evento) e avisa o host para gravar via callback `onConversationChanged({ sessionId, messages, lastInteraction, reason })`; NÃO persiste nada nem conhece a lista de sessões. API: `definirSessaoAtiva`/`setActiveSessionId`, `obterSessaoAtiva`/`getActiveSessionId`, `carregarSessao`/`loadSession` (define ativa + re-hidrata, sem re-persistir), `novaSessao`/`newSession`. Eventos novos: `session-loaded`, `session-started`. Renomear/excluir são do host. A persistência (localStorage) é do helper `PrometeuChatSessionStore`; banco fica para depois (backlog).
 - Renderização AG-UI estruturada (aditiva, com fallback de texto): detecta specs AG-UI no corpo da resposta e os desenha como UI — CapabilitiesSpec (painel de capacidades, novo), DashboardSpec (KPIs/tabelas/rankings/gráficos via porta `AgUiChartAdapter`) e UISpec (delegado ao renderizador oficial). Ligado por padrão (`renderStructured`, desligável); onboarding opcional via `definirCapacidadesBoasVindas(spec, enabled)`/`setWelcomeCapabilities` + `welcomeCapabilities`. Sem spec reconhecido, spec inválido, `renderStructured:false` ou runtime de spec ausente → texto puro. Exige carregar `embeddable-chat-spec-runtime.js` + `ag-ui-spec-render-bridge.js` (e os scripts de gráfico) antes do componente. Detalhe de ativação e estado por host: [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md) §18.1.
 - Dependencias principais: [app/ui/static/js/shared/layout-mestre-api.js](../app/ui/static/js/shared/layout-mestre-api.js), [app/ui/static/js/shared/ui-webchat-runtime-utils.js](../app/ui/static/js/shared/ui-webchat-runtime-utils.js), [app/ui/static/js/shared/ui-webchat-async-runtime.js](../app/ui/static/js/shared/ui-webchat-async-runtime.js); para render estruturado (opcional): [embeddable-chat-spec-runtime.js](../../app/ui/static/js/shared/embeddable-chat-spec-runtime.js) + [ag-ui-spec-render-bridge.js](../../app/ui/static/js/shared/ag-ui-spec-render-bridge.js) + porta de gráfico `AgUiChartAdapter`.
 - Acoplamento forte com dominio?: Baixo. Reaproveita o contrato canônico da UI, mas não depende mais do runtime lateral DNIT.
@@ -1434,6 +1450,22 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Prioridade: Media
 
 - Guia de uso detalhado: [docs/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md)
+
+### PrometeuChatSessionStore (store de sessões de chat em localStorage — lado HOST)
+
+- Descricao: helper compartilhado para as telas que embutem o `PrometeuEmbeddableChatRuntime` persistirem **sessões de conversa** (várias conversas salvas) em localStorage. O componente é headless (não persiste); este store é o lado HOST da persistência, para os hosts não duplicarem o CRUD nem os mappers de mensagem.
+- Tags: frontend, chat, sessoes, localStorage, store
+- Tipo: helper (UMD)
+- Arquivo: [app/ui/static/js/shared/chat-session-store.js](../../app/ui/static/js/shared/chat-session-store.js)
+- Linguagem: JavaScript (UMD)
+- Responsabilidade principal: CRUD de sessões por **namespace** (`create({ storageKey, scopeRef?, maxSessions? })`) — `scopeRef` isola conversas por escopo (ex.: projeto DNIT). Instância: `listar`, `obter`, `obterMensagensComponente` (pronto para `carregarSessao`), `criar`, `salvarConversa` (upsert), `renomear`, `excluir`. Mappers componente⇄armazenado são **fonte única** aqui (`mapStoredMessagesToComponent`/`mapComponentMessagesToStored`); o `WebchatV3HostBridge` delega a eles. Formato preservado da v3 (`webchat_history`).
+- Dependencias principais: nenhuma (só `localStorage`; storage injetável para teste).
+- Acoplamento forte com dominio?: Nenhum. Neutro e reutilizável por qualquer host de chat.
+- Uso atual observado: Sim — v3 ([ui-webchat-v3.js](../../app/ui/static/js/ui-webchat-v3.js)), admin-plataforma-webchat ([ui-admin-plataforma-webchat.js](../../app/ui/static/js/ui-admin-plataforma-webchat.js)) e DNIT detalhe ([gesdoc-project-detail.js](../../app/ui/static/js/gesdoc-project-detail.js), escopado por projeto). Protegido por [tests/frontend/chat_session_store_contract.test.js](../../tests/frontend/chat_session_store_contract.test.js) e pelos contratos de sessão por host. Provado em runtime real (FastAPI local) nas 3 telas + bancada.
+- Seguro reutilizar como esta?: Sim, para qualquer tela que embuta o chat e queira sessões salvas no navegador.
+- Riscos ou limitacoes: persiste só no navegador (localStorage) — a versão em banco (multi-dispositivo) fica para depois (backlog). Falhas de quota/modo privado são observáveis (`console.warn`), não silenciosas.
+- Sugestao de melhoria: quando a persistência em banco entrar, manter o MESMO contrato e adicionar um backend de servidor por trás dele (sem mudar os hosts).
+- Prioridade: Media
 
 ### AgUiChartAdapter (porta neutra de gráfico AG-UI) + ApexChartsAdapter
 
@@ -1450,19 +1482,6 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Riscos ou limitacoes: o gráfico real só aparece quando o widget já carrega dados numéricos resolvidos (caminho de runtime materializado); no contrato base de `DashboardSpec` (sem dados), cai no placeholder por design.
 - Sugestao de melhoria: ao surgir necessidade de outra lib, criar um novo adapter implementando a mesma interface e registrá-lo como ativo, sem alterar o renderer.
 - Prioridade: Media
-
-- Tags: frontend, dnit, webchat
-- Tipo: runtime
-- Arquivo: [app/ui/static/js/shared/dnit-project-chat-runtime.js](../app/ui/static/js/shared/dnit-project-chat-runtime.js)
-- Linguagem: JavaScript
-- Responsabilidade principal: centralizar a sessão de conversa do painel lateral DNIT e expor uma API pequena para enviar perguntas, responder HIL, limpar conversa e sincronizar estado reativo da tela.
-- Dependencias principais: [app/ui/static/js/shared/layout-mestre-api.js](../app/ui/static/js/shared/layout-mestre-api.js), [app/ui/static/js/shared/ui-webchat-runtime-utils.js](../app/ui/static/js/shared/ui-webchat-runtime-utils.js), [app/ui/static/js/shared/ui-webchat-async-runtime.js](../app/ui/static/js/shared/ui-webchat-async-runtime.js), [app/ui/static/js/shared/ui-webchat-hil-contract.js](../app/ui/static/js/shared/ui-webchat-hil-contract.js)
-- Acoplamento forte com dominio?: Medio. Ele conhece o contrato do detalhe DNIT e o envelope do webchat oficial, mas foi isolado para evitar repetição no arquivo da página.
-- Uso atual observado: Sim. Consumido por [app/ui/static/js/dnit-project-detail.js](../app/ui/static/js/dnit-project-detail.js) e protegido por [tests/frontend/dnit_project_chat_runtime_contract.test.js](../tests/frontend/dnit_project_chat_runtime_contract.test.js).
-- Seguro reutilizar como esta?: Sim, para páginas ou sidecars que usem o mesmo contrato de assistente lateral baseado em YAML fixo do backend DNIT.
-- Riscos ou limitacoes: depende da presença dos helpers globais do runtime oficial no browser e de o backend devolver `assistant_config` com `yaml_file` e `yaml_public_url` válidos.
-- Sugestao de melhoria: extrair uma camada ainda mais genérica se outras telas passarem a usar o mesmo padrão de chat embutido com YAML fixo.
-- Prioridade: Alta
 
 ### PrometeuLayoutMestreContextRuntime
 

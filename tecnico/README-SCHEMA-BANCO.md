@@ -41,9 +41,14 @@ filhas de chunks/páginas). Após a migração `migracao-modelo-vetorial-ingesta
   acervo novo está vazio (`vector_active_documents`=0, ponteiros do master nulos). Por isso o
   guard do RAG é ESTRITO só onde o acervo novo está populado e TOLERANTE onde está vazio,
   evitando RAG vazio em silêncio na produção.
-- **Tabelas antigas `ingestion_*`:** continuam existindo e são usadas pelo control plane do Job
-  Core, streaming/status ao vivo, worker e manutenção (reconciliação). Elas **não** são mais a
-  fonte de verdade do histórico/acervo de NEGÓCIO no caminho da tela.
+- **Separação atual confirmada:** `vector_*` é o modelo de NEGÓCIO do acervo
+  (histórico do lote, documento publicado, chunks/páginas/imagens vivas e master do dataset).
+  `ingestion_runs` / `ingestion_run_documents` / `ingestion_run_slot_leases` permanecem como
+  CONTROL PLANE operacional da ingestão assíncrona (enqueue, cancelamento, heartbeat,
+  reconciliação, fan-out e status ao vivo). Já `ingestion_datasets` /
+  `ingestion_dataset_generations` ficaram como legado de transição e **não** são mais o
+  caminho oficial de runtime do acervo vetorial. A remoção destrutiva dessas tabelas já possui
+  migration dedicada no repositório (`scripts/sql/20260617_drop_ingestion_dataset_lifecycle_legacy.sql`).
 
 ## Que problema este manual resolve
 
@@ -102,18 +107,19 @@ contratos espalhados.
 - manifesto e tabelas derivadas do documento no PostgreSQL,
 - índice BM25 persistido,
 - banco vetorial ativo, seja Qdrant ou Azure Search.
-- Regra operacional de `overwrite`: a limpeza destrutiva do dataset vivo remove `ingestion_document_manifest`, as tabelas filhas dependentes do manifesto e o BM25 correspondente da geração substituída.
+- Regra operacional de `overwrite`: no modelo ativo, a limpeza destrutiva do dataset vivo remove o acervo `vector_*` publicado (`vector_active_documents` e filhas) e o BM25 materializado. O subsistema ACL/manifesto (`ingestion_document_manifest` e correlatas) pode precisar ser limpo em paralelo para não deixar documento lógico fantasma, mas ele já não é mais a régua principal do acervo vivo.
 - Histórico operacional, auditoria, runs e evidências de execução não fazem parte da limpeza destrutiva do dataset vivo e devem seguir política própria de retenção.
-- Consequência prática de `overwrite`: `ingestion_runs`, `ingestion_run_documents`, `ingestion_datasets` e `ingestion_dataset_generations` permanecem preservados como trilha operacional. Quando o manifesto antigo é removido, `ingestion_run_documents.manifest_id` pode ficar nulo para manter a auditoria do run sem reapontar para um documento que já não faz parte do acervo vivo.
+- Consequência prática de `overwrite`: `ingestion_runs` e `ingestion_run_documents` permanecem preservados como trilha operacional. Quando o manifesto ACL antigo é removido, `ingestion_run_documents.manifest_id` pode ficar nulo para manter a auditoria do run sem reapontar para um documento que já não faz parte do acervo vivo. `ingestion_datasets` e `ingestion_dataset_generations` não devem mais ser tratados como fonte do dataset vivo no runtime oficial.
 - Consequência obrigatória: o sistema não pode considerar sucesso quando apenas uma dessas materializações foi atualizada e as demais ficaram antigas.
 
 ## Relações Principais
 
-- `ingestion_datasets` é a entidade central do dataset vivo por `tenant_code` e `vectorstore_id`.
-- `ingestion_dataset_generations` materializa cada geração preparada, ativa, abortada, falha ou substituída do dataset.
+- `vector_dataset_master` é a entidade central do dataset vivo por `tenant_code` e `vectorstore_id`.
+- `vector_ingestion_runs` materializa o histórico de negócio de cada lote publicado ou tentado no modelo novo.
 - `ingestion_document_manifest` é a entidade central do domínio de documentos.
 - `ingestion_document_chunks`, `ingestion_document_pages` e `ingestion_document_images` dependem do manifesto do documento.
-- `ingestion_runs` representa uma execução de ingestão, `ingestion_run_documents` guarda o detalhe de cada documento dentro dessa execução e `ingestion_run_slot_leases` materializa o controle de concorrência do fan-out por documento sem concentrar contenção na linha pai.
+- `ingestion_runs` representa a execução operacional da ingestão, `ingestion_run_documents` guarda o detalhe operacional de cada documento dentro dessa execução e `ingestion_run_slot_leases` materializa o controle de concorrência do fan-out por documento sem concentrar contenção na linha pai.
+- `ingestion_datasets` e `ingestion_dataset_generations` são legado do lifecycle antigo. Enquanto permanecerem fisicamente no banco, servem para compatibilidade/forense, não como fonte oficial do dataset vivo vetorial.
 - `interaction_runs` representa a execução principal de uma interação e `interaction_run_events` guarda os eventos associados.
 - O schema `job_core` concentra o ledger canônico do runtime assíncrono de jobs, por meio de `job_core.job_runs` e `job_core.job_run_events`.
 - O schema `ag_ui` concentra o replay durável do protocolo AG-UI, separando a trilha visual de runs e threads do ledger de background e do histórico genérico de interação.
@@ -141,6 +147,9 @@ contratos espalhados.
 - `tenant_code`: tenant dono do índice materializado.
 - `vectorstore_id`: identificador lógico do acervo, mantido para diagnóstico e filtros operacionais.
 - `generation_id`: geração do dataset à qual este índice BM25 pertence.
+- Leitura correta em 101: apesar do nome histórico, `generation_id` já funciona no contrato novo
+  como token opaco de identidade/publicação do alvo BM25. Ele não deve mais ser tratado como
+  foreign key obrigatória para `ingestion_dataset_generations`.
 - `schema_version`: versão do formato persistido.
 - `entries_count`: quantidade de entradas no índice.
 - `documents_count`: quantidade de documentos representados.
@@ -153,7 +162,7 @@ contratos espalhados.
 - `query_expansion_vocabulary`: vocabulário auxiliar para expansão em `jsonb`.
 - `vocabulary_stats`: estatísticas do vocabulário em `jsonb`.
 - `last_vocabulary_at`: última atualização do vocabulário derivado.
-- Índices e restrições: PK em `bm25_target_id`; índice operacional por `tenant_code, vectorstore_id, generation_id`; relação com `ingestion_dataset_generations(generation_id)` para manter rastreabilidade da geração dona do índice.
+- Índices e restrições: PK em `bm25_target_id`; índice operacional por `tenant_code, vectorstore_id, generation_id`. O nome `generation_id` foi preservado por compatibilidade, mas o contrato atual já o trata como token opaco e não mais como FK mandatória do lifecycle antigo.
 
 ### checkpoint_migrations
 
@@ -271,6 +280,87 @@ contratos espalhados.
 - Check `job_run_events_status_check` limitando `status` aos estados válidos do runtime.
 - Check `job_run_events_payload_json_check` exigindo objeto JSON.
 
+### job_core.async_jobs
+
+- Finalidade prática: guardar a fila persistida simples da spec 101 para jobs assíncronos de ingestão de PDF.
+- Papel operacional: esta tabela não substitui `job_core.job_runs`. Ela é um ledger simplificado e específico do fluxo de PDFs, usado para registrar o pedido aceito, o estado operacional básico do job e o resumo final sem introduzir a semântica completa do Job Core genérico.
+- Relação com o runtime simples: o submit cria uma linha `pending` aqui e envia apenas um wakeup curto ao dispatcher. O dispatcher, hospedado no worker, lê os jobs pendentes desta tabela, faz o claim lógico mudando o estado para `processing`, executa os PDFs do job e fecha a linha em `success`, `error` ou `cancelled`. Quando um cancelamento é solicitado, o Killer muda o estado para `cancelling`, localiza o processo do job e só então fecha a linha em `cancelled`.
+- Chave primária: `job_id`.
+- DDL oficial atual:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS job_core;
+
+CREATE TABLE IF NOT EXISTS job_core.async_jobs (
+    job_id TEXT NOT NULL PRIMARY KEY,
+    job_type TEXT NOT NULL,
+    job_params_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ NULL,
+    finished_at TIMESTAMPTZ NULL,
+    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    correlation_id TEXT NOT NULL,
+    requested_by TEXT NULL,
+    parallelism INTEGER NOT NULL DEFAULT 1,
+    runner_pgid INTEGER NULL,
+    final_message TEXT NULL,
+    error_message TEXT NULL,
+    tenant_code TEXT NULL,
+    vectorstore_id TEXT NULL,
+    CONSTRAINT async_jobs_status_check CHECK (
+        status IN ('pending', 'processing', 'success', 'error', 'cancelling', 'cancelled')
+    ),
+    CONSTRAINT async_jobs_job_params_json_check CHECK (jsonb_typeof(job_params_json) = 'object'),
+    CONSTRAINT async_jobs_parallelism_positive_check CHECK (parallelism >= 1),
+    CONSTRAINT async_jobs_started_after_created_check CHECK (
+        started_at IS NULL OR started_at >= created_at
+    ),
+    CONSTRAINT async_jobs_finished_after_started_check CHECK (
+        finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at
+    )
+);
+
+CREATE INDEX IF NOT EXISTS ix_async_jobs_status_created_at
+    ON job_core.async_jobs (status, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS ix_async_jobs_correlation_id
+    ON job_core.async_jobs (correlation_id);
+
+CREATE INDEX IF NOT EXISTS ix_async_jobs_tenant_code_created_at
+    ON job_core.async_jobs (tenant_code, created_at DESC);
+```
+
+- Evolução de schema já existente: as colunas `tenant_code` e `vectorstore_id` foram adicionadas depois da criação original da tabela, via migração `scripts/sql/20260618_add_tenant_scope_to_simple_async_pdf_jobs.sql` com `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. Depois, a migração `scripts/sql/20260621_add_cancellation_to_simple_async_pdf_jobs.sql` adicionou `runner_pgid` e ampliou o `CHECK` de `status` para suportar o cancelamento simples via Killer. Em ambiente onde a tabela já existia, essas migrações ajustam o schema sem recriar a tabela.
+
+- Colunas:
+- `job_id`: identificador único do job simples. É a chave usada pelo submit, pelo dispatcher e pela leitura de status.
+- `job_type`: tipo lógico do job. Na implementação atual da spec 101, o valor usado é `ingestion_pdf`.
+- `job_params_json`: payload estruturado do job em `jsonb`. Aqui entram os parâmetros necessários para executar o trabalho, como snapshot do YAML, formato de saída, paralelismo, dados cifrados e outros campos específicos do fluxo.
+- `status`: estado atual do job simples. O conjunto válido é fechado em `pending`, `processing`, `success`, `error`, `cancelling` e `cancelled`.
+- `created_at`: instante em que a linha do job foi criada.
+- `started_at`: instante em que o dispatcher conseguiu promover o job para processamento.
+- `finished_at`: instante de encerramento do job, seja com sucesso total, erro terminal ou cancelamento confirmado.
+- `last_activity_at`: último instante de atividade relevante do job. Serve para provar movimentação recente da linha durante submit, claim, progresso e finalização.
+- `correlation_id`: correlação canônica do fluxo. É o campo usado para ligar essa linha aos logs e aos demais artefatos operacionais da mesma execução.
+- `requested_by`: identidade textual de quem solicitou o job, quando disponível. Na implementação atual, normalmente recebe o e-mail do usuário.
+- `parallelism`: quantidade de runners paralelos permitida para o job simples. O check do schema impede valores menores que 1.
+- `runner_pgid`: process-group id do runtime do job. Em linguagem simples, é o identificador persistido do grupo de processos do job para o Killer conseguir encerrar o processo mesmo se o registro em memória do worker tiver se perdido.
+- `final_message`: resumo textual final do job quando ele termina. Em linguagem simples, é a mensagem curta de fechamento para consumo operacional.
+- `error_message`: mensagem textual do erro terminal quando o job fecha com falha.
+- `tenant_code`: tenant dono do job. É a fronteira de segurança usada pelo dashboard de ingestão para escopar a leitura dos jobs da spec 101 por tenant. Linhas antigas anteriores a esta coluna ficam com `tenant_code` NULL e, por isso, não aparecem em nenhum escopo de tenant na leitura do dashboard.
+- `vectorstore_id`: identificador lógico do acervo alvo da ingestão, preservado no submit para diagnóstico e exibição no dashboard.
+- Índices e restrições:
+- PK em `job_id`.
+- Índice `ix_async_jobs_status_created_at` em `status, created_at ASC` para buscar jobs pendentes ou em processamento em ordem cronológica.
+- Índice `ix_async_jobs_correlation_id` em `correlation_id` para investigação por correlação.
+- Índice `ix_async_jobs_tenant_code_created_at` em `tenant_code, created_at DESC` para a leitura do dashboard por tenant, do mais recente para o mais antigo.
+- Check `async_jobs_status_check` limitando `status` a `pending`, `processing`, `success`, `error`, `cancelling` e `cancelled`.
+- Check `async_jobs_job_params_json_check` exigindo que `job_params_json` seja um objeto JSON.
+- Check `async_jobs_parallelism_positive_check` exigindo `parallelism >= 1`.
+- Check `async_jobs_started_after_created_check` impedindo início anterior à criação.
+- Check `async_jobs_finished_after_started_check` impedindo término anterior ao início quando ambos existirem.
+
 ### Como o processamento paralelo agnóstico usa o schema `job_core`
 
 - Escopo correto: o mecanismo genérico e agnóstico de jobs paralelos usa diretamente apenas `job_core.job_runs` e `job_core.job_run_events` como ledger durável do worker. Tabelas como `ingestion_runs`, `ingestion_run_documents`, `ingestion_run_slot_leases`, `agent_background.*` e `scheduler.*` pertencem a especializações ou a slices produtores, e não substituem o ledger canônico do runtime genérico.
@@ -330,12 +420,14 @@ contratos espalhados.
 
 ### ingestion_datasets
 
-- Finalidade prática: representar o dataset lógico vivo do acervo por `tenant_code` e `vectorstore_id`.
-- Papel no ciclo de vida: esta tabela é a fonte de verdade do dataset ativo. Ela aponta qual geração está visível para leitura e separa o acervo vivo do histórico operacional de runs.
-- Uso na ingestão de PDF: antes de gravar páginas, chunks e imagens, o runtime resolve qual dataset lógico está valendo para o par `tenant_code + vectorstore_id`. Em termos simples, esta tabela responde: “qual acervo oficial está ativo agora para este cliente e esta coleção?”.
-- O que ela grava no fluxo de PDF: política `if_exists`, status do dataset, geração ativa, alvo físico do banco vetorial e alvo físico do BM25. Ela não guarda páginas, texto ou imagens de PDFs; ela guarda o ponteiro do acervo vivo.
-- Para que é usada: orientar `overwrite`, `update` e `skip`, resolver o alvo físico usado pelo vector store e pelo BM25 e permitir que o sistema leia o acervo ativo sem depender do último run executado.
-- Limite importante: `ingestion_runs` pode ter histórico de execuções antigas, canceladas ou falhas. O acervo vivo deve ser lido por `ingestion_datasets.active_generation_id`, não pelo run mais recente.
+- Situação atual do runtime: **legado de transição**. Esta tabela continua documentada porque ainda existe no banco, mas o caminho oficial do acervo vetorial não deve mais ler daqui o dataset vivo. O owner oficial do dataset vivo passou a ser `vector_dataset_master`.
+
+- Finalidade histórica: representava o dataset lógico vivo do modelo antigo por `tenant_code` e `vectorstore_id`.
+- Papel no ciclo de vida antigo: era a fonte de verdade do dataset ativo antes do corte para `vector_dataset_master` + `vector_active_*`.
+- Uso atual na ingestão de PDF: o runtime oficial **não** deve mais resolver acervo vivo, alvo físico ou publicação por esta tabela.
+- O que ainda guarda: política `if_exists`, status antigo do dataset, geração ativa legada e alvos físicos remanescentes para forense/compatibilidade.
+- Para que serve hoje: auditoria de transição, troubleshooting histórico e compatibilidade controlada enquanto a tabela ainda existir fisicamente.
+- Limite importante: não conclua o acervo vivo atual por `ingestion_datasets.active_generation_id`; no runtime oficial, a leitura deve partir de `vector_dataset_master.last_published_run_id` + `vector_active_documents`.
 - Chave primária: `dataset_id`.
 - Colunas:
 - `dataset_id`: identificador UUID do dataset lógico.
@@ -361,12 +453,14 @@ contratos espalhados.
 
 ### ingestion_dataset_generations
 
-- Finalidade prática: registrar cada geração preparada, ativa, abortada, falha ou substituída do dataset lógico.
-- Papel no ciclo de vida: permite staging, ativação observável, aborto explícito e preservação de histórico sem apagar imediatamente o acervo anterior.
-- Uso na ingestão de PDF: cada rodada que precisa preparar uma nova materialização do acervo cria ou usa uma geração. No `overwrite`, por exemplo, a geração nova pode ser preparada com alvos físicos próprios antes de virar a geração ativa.
-- O que ela grava no fluxo de PDF: número da geração, status da geração, alvos físicos de vector store e BM25, `created_by_run_id`, `correlation_id` e metadata de lifecycle. Esses dados explicam qual geração nasceu de qual execução e qual materialização física pertence a ela.
-- Para que é usada: dar rastreabilidade entre dataset vivo, BM25 persistido e banco vetorial. Também permite abortar ou rebaixar uma geração sem confundir isso com o histórico operacional do run.
-- Relação com BM25: `bm25_indexes.generation_id` aponta para esta tabela. Por isso, quando uma geração de ingestão é destruída de forma controlada, o índice BM25 associado também precisa ser tratado como parte do mesmo conjunto operacional.
+- Situação atual do runtime: **legado de transição**. Esta tabela continua documentada porque ainda existe no banco, mas o caminho oficial do acervo vetorial não deve mais depender de geração ativa para resolver publicação, acervo vivo ou alvo físico. Esses papéis migraram para `vector_dataset_master` + `vector_ingestion_runs` + `vector_active_*`.
+
+- Finalidade histórica: registrava cada geração preparada, ativa, abortada, falha ou substituída do dataset lógico antigo.
+- Papel no ciclo de vida antigo: permitia staging e ativação por geração antes do modelo de publicação explícita por `vector_ingestion_runs`.
+- Uso atual na ingestão de PDF: o runtime oficial **não** deve mais criar nem consultar gerações aqui para decidir o que está publicado.
+- O que ainda guarda: número/status de geração, alvos físicos antigos, `created_by_run_id`, `correlation_id` e metadata útil para reconstrução forense.
+- Para que serve hoje: rastreabilidade histórica do lifecycle antigo e compatibilidade temporária com tabelas técnicas que ainda não foram aposentadas.
+- Relação com BM25: enquanto existir resíduo técnico acoplado a `generation_id`, trate essa ligação como legado operacional, não como contrato principal do acervo vivo.
 - Chave primária: `generation_id`.
 - Colunas:
 - `generation_id`: identificador UUID da geração.
@@ -868,6 +962,12 @@ Quatro tabelas centrais e três tabelas de detalhe de conteúdo ativo:
 > `pg_constraint`, `pg_indexes`). Reflete o estado atual das tabelas no banco. Ordem das tabelas
 > ajustada para respeitar dependências de FK ao recriar do zero (master e runs antes das tabelas
 > que as referenciam).
+>
+> Auto-DDL no código-fonte: o bootstrap canônico do modelo `vector_*` agora roda em
+> `src/telemetry/ingestion/vector_active_archive_repository.py`, que garante criação do schema,
+> tabelas-base, evolução de colunas opcionais e o índice/coluna de FTS de
+> `vector_active_document_chunks`. Isso fecha o gap em que o runtime já lia/escrevia `vector_*`,
+> mas a autoproteção de DDL ainda estava concentrada só no legado.
 
 ```sql
 CREATE TABLE vector_dataset_master (
@@ -1012,6 +1112,7 @@ CREATE TABLE vector_active_document_chunks (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    fts_content tsvector GENERATED ALWAYS AS (to_tsvector('portuguese'::regconfig, COALESCE(chunk_text, ''::text))) STORED,
     CONSTRAINT vector_active_document_chunks_pkey PRIMARY KEY (active_chunk_id),
     CONSTRAINT ux_vector_active_document_chunks UNIQUE (active_document_id, chunk_index),
     CONSTRAINT vector_active_document_chunks_active_document_id_fkey FOREIGN KEY (active_document_id) REFERENCES vector_active_documents(active_document_id) ON DELETE CASCADE,
@@ -1034,6 +1135,10 @@ CREATE TABLE vector_active_document_images (
     CONSTRAINT vector_active_document_images_active_document_id_fkey FOREIGN KEY (active_document_id) REFERENCES vector_active_documents(active_document_id) ON DELETE CASCADE,
     CONSTRAINT vector_active_document_images_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES vector_dataset_master(dataset_id) ON DELETE CASCADE
 );
+
+CREATE INDEX ix_vector_active_document_chunks_fts
+    ON vector_active_document_chunks
+    USING gin (fts_content);
 ```
 
 ### De-para de tabelas
@@ -2290,9 +2395,9 @@ Em linguagem simples: pense nesse schema como uma prateleira oficial de integrac
 
 ## Leitura Operacional do Schema
 
-- Para analisar integridade do acervo ativo, primeiro descubra em `ingestion_datasets` qual `active_generation_id` e qual `physical_bm25_target` estão valendo para o par `tenant_code + vectorstore_id`. Depois leia `bm25_indexes` por `bm25_target_id`, confirme em `ingestion_document_manifest` qual `active_document_version_id` está oficial para cada fonte e só então compare `ingestion_document_pages`, `ingestion_document_chunks`, `ingestion_document_images` e `ingestion_document_versions` no mesmo acervo lógico.
+- Para analisar integridade do acervo ativo no modelo oficial, primeiro leia `vector_dataset_master` para descobrir `dataset_id`, `vector_target`, `bm25_target`, `last_published_run_id` e `last_completed_run_id` do par `tenant_code + vectorstore_id`. Depois confira `vector_active_documents` e as filhas `vector_active_document_pages`, `vector_active_document_chunks` e `vector_active_document_images`. O BM25 materializado continua em `bm25_indexes`, mas o pivô do acervo vivo já não é `active_generation_id`.
 - Para investigar divergência de dataset, trate `ingestion_runs` e `ingestion_run_documents` como trilha histórica, não como fonte primária do estado vivo do acervo.
-- Para localizar um documento ingerido, comece por `ingestion_document_manifest`.
+- Para localizar um documento vivo no acervo vetorial, comece por `vector_active_documents`. Para ACL/autorização e identidade lógica preservada, complemente com `ingestion_document_manifest`.
 - Para localizar um documento externo do Confluence, consulte `source_system` junto com `external_document_id`.
 - Para auditoria e filtros SQL de autorização, priorize `is_restricted`, `allows_anonymous`, `permitted_groups` e `authorization_checked_at` em `ingestion_document_manifest`.
 - Para investigar a execução de uma ingestão, use `ingestion_runs` e depois `ingestion_run_documents`.
@@ -2322,9 +2427,9 @@ Causa provável: a investigação começou em `ingestion_runs` ou
 `ingestion_run_documents`, que são trilha histórica, e não no conjunto
 vivo do dataset.
 
-Como confirmar: volte para `ingestion_datasets`,
-`ingestion_dataset_generations`, `ingestion_document_manifest` e a versão
-ativa do documento antes de concluir que o acervo foi publicado.
+Como confirmar: volte para `vector_dataset_master`,
+`vector_ingestion_runs`, `vector_active_documents` e, quando a
+investigação envolver ACL/autorização, `ingestion_document_manifest`.
 
 ### Há colisão aparente entre documentos com o mesmo conteúdo
 

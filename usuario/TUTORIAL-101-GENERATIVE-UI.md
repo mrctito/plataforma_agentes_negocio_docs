@@ -220,7 +220,7 @@ A bolha exibe `perguntaDigitada`. O backend recebe o texto completo com o contex
 
 ### Exemplo real: tela de projetos DNIT
 
-A tela `app/ui/static/js/dnit-project-detail.js` usa exatamente esse hook. Quando o usuário faz uma pergunta na aba de chat de um projeto DNIT, o componente enriquece automaticamente o payload com:
+A tela `app/ui/static/js/gesdoc-project-detail.js` usa exatamente esse hook. Quando o usuário faz uma pergunta na aba de chat de um projeto DNIT, o componente enriquece automaticamente o payload com:
 
 - o título do projeto aberto;
 - os arquivos marcados pelo usuário na lista de documentos;
@@ -229,7 +229,7 @@ A tela `app/ui/static/js/dnit-project-detail.js` usa exatamente esse hook. Quand
 O código relevante (linhas 1483, 1572-1614 do arquivo):
 
 ```javascript
-// registro do hook na criação do componente (dnit-project-detail.js ~L1483)
+// registro do hook na criação do componente (gesdoc-project-detail.js ~L1483)
 buildPayloadText: (pergunta) => this.chatComporPayloadText(pergunta),
 
 // composição do texto enriquecido (~L1608-1614)

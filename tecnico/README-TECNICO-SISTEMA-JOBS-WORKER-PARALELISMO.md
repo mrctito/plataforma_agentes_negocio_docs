@@ -1,5 +1,15 @@
 # Manual técnico: Sistema de Jobs, Worker e Paralelismo
 
+> ⚠️ **DEPRECADO — em depreciação ativa.** Este Job Core genérico (RabbitMQ +
+> Dramatiq + worker + fan-out + ledger `job_core.job_runs`) é **legado** e será
+> substituído futuramente por uma evolução do **Processador de Jobs Assíncrono
+> Simples** (spec-101) — ver
+> [README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md](README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md).
+> A **ingestão PDF já migrou** para o processador simples. Este sistema continua
+> **operacional apenas** para ETL e execução agentic em background; **não foi
+> desligado** para não quebrar esses domínios, e o desligamento físico só
+> acontece quando eles forem migrados. **Não adicione novos tipos de job aqui.**
+
 ## 1. O que este documento cobre
 
 Este manual explica o comportamento técnico real do mecanismo de processamento de jobs do repositório. O foco é mostrar, em ordem de execução, como o sistema genérico funciona, como ele é materializado sobre RabbitMQ e Dramatiq, como o worker sobe e consome envelopes, como o core resolve handlers e como a ingestão PDF especializa esse mecanismo com job pai, job filho e fan-out por documento.
@@ -930,3 +940,14 @@ O comando exato de operação em container não foi confirmado integralmente nos
   - Símbolo relevante: `test_quando_runtime_real_executa_matriz_critica_entao_boundary_completo_passa_pelo_job_core_e_executor_canonico`.
   - Comportamento confirmado: o transporte RabbitMQ/Dramatiq real atravessa bridge, Job Core e executor canônico para a matriz crítica de `route_kind + dispatch_mode`.
   - Comportamentos confirmados adicionais: o slice também valida exceção real de leaf com falha terminal no core, cancelamento cooperativo do pai antes do domínio, concorrência real entre múltiplos jobs e preservação de linhagem por `worker_execution_correlation_id` em log físico compartilhado por `correlation_id` nesse boundary por actor.
+
+## Mecanismo paralelo: Processador de Jobs Assíncrono Simples (spec-101)
+
+O produto tem um segundo mecanismo assíncrono, distinto e separado deste. O Processador de Jobs Assíncrono Simples (spec-101) não usa Dramatiq, não passa pelo Worker dedicado e não usa o ledger do Job Core (`PostgresJobRunStore`). Em vez disso, usa a tabela `job_core.async_jobs` como fila durável, um sinal RabbitMQ de alarme (`ingestion_dispatcher_wakeup`) e processos temporários por job com pool de runners em memória.
+
+A comparação direta de arquitetura está em `README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md`.
+
+Para entender o spec-101, leia:
+
+- [README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md](README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md)
+- [README-CONCEITUAL-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md](../conceitual/README-CONCEITUAL-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md)

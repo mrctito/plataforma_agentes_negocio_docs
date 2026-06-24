@@ -624,7 +624,7 @@ valor tem precedência sobre o hook. O hook só é acionado quando não há `pay
 chamada.
 
 **Exemplo real: tela de projetos DNIT**
-(`app/ui/static/js/dnit-project-detail.js`, linhas ~1483 e ~1608-1614)
+(`app/ui/static/js/gesdoc-project-detail.js`, linhas ~1483 e ~1608-1614)
 
 A tela registra o hook na criação do componente:
 ```javascript
@@ -643,7 +643,7 @@ chatComporPayloadText(pergunta) {
 O `_chatContextoSessao` é atualizado pela tela à medida que o usuário abre projetos e
 seleciona arquivos — o componente não conhece esse dado, só chama o hook a cada envio.
 
-**Nota de dívida:** `dnit-project-detail.js` ainda usa um runtime paralelo próprio (não o
+**Nota de dívida:** `gesdoc-project-detail.js` ainda usa um runtime paralelo próprio (não o
 componente `PrometeuEmbeddableChatRuntime`), por decisão registrada em §35.1. O padrão
 `buildPayloadText` é o contrato correto para qualquer nova host que precise de bind de
 contexto — o DNIT será migrado para ele quando a dívida for quitada.
@@ -767,6 +767,69 @@ Cada interação deve preservar, no mínimo:
 A v1 não precisa persistir histórico em banco, Redis ou localStorage.
 
 Persistência externa pode ser feita futuramente pela host page usando eventos e estado exportado.
+
+## 22.1 Sessões de conversa (várias conversas salvas) — headless
+
+O componente entende o conceito de **sessão de conversa** (cada "thread" salva, como as
+conversas separadas na barra lateral do ChatGPT), mas continua **headless**: ele **não grava
+nada** e **não conhece a lista de sessões nem os títulos**. Ele sabe apenas qual é a **sessão
+ATIVA** e **avisa a tela host** quando a conversa muda, para o host gravar onde quiser.
+
+**Quem faz o quê (101):**
+
+- **Componente:** guarda a sessão ativa (id + mensagens em memória), expõe a API de sessão e
+  dispara o aviso de persistência. Nada de localStorage/banco aqui.
+- **Host (a tela):** é dono da **lista** de conversas, da **interface** (sidebar/seletor), do
+  **título**, e da **gravação**. Renomear e excluir são do host.
+
+**API de sessão do componente:**
+
+- `definirSessaoAtiva(id)` / `setActiveSessionId(id)` e `obterSessaoAtiva()` / `getActiveSessionId()`.
+- `carregarSessao({ sessionId, messages })` / `loadSession(...)`: o host escolheu uma conversa e
+  injeta as mensagens dela; o componente define a sessão ativa e re-hidrata num passo. **Não**
+  dispara o aviso de persistência (o host acabou de fornecer esses dados).
+- `novaSessao(id)` / `newSession(id)`: inicia uma conversa nova (limpa e zera/define a sessão ativa).
+- `obterEstadoAtual().sessionId` traz a sessão ativa; **todo evento** carrega `sessionId`.
+- Eventos novos: `session-loaded`, `session-started`.
+
+**O aviso de persistência (callback do host):**
+
+```js
+const chat = EmbeddableChatRuntime.createGenericEmbeddableChat({
+  /* ...deps, yaml, email... */
+  onConversationChanged: ({ sessionId, messages, lastInteraction, reason }) => {
+    // o HOST grava aqui (ex.: localStorage). reason: 'response-received' |
+    // 'send-cancelled' | 'error' | 'hil-decision-completed' | 'external-message' |
+    // 'history-cleared'. Uma exceção neste hook NÃO derruba o componente.
+  },
+});
+```
+
+**O store pronto do lado HOST: `PrometeuChatSessionStore`**
+
+Para não reimplementar localStorage em cada tela, use o helper compartilhado
+`window.PrometeuChatSessionStore` (carregue `shared/chat-session-store.js` **antes** do script
+do host):
+
+```js
+const store = PrometeuChatSessionStore.create({
+  storageKey: 'webchat_history',      // namespace no localStorage
+  scopeRef: projectId,                 // opcional: isola conversas por escopo (ex.: projeto)
+});
+// listar() / obter(id) / obterMensagensComponente(id) / criar({title,mode})
+// salvarConversa(id, messages, meta) / renomear(id, title) / excluir(id)
+```
+
+Padrão de wiring no host: registrar `onConversationChanged` → `store.salvarConversa(...)`;
+ao escolher uma conversa → `chat.carregarSessao({ sessionId, messages: store.obterMensagensComponente(id) })`;
+"nova conversa" → `chat.novaSessao(null)`; renomear/excluir → `store.renomear/excluir` + re-render.
+**Ordem de init importa:** monte o componente (que cria/segura o store) **antes** de ler o
+histórico — inverter quebra o load.
+
+**Estado de adoção:** ligado em produção na WebChat v3 (`webchat_history`), na admin-plataforma-webchat
+(`webchat_admin_history`) e no detalhe DNIT (`dnit_chat_sessions`, escopado por projeto). A
+persistência em **banco** (multi-dispositivo) fica para depois (backlog) — quando entrar, mantém o
+mesmo contrato com um backend de servidor por trás do store.
 
 ## 23. Diretriz obrigatória: componente testável isoladamente
 

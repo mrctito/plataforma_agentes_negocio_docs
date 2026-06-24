@@ -48,6 +48,13 @@ Se você precisa implementar, revisar YAML, diagnosticar erro, confirmar caminho
 
 Leia estes dois manuais antes dos documentos de PDF quando a dúvida envolver `POST /rag/ingest`, job pai, fila, worker dedicado, fan-out documental, job filho, contrato de paralelismo ou extensão do mecanismo para novos tipos de job. Eles explicam primeiro a espinha dorsal agnóstica e só depois a especialização da ingestão.
 
+### Processador de Jobs Assíncrono Simples (spec-101)
+
+- [README-CONCEITUAL-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md](../conceitual/README-CONCEITUAL-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md)
+- [README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md](README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md)
+
+Mecanismo distinto do Job Core genérico. Usa tabela PostgreSQL como fila durável, wakeups RabbitMQ e runtimes de dispatcher e Killer hospedados no worker. Criado para ingestão de PDF sem passar pelo Worker dedicado. Leia estes documentos quando a dúvida envolver `job_core.async_jobs`, dashboard mínimo da spec 101, `max_jobs_parallel`, `max_runners_per_job`, cancelamento simples, reconciliação de jobs presos, `runner_pgid` ou diagnóstico de jobs com status `pending`/`processing`/`cancelling`/`success`/`error`/`cancelled` nessa tabela.
+
 ### PDF
 
 - [README-CONCEITUAL-INGESTAO-PDF-PIPELINE-COMPLETO.md](../conceitual/README-CONCEITUAL-INGESTAO-PDF-PIPELINE-COMPLETO.md)

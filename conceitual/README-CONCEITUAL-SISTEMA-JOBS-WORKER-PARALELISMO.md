@@ -1,5 +1,13 @@
 # Manual técnico, executivo, comercial e estratégico: Sistema de Jobs, Worker e Paralelismo
 
+> ⚠️ **DEPRECADO — em depreciação ativa.** Este Job Core genérico é **legado** e
+> será substituído futuramente por uma evolução do **Processador de Jobs
+> Assíncrono Simples** (spec-101) — ver
+> [README-CONCEITUAL-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md](README-CONCEITUAL-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md).
+> A **ingestão PDF já migrou** para o processador simples. Este sistema continua
+> **operacional apenas** para ETL e execução agentic em background; **não foi
+> desligado** para não quebrar esses domínios. **Não crie novos tipos de job aqui.**
+
 ## 1. O que é esta feature
 
 Este módulo é o mecanismo assíncrono que permite à plataforma receber um pedido pesado, transformar esse pedido em um job durável, entregá-lo a um processo worker isolado, acompanhar sua execução e, quando necessário, quebrar o trabalho em unidades paralelas sem misturar transporte, regra de negócio e observabilidade.
@@ -632,3 +640,14 @@ Resposta esperada: validação do contrato de fila, ausência de handler e indis
   - Símbolo relevante: `test_quando_runtime_real_executa_matriz_critica_entao_boundary_completo_passa_pelo_job_core_e_executor_canonico`.
   - Comportamento confirmado: o repositório testa RabbitMQ/Dramatiq reais no boundary completo para a matriz crítica de `route_kind + dispatch_mode`, incluindo ingestão, ETL, background execution e scheduler.
   - Comportamentos confirmados adicionais: falha real de leaf marcando `failed` no Job Core, cancelamento cooperativo do pai suprimindo domínio, concorrência real observável entre jobs e preservação de linhagem por `worker_execution_correlation_id` dentro de log físico compartilhado por `correlation_id` no boundary por actor.
+
+## Mecanismo paralelo: Processador de Jobs Assíncrono Simples (spec-101)
+
+O produto tem um segundo mecanismo assíncrono, distinto e separado deste. O Processador de Jobs Assíncrono Simples (spec-101) usa uma tabela PostgreSQL como fila durável, um sinal RabbitMQ de alarme e processos temporários por job — sem passar pelo Worker dedicado nem pelo Dramatiq. Foi criado especificamente para ingestão de PDF simples.
+
+Os dois mecanismos coexistem. Não são variantes um do outro.
+
+Para entender o spec-101, leia:
+
+- [README-CONCEITUAL-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md](README-CONCEITUAL-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md)
+- [README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md](../tecnico/README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md)
