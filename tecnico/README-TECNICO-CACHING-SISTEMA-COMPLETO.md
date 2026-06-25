@@ -230,6 +230,39 @@ O desenho é importante:
 
 Esse comportamento é leve e suficiente para a maioria dos fluxos operacionais, mas precisa ser entendido corretamente em troubleshooting.
 
+## 11.1 Epoch global de cache (descarte de geração)
+
+### O que é (101)
+
+Pense no epoch como o "número da temporada" do cache. Toda chave de cache persistente no Redis nasce com esse número embutido no nome, por exemplo `env:development:gen:<epoch>:webscrape:result:...`. Enquanto o número não muda, o cache é reaproveitado normalmente. Quando você troca o número, todas as chaves da temporada anterior viram órfãs de uma vez: ninguém mais as procura e elas somem sozinhas pelo TTL. É a forma de jogar todo o cache fora sem precisar varrer e apagar chave por chave.
+
+### Onde o epoch nasce
+
+- Uma única vez no boot de cada processo (API, worker, scheduler), gravado no Redis com `SET NX` na chave `env:<ambiente>:cache:epoch`. O `NX` garante que os três processos concordem no mesmo epoch (o primeiro cria, os outros leem o que já existe).
+- Por padrão o epoch sobrevive a restart (o boot reusa o que já existe). Reiniciar a aplicação **não** joga o cache fora — isso é proposital.
+- Cada processo lê o epoch uma única vez e guarda em memória; não há leitura por operação de cache.
+
+### Em quais caches o epoch entra
+
+Apenas nos caches que vivem no Redis e sobrevivem a restart: RAG semântico, embeddings, BM25, cache de YAML, LLM cache, web scraping, deduplicação, mídia WhatsApp e documentos do Drive. Caches em memória de processo **não** recebem o epoch (eles já morrem no restart; quem os invalida é o sinal de timestamp da seção 11).
+
+### O que o epoch NÃO toca
+
+Estado de runtime e segredos ficam de fora: locks de startup, filas, pausas Human-in-the-Loop, store do DeepAgent e toda a família de sessão (chaves de sessão, ativação TOTP e sessão federada). Esses não são "cache reconstruível" — invalidá-los causaria perda de estado ou logout. O helper base de nomes de chave foi mantido **sem** o epoch justamente para protegê-los.
+
+### Como descartar o cache (o botão)
+
+Duas formas:
+
+1. Endpoint `POST /admin/cache/epoch/rotate` (permissão `ADMIN_CACHE_MANAGE`): gera um epoch novo e dispara o sinal de invalidação por timestamp na mesma ação.
+2. Flag de boot `CACHE_EPOCH_RESET_ON_BOOT=1`: força um epoch novo no próximo boot (desligada por padrão).
+
+Alcance da rotação (importante): o sinal de timestamp limpa **imediatamente** os caches de memória dos três processos. Já o efeito do prefixo novo nas chaves **Redis** vale para o processo que recebeu a rotação e para qualquer processo que **reinicie** depois (porque o epoch é lido uma vez por processo). Para os três processos passarem 100% para a nova geração sem esperar, faça um restart/rolling deploy — que no Northflank já ocorre a cada deploy.
+
+### Segregação por ambiente
+
+A chave do epoch e o sinal global de invalidação carregam o `ENVIRONMENT` (`env:<ambiente>:...`), como toda chave de cache. Isso evita que desenvolvimento, homologação e produção, que compartilham o mesmo Redis, colidam ou invalidem o cache um do outro.
+
 ## 12. Contratos e endpoints administrativos
 
 ### 12.1 Invalidação e limpeza
@@ -237,6 +270,7 @@ Esse comportamento é leve e suficiente para a maioria dos fluxos operacionais, 
 O router administrativo de cache expõe endpoints para:
 
 - limpar tudo;
+- rotacionar o epoch global de cache (descartar a geração corrente — ver seção 11.1);
 - resetar cache de credential manager;
 - flush de Redis;
 - reset de BM25;
@@ -490,3 +524,58 @@ O código deste projeto prefere depósitos especializados, com chaves previsíve
   - Motivo da leitura: confirmar taxonomia administrativa das chaves Redis.
   - Símbolos relevantes: _collect_redis_cache_stats.
   - Comportamento confirmado: Redis stats agrupando namespaces de embeddings, WhatsApp media, progress registry e BM25.
+
+## 23. Catálogo de tipos de cache (o que cada um guarda e como se comporta)
+
+Esta seção lista os caches reais do produto, agrupados por como se comportam. A distinção que mais importa: **caches persistentes no Redis sobrevivem a restart e recebem o epoch (seção 11.1)**; **caches em memória morrem no restart**; e **estado/sessão/segredo não são "cache descartável" e ficam de fora do epoch**.
+
+### 23.1 Grupo A — Caches persistentes no Redis (recebem epoch)
+
+São os que sobrevivem a restart e são descartados pela rotação de epoch. Todos têm TTL.
+
+| Cache | O que guarda / para que serve | Custo de reconstrução |
+| --- | --- | --- |
+| Cache semântico (RediSearch / Qdrant / Azure Search) | Resposta+documentos já recuperados para uma pergunta equivalente; evita refazer embedding da pergunta e o retrieval inteiro | Alto (re-embedding + retrieval) |
+| Cache de embeddings | Vetores já calculados (texto → vetor); evita rechamar a API de embeddings | Alto (custo de API e latência) |
+| Cache BM25 | Índice BM25 serializado (vocabulário e tokenização) por vector store | Alto (re-tokeniza e recalcula IDF) |
+| Cache de YAML resolvido | Configuração YAML já parseada/resolvida, indexada por hash do conteúdo | Médio (reparse) |
+| Cache de LLM | Resposta do modelo para um par (prompt, assinatura); evita rechamar o LLM | Alto (chamada ao LLM) |
+| Cache de web scraping | Resultado de scraping por URL | Médio |
+| Dedup de scraping | Hash de conteúdo já visto; evita reprocessar conteúdo duplicado | Médio |
+| Cache de mídia WhatsApp | `media_id` já resolvido por URL; evita reenviar a mídia | Médio (re-upload) |
+| Cache de documentos do Google Drive | Documento já baixado do Drive por `file_id` | Médio (I/O do Drive) |
+
+### 23.2 Grupo B — Estado, sessão e segredo (o epoch NÃO toca)
+
+Não são cache reconstruível: invalidá-los causa perda de estado, logout ou perda de dado. Recebem segregação por ambiente, mas **nunca** o segmento de epoch.
+
+| Item | O que guarda / para que serve | Por que fica fora do epoch |
+| --- | --- | --- |
+| Cache de sessão (chaves privadas efêmeras) | Chave privada de sessão para handshake de payload criptografado | Estado; invalidar quebra o handshake em andamento |
+| Ativação TOTP | Segredo provisório durante a ativação do 2FA | Estado de fluxo curto |
+| Sessão federada (SSO) | Sessões de usuários logados via SSO | Invalidar = logout forçado de todos |
+| Store do DeepAgent | Estado de execução do DeepAgent | Estado funcional, não leitura cacheada |
+| Registro de pausas HIL | Pausas Human-in-the-loop aguardando decisão | Estado funcional |
+| Fila de logs no Redis | Logs em trânsito até o worker drenar | É fila, não cache |
+| Cofre de chaves offline | Chaves simétricas de payload criptografado (banco) | Storage durável de segredo; epoch causaria perda de dado |
+| Registro de progresso | Progresso de tarefas longas (ingestão etc.) | Estado de acompanhamento, não cache |
+
+### 23.3 Grupo C — Caches em memória de processo (morrem no restart)
+
+Vivem dentro do processo; reiniciar já os zera. A invalidação sem restart é feita pelo **sinal de timestamp** (seção 11), não pelo epoch.
+
+| Cache | O que guarda / para que serve |
+| --- | --- |
+| WarmResourcePool (LLMs, vector stores, tools dinâmicas, DB engines) | Reaproveita recursos pesados por tenant entre requisições |
+| Workflows e supervisores compilados | Grafos LangGraph já compilados, no cache genérico do pool |
+| PipelineCacheManager | `ContentQASystem` já montado (evita cold start do pipeline RAG) |
+| ToolsFactory / ToolsLibrary | Catálogo de tools e factories de ferramentas |
+| CredentialManager | Instância de credenciais resolvida por tenant |
+| Checkpointer LangGraph | Conexão/checkpointer de memória de conversa |
+| Detectores JSON, retrievers de cache, expansão de query | Otimizações locais de processamento de RAG/ingestão |
+
+### 23.4 Resumo operacional
+
+- **"Jogar o cache fora" (sem perder estado):** rotacione o epoch — botão "Descartar cache" na tela de administração de cache ou `POST /admin/cache/epoch/rotate`. Atinge o Grupo A; o Grupo C é limpo pelo sinal que a rotação dispara junto.
+- **Nunca** use FLUSHDB para "limpar cache": ele apaga o Redis inteiro, inclusive Grupo B (sessões, filas, estado) e todos os ambientes.
+- **Boot não descarta cache** por padrão; só com `CACHE_EPOCH_RESET_ON_BOOT=1` (use pontualmente, não fixo).

@@ -251,6 +251,184 @@ Resumo ELI5: você só precisa seguir 2 endpoints (`/crypto/session-key` e `/rag
  **Auditoria**: Todas as requisições são rastreáveis
  **Compliance**: Credenciais nunca trafegam descriptografadas
 
+## 📁 Listar os documentos de um Vector Store (`/admin/vector-store/documents`)
+
+### O que é (nível 101)
+
+Esse endpoint responde a uma pergunta simples: **"quais documentos já estão carregados (ativos) no acervo deste Vector Store?"**. Ele lê o acervo vivo registrado (a tabela `vector_active_documents`, só status `active`) — **nunca varre o store físico** — e devolve a lista **paginada** e com **filtro por nome**. É a fonte da tela administrativa de Vector Store; serve para conferir o que foi ingerido, buscar um documento pelo nome e paginar acervos grandes (centenas de documentos) sem travar o navegador.
+
+### Quando usar
+
+- Para **inventariar/conferir** o acervo de um tenant + vector store (governança administrativa).
+- Para **procurar um documento pelo nome** (`name_filter`, busca parcial, sem diferenciar maiúsculas/minúsculas).
+- **Não** use para fazer pergunta ao RAG (isso é `/rag/execute` com `operation: "ask"`).
+
+### Como o YAML é passado (3 formas — escolha UMA)
+
+Igual ao `/rag/execute`, esse endpoint precisa de um YAML para descobrir **qual tenant** e **qual vector store** consultar. Há três formas de "empacotar" e enviar o YAML, em ordem do mais simples para o mais seguro:
+
+| Campo no corpo | Quando usar | O que enviar |
+| --- | --- | --- |
+| `yaml_path` | O YAML já está no servidor, em `app/yaml/` | O nome do arquivo, ex.: `"rag-config-mrctito-dnit-producao.yaml"` |
+| `yaml_content` | Você tem o texto do YAML em memória e o conteúdo **não** é sensível | A string YAML inteira |
+| `encrypted_data` | Produção / YAML com dados sensíveis — **mesmo envelope do `/rag/execute`** | O payload criptografado (ver seção "Entendendo a Criptografia") |
+
+Precedência: se mais de um for enviado, **`encrypted_data` vence**, depois `yaml_content`, depois `yaml_path`.
+
+> Alternativa sem YAML: se você já sabe o `vectorstore_id` e ele está em cache, pode enviar só `vectorstore_id` (sem nenhum YAML). Sem YAML e sem `vectorstore_id`, a resposta é `400` explicando o que faltou.
+
+### Autenticação
+
+- Header **`X-API-Key`** obrigatório, com permissão **`admin.vector_preview`** (`ADMIN_VECTOR_PREVIEW`).
+- `user_email` no corpo identifica o operador (use o e-mail real da sessão administrativa).
+
+### Exemplo didático em JavaScript — caminho simples (`yaml_content`)
+
+Este é o caminho mais direto: leia o arquivo `.yaml`, mande o texto em `yaml_content`.
+
+```javascript
+// 1) Empacotar o YAML: aqui lemos o texto do arquivo .yaml.
+//    No browser, normalmente o YAML é servido em /ui/yaml/<arquivo>.yaml.
+const yamlText = await (
+  await fetch('/ui/yaml/rag-config-mrctito-dnit-producao.yaml')
+).text();
+
+// 2) Montar o corpo da requisição.
+const body = {
+  user_email: 'operador@empresa.com',
+  yaml_content: yamlText,   // o YAML "empacotado" como texto inline
+  name_filter: '',          // vazio = lista todos; "manual" = filtra por nome
+  page: 1,
+  page_size: 20,
+};
+
+// 3) Chamar o endpoint (note o header X-API-Key).
+const resp = await fetch('http://localhost:5555/admin/vector-store/documents', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-API-Key': 'SUA_CHAVE_AQUI',
+  },
+  body: JSON.stringify(body),
+});
+
+// 4) Ler a resposta e o correlation_id oficial (útil para depurar no log).
+const data = await resp.json();
+const correlationId = resp.headers.get('X-Correlation-Id') || data.correlation_id;
+
+if (!resp.ok) {
+  throw new Error(`${data.detail || 'Falha ao listar documentos'} (correlation_id: ${correlationId})`);
+}
+
+console.log(`Tenant: ${data.tenant_code} | Vector store: ${data.vectorstore_id}`);
+console.log(`Total: ${data.total} | Página ${data.page} de ${data.total_pages}`);
+data.items.forEach((doc) => console.log(`- ${doc.document_name} (${doc.ingestion_status})`));
+```
+
+### Exemplo em JavaScript — caminho com YAML criptografado (paridade com `/rag/execute`)
+
+Use quando o YAML tem dados sensíveis. São os mesmos 2 passos do `/rag/execute`: pegar uma sessão de cripto e cifrar o YAML. A diferença é só o **endpoint final** e que o `encrypted_data` vai **na raiz do corpo** (não dentro de `payload`).
+
+```javascript
+// 1) Pegar uma sessão criptográfica (mesma usada pelo /rag/execute).
+const session = await (
+  await fetch('http://localhost:5555/crypto/session-key', { method: 'POST' })
+).json(); // → { session_id, public_key_pem, ttl_seconds }
+
+// 2) Cifrar o YAML com o helper oficial do browser (PayloadCrypto),
+//    exatamente como o WebChat/telas admin já fazem.
+const encryptedData = await PayloadCrypto.buildEncryptedData({
+  yamlContent: yamlText,
+  session,                       // session_id + public_key_pem
+  yamlFilename: 'rag-config-mrctito-dnit-producao.yaml',
+});
+
+// 3) Chamar o endpoint com encrypted_data NA RAIZ do corpo.
+const resp = await fetch('http://localhost:5555/admin/vector-store/documents', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-API-Key': 'SUA_CHAVE_AQUI' },
+  body: JSON.stringify({
+    user_email: 'operador@empresa.com',
+    encrypted_data: encryptedData,   // mesmo envelope do /rag/execute
+    name_filter: '',
+    page: 1,
+    page_size: 20,
+  }),
+});
+
+const data = await resp.json();
+console.log(`Total no acervo: ${data.total}`);
+```
+
+> O envelope `encrypted_data` é idêntico ao da seção "Entendendo a Criptografia" acima
+> (`session_id`, `wrapped_key`, `encrypted_yaml`, `original_filename`, `encryption_scheme`).
+> Em Node.js, gere-o com o mesmo helper de `examples/rag_api_client.js`.
+
+### Estrutura da resposta
+
+```json
+{
+  "status": "success",
+  "message": "394 documento(s) no acervo; exibindo a página 1 de 20.",
+  "correlation_id": "20260625_164023-4d9fe7ec-c6a3-4d53-8ee8-4bc9c452b0d7",
+  "tenant_code": "engenharia_dnit",
+  "vectorstore_id": "dnit_producao",
+  "name_filter": null,
+  "page": 1,
+  "page_size": 20,
+  "total": 394,
+  "total_pages": 20,
+  "items": [
+    {
+      "active_document_id": "8bac53c9-a562-420e-9f7d-ebeb97caebe4",
+      "document_name": "656_manual_de_tecnicas.pdf",
+      "document_path": "...",
+      "total_pages": null,
+      "file_size_bytes": null,
+      "ingestion_status": "active",
+      "updated_at": "2026-06-23T06:00:02.379555+00:00"
+    }
+  ]
+}
+```
+
+### Diferença para `/rag/execute` com `operation: "data_sources"` (não é redundante)
+
+São **dois endpoints com propósitos diferentes**, cada um desenhado para um público e uma necessidade:
+
+- **`/admin/vector-store/documents` → administrar o acervo.** É a API da **tela de administração** do Vector Store. Foca no documento como objeto operacional: traz **tamanho do arquivo**, **status da ingestão** e número de páginas, além de uma **mensagem amigável** pronta para exibir (ex.: `"394 documentos; página 1 de 20"`). Autentica como administrador (`X-API-Key` com `admin.vector_preview`). Use quando o objetivo é **olhar, conferir e buscar** os documentos carregados.
+
+- **`/rag/execute` (`operation: "data_sources"`) → entender a procedência do acervo.** Faz parte do **runtime RAG** (mesma porta e segurança do `ask`/`ingest`). Além da lista de documentos, devolve um bloco **`sources`**: as **fontes distintas** (`source_system` + `source_uri`) com a **contagem de documentos por fonte**, e em cada documento a sua **origem**. Use quando o objetivo é saber **de onde o acervo veio** (de quais drives, uploads ou conectores e quanto cada um trouxe).
+
+| | `/admin/vector-store/documents` | `/rag/execute` (`operation: "data_sources"`) |
+| --- | --- | --- |
+| **Propósito** | Administrar/conferir o acervo (tela admin) | Entender a procedência do acervo (runtime RAG) |
+| **Permissão** | `admin.vector_preview` (`X-API-Key`) | Permissão da operação RAG |
+| **Campos por documento** | `file_size_bytes`, `total_pages`, `ingestion_status` | `source_system`, `source_uri` (origem) |
+| **Bloco `sources` (fontes agregadas)** | — | ✅ fontes distintas + contagem por fonte |
+| **Mensagem amigável (`message`)** | ✅ | — |
+
+Regra de bolso: **para a tela de gestão do acervo, use `/admin/vector-store/documents`; para descobrir as fontes que alimentaram o acervo, use `data_sources`.**
+
+### Outras operações do `/rag/execute` (o mesmo envelope faz mais que perguntar)
+
+O `/rag/execute` é um **dispatcher único**: o campo `operation` escolhe o fluxo. Além do `ask` (a pergunta RAG, a mais conhecida), o mesmo endpoint oferece:
+
+| `operation` | O que faz |
+| --- | --- |
+| `ask` | Pergunta ao RAG (Q&A sobre o acervo). |
+| `ingest` | Ingesta documentos no Vector Store do YAML. |
+| `delete` | Remove conteúdo do acervo. |
+| `etl` | Executa um pipeline ETL configurado no YAML. |
+| `data_sources` | Lista documentos + fontes do acervo (detalhado acima). |
+
+E dois controles **transversais** a essas operações, fáceis de passar despercebidos:
+
+- **`execution_mode`**: `auto` (a API decide), `direct_sync` (espera e devolve o resultado) ou `direct_async` (retorna `task_id` + `polling_url`/`status_url`/`stream_url` para acompanhar). `ask`/`delete` longos pedem `direct_async`.
+- **`format`** (no `ask`): `json` (resposta estruturada) ou `text` (resposta em texto puro).
+
+Em todos eles o YAML é empacotado da mesma forma (`encrypted_data`, `yaml_path` ou inline), e a resposta sempre devolve o `correlation_id` oficial para rastreio.
+
 ## 📊 Estrutura da Resposta
 
 Todos os clientes retornam o mesmo formato:

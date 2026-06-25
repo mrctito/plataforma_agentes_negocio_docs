@@ -1,0 +1,32 @@
+flowchart TD
+    A["Usuário digita a pergunta"] --> B["1. Preparação da pergunta\n(reescrita opcional)"]
+    B --> C["2. Análise da pergunta\n(qual tipo de busca combina mais?)"]
+    C --> D{"3. Roteamento\n(como buscar?)"}
+
+    D -->|"Pergunta conceitual"| E["Busca semântica\n(só vetor denso)"]
+    D -->|"Pergunta técnica com códigos\nou termos exatos"| F["Busca híbrida\n(denso + esparso)"]
+    D -->|"Consulta tabular/planilha"| G["Busca estruturada\n(JSON/Excel)"]
+    D -->|"Múltiplos ângulos"| H["Multi-query\n(expansão de variações)"]
+
+    E --> I["4. Embedding da pergunta\n(vetor semântico)"]
+    F --> I
+    F --> J["5. Tokenização sparse\n(vetor BM25 da pergunta)"]
+    H --> I
+    H --> J
+
+    I --> K["6. Busca no Qdrant\n(hybrid search nativo)"]
+    J --> K
+
+    K --> L["RRF (fusão) — feita pelo Qdrant\ncombina ranking denso + esparso"]
+
+    L --> M{"7. Sparse disponível?"}
+    M -->|"Sim"| N["Resultados híbridos\n(denso + esparso fundidos)"]
+    M -->|"Não (fail-open)"| O["Só busca densa\n(fallback automático)"]
+
+    N --> P["8. Enriquecimento FTS\n(opcional, por config)"]
+    O --> P
+
+    P --> Q["9. Filtro de segurança\n(ACL — quem pode ver o quê)"]
+    Q --> R["10. Montagem do contexto\n(trechos selecionados)"]
+    R --> S["11. LLM gera a resposta\n(com base nos trechos)"]
+    S --> T["Resposta entregue ao usuário\ncom fontes citadas"]
