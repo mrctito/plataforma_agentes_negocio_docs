@@ -25,7 +25,7 @@
 | **2. Design / Planejamento** | `planejar` | `estrategia-recomendacoes.md` | A evidência vira **plano seguro, incremental e validável**, com rollback |
 | **3. Implementação** | `implementar` | `python.md`, `reuso-instructions.md`, `CLAUDE.md §6/§7/§8` | Código **limpo, tipado, sem duplicação**, no caminho oficial |
 | **4. Testes / QA** | `criar-testes`, `executar-testes`, `testar-*` | `suite-testes-instructions.md`, `tests/CLAUDE.md` | Comportamento **provado em execução real**, suíte verde de verdade |
-| **5. Verificação / Aceite** | `validar-entrega`, `validar-log`, `validar-observabilidade` | `definicao-de-pronto.md` | Entrega **ativa no runtime** (anti-falso-verde), com observabilidade |
+| **5. Verificação / Aceite** | `validar-entrega` | `definicao-de-pronto.md` | Entrega **ativa no runtime** (anti-falso-verde), com observabilidade |
 | **6. Operação / Deploy** | `gerenciar-postgresql/redis/job-core/scheduler` | DSNs canônicas, dry-run + `--execute` | Operação real **auditável**, mínimo impacto, nada de improviso |
 | **7. Manutenção / Evolução** | `corrigir-erros-com-log`, `implementar` | `definicao-de-pronto.md`, `error-backlog.md`, `regression-logs.md` | Bug corrigido **na causa raiz**, regressão registrada e protegida |
 | **8. Documentação** | `documentar`, `sincronizar-documentacao` | `CLAUDE.md §17` | Doc **fiel ao código**, nunca antecipando o que o runtime não entrega |

@@ -18,8 +18,6 @@
 | `/corrigir-com-log` | Tenho um bug real para consertar | `correlation_id` do erro | Causa raiz (proibido mascarar); validado na suíte |
 | `/criar-testes` | Preciso de cobertura nova | Código a proteger | Família correta; reduz risco real (não testa cosmético) |
 | `/executar-testes` | A suíte caiu / preciso estabilizar | — | Suíte verde **de verdade**, auditada por telemetria |
-| `/validar-log` | Auditar se os logs seguem o contrato | Escopo definido | Cobertura 100% do escopo; caça `logger.error` em except |
-| `/validar-observabilidade` | Auditar se há log suficiente | Escopo definido | Fluxo reconstruível por log (debug offline) |
 | `/documentar` | Documentar feature a fundo | Código pronto e provado | Doc do código real, não da intenção; nível 101 |
 
 > **Regra de desempate mais comum:** entender log → `/analisar-log`. Consertar bug → `/corrigir-com-log`.

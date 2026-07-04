@@ -417,7 +417,7 @@ A plataforma possui um slice AG-UI para interface orientada por eventos. Isso pe
 
 Para PDV, ERP e backoffice, isso é muito importante. O usuário operacional não quer apenas uma resposta em texto. Ele quer ver progresso, entender o que o agente está fazendo e confiar no resultado.
 
-A documentação confirma uma implementação forte com boundary AG-UI já operativo além da demo de varejo: discovery, SSE por POST, replay sanitizado, sidecar, DashboardSpec segura e adapters para agent, deepagent, workflow e retail_demo. A leitura correta é vender AG-UI como base de experiência agentic governada, sem prometer liberdade irrestrita ou interface arbitrária sem contrato.
+A documentação confirma uma implementação forte com boundary AG-UI já operativo além da demo de varejo: discovery, SSE por POST, replay sanitizado, sidecar, visualização generativa condicional no chat (A2UI, catálogo fechado de componentes) e adapters para agent, deepagent, workflow e retail_demo. A leitura correta é vender AG-UI como base de experiência agentic governada, sem prometer liberdade irrestrita ou interface arbitrária sem contrato.
 
 ## Recursos avançados que vão além da média de mercado
 
@@ -431,7 +431,7 @@ Esta seção deve ser usada em apresentações competitivas. Ela mostra que o pr
 - Permissões explícitas.
 - HIL em operações críticas.
 - Guardrails de SQL somente leitura.
-- DashboardSpec sem HTML, JS ou SQL livre.
+- Envelope A2UI (visualização gerada pelo agente) sem HTML, JS ou SQL livre.
 
 ### Execução operacional real
 
@@ -582,7 +582,7 @@ Valor:
 
 ### 9. Dashboard agentic para vendas e checkout
 
-AG-UI materializa painéis com eventos, timeline, tools e DashboardSpec segura. O gestor acompanha execução e resultado sem receber apenas texto.
+AG-UI materializa painéis com eventos, timeline, tools e visualização gerada pelo agente (A2UI) com catálogo fechado e seguro de componentes. O gestor acompanha execução e resultado sem receber apenas texto.
 
 Valor:
 
@@ -839,7 +839,7 @@ dyn_api, dyn_sql, MCP e catálogo de tools criam uma ponte prática entre agente
 
 Avaliação: promissora e acima da média, mas ainda com espaço de evolução.
 
-AG-UI, sidecar, DashboardSpec e eventos SSE são diferenciais reais. O boundary atual já entrega discovery, replay sanitizado e resume encapsulado para parte dos runtimes. A evolução necessária agora é tornar isso mais universal e durável, cobrindo melhor runtimes como workflow e persistência além da memória de processo.
+AG-UI, sidecar, visualização generativa condicional no chat (A2UI) e eventos SSE são diferenciais reais. O boundary atual já entrega discovery, replay sanitizado e resume encapsulado para parte dos runtimes. A evolução necessária agora é tornar isso mais universal e durável, cobrindo melhor runtimes como workflow e persistência além da memória de processo.
 
 ### Critério 7: Produto comercial pronto para software house de varejo
 

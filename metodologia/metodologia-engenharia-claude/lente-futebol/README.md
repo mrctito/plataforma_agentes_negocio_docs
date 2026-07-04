@@ -73,7 +73,7 @@ Pense numa formação clássica. Cada grupo de arquivos ocupa um setor do campo:
     qualidade)                                            código em runtime)
 
    ── defesa especializada (observabilidade) ──
-   analisar-log · validar-log · validar-observabilidade · corrigir-erros-com-log · testar-cli-log-analyzer
+   analisar-log · corrigir-erros-com-log · testar-cli-log-analyzer
 
    ── departamento de futebol (operação real) ──
    gerenciar-postgresql · gerenciar-redis · gerenciar-job-core-ingestao · gerenciar-scheduler

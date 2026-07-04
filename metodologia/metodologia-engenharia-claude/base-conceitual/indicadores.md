@@ -39,7 +39,6 @@ Um erro clássico é medir **atividade** ("quantas tarefas a IA fez", "quantas l
 | **Taxa de retorno (bola que volta)** | entregas REPROVADAS que voltaram ao `planejar` ÷ total | relatórios de `validar-entrega` | Saudável **não é zero** — zero pode ser validação frouxa |
 | **Densidade de regressão** | itens novos em `regression-logs.md` ÷ período | `regression-logs.md` | ↑ = correções não estão atacando a causa raiz |
 | **Idade do bug ao corrigir** | tempo entre 1º registro no log e correção | `correlation_id` + `error-backlog.md` | ↓ = observabilidade está ajudando o diagnóstico |
-| **Cobertura de observabilidade** | fluxos auditados reconstruíveis por log ÷ auditados | relatórios de `validar-observabilidade` | ↑ = debug offline está viável |
 
 > **O contraintuitivo:** a "taxa de retorno" **não deve ser zero**. Se o `validar-entrega` nunca reprova
 > nada, desconfie — ou o time está perfeito (improvável) ou a validação virou carimbo. Um sistema

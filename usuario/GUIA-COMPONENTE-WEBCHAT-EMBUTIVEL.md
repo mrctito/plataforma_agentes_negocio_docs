@@ -111,17 +111,9 @@ Runtime de polling assíncrono:
 
 app/ui/static/js/shared/ui-webchat-async-runtime.js
 
-Página host de exemplo oficial:
+Página host administrativa espelhada da v3:
 
 app/ui/static/ui-admin-plataforma-webchat.html
-
-Script da host page de exemplo:
-
-app/ui/static/js/ui-admin-plataforma-webchat.js
-
-Estilo dedicado da host de exemplo (cards de configuração + container do componente):
-
-app/ui/static/css/ui-admin-plataforma-webchat.css
 
 Página de teste isolada (bancada) do componente:
 
@@ -419,7 +411,7 @@ Aliases possíveis:
 
 A recomendação é que novas telas usem a API pública principal.
 
-## 18.1 Renderização AG-UI estruturada (Capacidades, Dashboard e UISpec)
+## 18.1 Renderização AG-UI estruturada (Capacidades e A2UI)
 
 > Para um tutorial passo a passo — como configurar o YAML, quais widgets existem, como testar e as 10 dúvidas de quem está começando — veja [TUTORIAL-101-GENERATIVE-UI.md](TUTORIAL-101-GENERATIVE-UI.md). Esta seção foca no contrato do componente; o tutorial foca em como usar.
 
@@ -429,24 +421,24 @@ Quando a resposta do backend traz um **spec AG-UI conhecido** (um bloco de dados
 
 "Spec AG-UI" aqui significa: um objeto que o agente devolve descrevendo *o que mostrar* (ex.: "estes são meus assuntos", "este é o dashboard de vendas"), seguindo um contrato fixo. O componente reconhece o contrato, valida que ele é seguro e o transforma em DOM. AG-UI = *Agent-Generated UI*, interface gerada pelo agente.
 
-> Importante não confundir: aqui o spec chega **no corpo da resposta** dos endpoints de chat já usados pelo componente (`/rag/execute`, `/agent/execute`). Isto é diferente do runtime de streaming `/ag-ui/runs` descrito no [manual técnico de AG-UI](../tecnico/README-TECNICO-AG-UI.md); o componente embutível **não** abre stream SSE — ele detecta o spec na resposta normalizada e o renderiza. São duas superfícies AG-UI distintas que compartilham o mesmo conceito de spec governado.
+> Importante não confundir transporte com detecção: o **CapabilitiesSpec** chega no corpo da resposta normal dos endpoints de chat (`/rag/execute`, `/agent/execute`, ou a resposta síncrona equivalente em modo `deepagent`), sem stream. Já o **A2UI** (item 2 abaixo) chega pelo mesmo runtime de streaming `/ag-ui/runs` descrito no [manual técnico de AG-UI](../tecnico/README-TECNICO-AG-UI.md), consumido de forma **opt-in** por um transporte dedicado dentro do próprio componente — o componente ainda não expõe timeline/sidecar como a Superfície B, só extrai o envelope final e desenha. Nos dois casos, a detecção do spec acontece sobre uma mensagem já normalizada, então o restante desta seção vale igual para ambos.
 
-### Os três specs que o componente reconhece
+### Os dois specs que o componente reconhece
 
-1. **CapabilitiesSpec — painel "o que você faz / sobre o que falo".** É o spec novo desta entrega. Renderiza um título, uma introdução, **cards de grupos de assuntos** (cada card com um rótulo e uma descrição amigável) e **chips clicáveis de perguntas-exemplo**. Clicar num chip envia aquela pergunta **uma vez**, pelo mesmo caminho oficial de envio do componente (mesmo guard anti-duplo-envio do botão Enviar) — o usuário não precisa digitar. Serve para responder, de forma visual, perguntas como "o que você faz?", "sobre o que posso te perguntar?". O painel **nunca** mostra nomes internos de ferramenta, subdomínio ou parâmetro técnico: o backend monta o painel a partir das descrições amigáveis dos especialistas do agente e um validador barra qualquer vazamento.
+1. **CapabilitiesSpec — painel "o que você faz / sobre o que falo".** Renderiza um título, uma introdução, **cards de grupos de assuntos** (cada card com um rótulo e uma descrição amigável) e **chips clicáveis de perguntas-exemplo**. Clicar num chip envia aquela pergunta **uma vez**, pelo mesmo caminho oficial de envio do componente (mesmo guard anti-duplo-envio do botão Enviar) — o usuário não precisa digitar. Serve para responder, de forma visual, perguntas como "o que você faz?", "sobre o que posso te perguntar?". O painel **nunca** mostra nomes internos de ferramenta, subdomínio ou parâmetro técnico: o backend monta o painel a partir das descrições amigáveis dos especialistas do agente e um validador barra qualquer vazamento. Não exige nenhuma configuração de YAML — a tool que o gera é auto-injetada em todo supervisor DeepAgent.
 
-2. **DashboardSpec — dashboard dinâmico.** Já existia no backend (é o canvas governado de varejo); agora o componente embutível também **renderiza** esse spec: KPIs, tabelas, rankings, cards de insight e **gráficos reais** (barra, linha e rosca) desenhados de verdade na tela. Antes desta entrega o componente não desenhava dashboards.
+2. **A2UI — visualização condicional gerada pelo supervisor.** Quando o YAML do supervisor declara o bloco `multi_agents[].ag_ui.generative` e o usuário pede uma visualização, o supervisor DeepAgent chama a tool `generate_a2ui` e o componente desenha o resultado: cards, tabela e **gráficos reais** (barra e linha) com dados que o agente já obteve na conversa. O catálogo de componentes é fechado em 8 nomes (`Card`, `Column`, `Row`, `Text`, `Divider`, `BarChart`, `LineChart`, `DataTable`); qualquer coisa fora disso cai em texto. Sem o bloco no YAML, ou sem o transporte SSE ligado na host (ver "Como ATIVAR"), a resposta continua sempre em texto. Passo a passo completo: [TUTORIAL-101-GENERATIVE-UI.md](TUTORIAL-101-GENERATIVE-UI.md).
 
-3. **UISpec — interface genérica governada.** Quando a resposta traz uma UISpec, o componente **delega** ao renderizador oficial de UISpec já existente no projeto — não reimplementa nada.
+> Um terceiro spec (interface genérica governada, `UISpec`) chegou a ser reconhecido nessa mesma detecção do chat embutível; hoje não é mais — `ag_ui.ui_specs` continua existindo como conceito governado na plataforma, mas fora deste caminho de detecção do componente.
 
 ### Como o componente decide entre desenhar e mostrar texto
 
 O fluxo, passo a passo, para cada resposta de assistente (sem erro):
 
-1. o componente pega a resposta já normalizada e procura um spec conhecido nela (na raiz e em contêineres convencionais como `ag_ui`, `structured`, `data`, `result`);
+1. o componente pega a mensagem já normalizada (do corpo da resposta síncrona, ou do envelope extraído do stream SSE opt-in) e procura um spec conhecido nela (na raiz e em contêineres convencionais como `ag_ui`, `structured`, `data`, `result`, ou o discriminador `a2ui_operations` para A2UI);
 2. achou um spec? ele passa por um **validador fail-closed** (descrito abaixo). Spec inválido = tratado como se não existisse;
 3. spec válido = o renderizador correspondente desenha a UI dentro da bolha;
-4. **qualquer** uma destas condições cai em texto puro: não há spec reconhecido; o spec é inválido; `renderStructured` está desligado; o runtime de renderização não foi carregado na página; a lib de gráfico está ausente (só os gráficos degradam, o resto do dashboard continua). Esse é o **fallback duro**: o pior caso é o comportamento de antes (texto), nunca um erro na tela.
+4. **qualquer** uma destas condições cai em texto puro: não há spec reconhecido; o spec é inválido ou tem componente fora do catálogo; `renderStructured` está desligado; o runtime de renderização não foi carregado na página; a lib de gráfico está ausente (só o componente de gráfico não é desenhado — pela regra fail-closed do A2UI, isso derruba a superfície inteira para texto). Esse é o **fallback duro**: o pior caso é o comportamento de antes (texto), nunca um erro na tela.
 
 Em uma frase: **o componente nunca fica pior do que era**. Quem não ativar nada, ou cujo agente só devolve texto, não percebe diferença.
 
@@ -457,24 +449,30 @@ A feature tem duas partes: carregar os scripts certos (uma vez, na host) e, opci
 **1. Carregar os scripts, NESTA ordem, antes do `embeddable-chat-runtime.js`:**
 
 ```html
-<!-- vendor da lib de gráfico (opcional, mas necessário para desenhar gráficos do dashboard) -->
+<!-- vendor da lib de gráfico (opcional, mas necessário para desenhar gráficos A2UI) -->
 <script src="/ui/static/js/vendor/apexcharts.min.js?v=5.14.0"></script>
 <!-- porta neutra de gráfico + adapter ApexCharts (o adapter se auto-registra como ativo) -->
 <script src="/ui/static/js/shared/ag-ui-chart-adapter.js"></script>
 <script src="/ui/static/js/shared/ag-ui-chart-adapter-apexcharts.js"></script>
+<!-- renderer A2UI fail-closed (catálogo fechado de 8 componentes) -->
+<script src="/ui/static/js/shared/ag-ui-a2ui-surface-renderer.js"></script>
 <!-- detecção de spec + registry de renderizadores + renderer de Capacidades -->
 <script src="/ui/static/js/shared/embeddable-chat-spec-runtime.js"></script>
 <!-- bridge ESM: liga os renderizadores oficiais e publica o runtime montado em window -->
 <script type="module" src="/ui/static/js/shared/ag-ui-spec-render-bridge.js"></script>
+<!-- transporte SSE opt-in do A2UI (só ativa em mode:'deepagent' + chatRenderer:'jspuro' +
+     agUiSseTransport:true na config do componente; demais combinações seguem síncronas) -->
+<script src="/ui/static/js/shared/embeddable-chat-ag-ui-transport.js"></script>
+<script type="module" src="/ui/static/js/shared/ag-ui-embeddable-transport-bridge.js"></script>
 <!-- por fim, o componente -->
 <script src="/ui/static/js/shared/embeddable-chat-runtime.js"></script>
 ```
 
-A ordem importa porque cada peça depende da anterior: o adapter ApexCharts só se registra se a porta `ag-ui-chart-adapter.js` já existir; o bridge ESM (que é `type="module"`, então executa deferido) exige o `embeddable-chat-spec-runtime.js` já carregado para montar o runtime e publicá-lo em `window.PrometeuEmbeddableChatSpecRuntime`. O componente resolve esse runtime de forma **lazy** no momento de renderizar — por isso o bridge pode terminar depois da criação do componente sem quebrar nada.
+A ordem importa porque cada peça depende da anterior: o adapter ApexCharts só se registra se a porta `ag-ui-chart-adapter.js` já existir; o renderer A2UI espera essa porta publicada em `window`; os bridges ESM (`type="module"`, executam deferidos) exigem os módulos UMD anteriores já carregados para montar o runtime e publicá-lo em `window`. O componente resolve esses runtimes de forma **lazy** no momento de renderizar/enviar — por isso os bridges podem terminar depois da criação do componente sem quebrar nada.
 
-**2. Não precisa fazer mais nada para o render estruturado:** `renderStructured` já vem **ligado por padrão**. Para forçar o modo 100% texto (ex.: um parceiro que só quer texto), passe `renderStructured: false` na configuração, ou chame `componente.setRenderStructured(false)` em runtime.
+**2. CapabilitiesSpec não precisa de mais nada:** `renderStructured` já vem **ligado por padrão**. Para forçar o modo 100% texto (ex.: um parceiro que só quer texto), passe `renderStructured: false` na configuração, ou chame `componente.setRenderStructured(false)` em runtime.
 
-**3. Backend: nada a ligar.** A tool builtin `descrever_capacidades` é **auto-injetada em todo supervisor DeepAgent** — qualquer agente DeepAgent já sabe emitir o CapabilitiesSpec quando o usuário pergunta o que ele faz. O DashboardSpec é emitido pelo subagente de dashboard do varejo via `response_format`. Você não configura YAML novo para isso.
+**3. A2UI precisa de YAML + 3 flags na config do componente.** No backend: declare o bloco `multi_agents[].ag_ui.generative` no supervisor DeepAgent (catálogo de componentes + `chat_renderer`). Na host: ligue `mode: 'deepagent'`, `chatRenderer: 'jspuro'` e `agUiSseTransport: true` na configuração do componente — as três juntas ativam o transporte SSE opt-in que consome o envelope A2UI. Passo a passo: [TUTORIAL-101-GENERATIVE-UI.md](TUTORIAL-101-GENERATIVE-UI.md). O CapabilitiesSpec continua auto-injetado, sem depender dessas flags.
 
 **4. Onboarding (opcional):** para mostrar o painel de capacidades já no **estado vazio** do chat (antes da primeira pergunta), como boas-vindas:
 
@@ -488,7 +486,7 @@ Ou na configuração inicial: `welcomeCapabilities: true` + `welcomeCapabilities
 
 ### Segurança: por que isso não vira porta de injeção
 
-Todo spec — de Capacidades, Dashboard ou UISpec — passa por **validação fail-closed** antes de virar DOM, espelhando no frontend o mesmo contrato que o backend já aplica. Na prática:
+Todo spec — de Capacidades ou A2UI — passa por **validação fail-closed** antes de virar DOM, espelhando no frontend o mesmo rigor de segurança que o backend já aplica. Na prática:
 
 - HTML, JavaScript, SQL livre e segredos são **bloqueados** (chave proibida ou string insegura = spec inválido = cai em texto);
 - a renderização usa **primitivas DOM seguras**: o conteúdo do agente entra como `textContent`, nunca como `innerHTML`; não há `onclick` inline;
@@ -500,16 +498,16 @@ O CapabilitiesSpec ainda carrega quatro flags de segurança (`htmlAllowed`, `scr
 ### Erros a evitar (pegadinhas)
 
 - **Esquecer o bridge ESM ou a ordem dos scripts.** Sem `ag-ui-spec-render-bridge.js` carregado, o componente não encontra o runtime de spec em `window` e renderiza texto — você vai achar que a feature "não funciona", quando na verdade ela degradou para o fallback. Confira a ordem da seção "Como ATIVAR".
-- **Esperar gráficos sem o vendor.** Sem `apexcharts.min.js`, o dashboard ainda renderiza KPIs/tabelas/rankings, mas os gráficos caem no placeholder. Isso é por design (fail-closed), não bug.
+- **Esperar gráfico sem o vendor.** Sem `apexcharts.min.js`, o componente de gráfico não é desenhado — e, diferente de um placeholder isolado, isso derruba a **superfície A2UI inteira** para texto (o renderer é fail-closed por árvore inteira, não por componente). Isso é por design, não bug.
 - **Achar que toda resposta vira UI.** Só vira UI a resposta que carrega um spec reconhecido e válido. Resposta de texto continua texto. Render estruturado vale **só** para mensagem de assistente sem erro.
-- **Tentar montar o payload/spec na host.** A host não inventa spec nem mexe no contrato — quem emite o spec é o backend (tool de capacidades / subagente de dashboard). A host, no máximo, injeta um CapabilitiesSpec **curado** para o onboarding de boas-vindas.
+- **Tentar montar o payload/spec na host.** A host não inventa spec nem mexe no contrato — quem emite o spec é o backend (a tool de capacidades ou o supervisor DeepAgent via `generate_a2ui`). A host, no máximo, injeta um CapabilitiesSpec **curado** para o onboarding de boas-vindas.
 
 ### Estado real por host (honesto)
 
 A feature está **ativa** apenas onde o wiring completo foi carregado:
 
 - **`ui-webchat-v3.html`** (a página oficial de WebChat, host do componente desde 2026-06-10): carrega a cadeia AG-UI completa (ApexCharts → adapter → adapter-apexcharts → spec-runtime) **antes** do componente, com gate falha-fechada que exige o spec runtime resolvido → **ATIVA** (render estruturado comprovado em runtime real no gate da Fase B).
-- **`ui-admin-plataforma-webchat.html`** (host de exemplo/bancada de demonstração): carrega todos os scripts → **ATIVA**.
+- **`ui-admin-plataforma-webchat.html`** (espelho administrativo da v3): reutiliza a mesma cadeia visual e operacional da host oficial → **ATIVA**.
 - **`ui-embeddable-chat-test.html`** (bancada de teste isolada): wiring completo → **ATIVA**.
 
 ## 18.2 HIL (Human-in-the-loop) no componente
@@ -1010,9 +1008,9 @@ A ideia importante:
 - o componente consome o contexto;
 - os dois continuam desacoplados.
 
-## 29. Página de exemplo oficial
+## 29. Página administrativa espelhada da v3
 
-A página abaixo deve ser o exemplo oficial de host page:
+A página abaixo deve espelhar a mesma experiência visual e operacional da host oficial:
 
 app/ui/static/ui-admin-plataforma-webchat.html
 
@@ -1021,7 +1019,6 @@ Ela deve demonstrar:
 - carga de YAML same-origin;
 - sincronização com o contexto da página;
 - troca de modo e execução fora do chat;
-- resumo externo consumindo o estado exportado;
 - uso do componente como bloco principal da tela;
 - ausência de cliente HTTP paralelo;
 - ausência de renderização duplicada da conversa.
@@ -1157,7 +1154,7 @@ A v1 está pronta quando:
 - obterUltimaInteracao() retorna a última interação;
 - o componente funciona em tela de teste isolada;
 - existe teste E2E validando o componente isoladamente;
-- a tela ui-admin-plataforma-webchat.html funciona como exemplo oficial de host page;
+- a tela ui-admin-plataforma-webchat.html funciona como espelho administrativo da host oficial;
 - não existe cliente HTTP paralelo;
 - não existe renderização duplicada da conversa fora do componente;
 - não existe código legado morto relacionado ao componente;
@@ -1258,7 +1255,7 @@ Antes de considerar uma nova host page pronta, confirme:
 
 Estado da convergência após a migração da Fase B (2026-06-10):
 
-- O componente, a host de exemplo (`ui-admin-plataforma-webchat.html`) **e a página oficial
+- O componente, a URL administrativa espelhada (`ui-admin-plataforma-webchat.html`) **e a página oficial
   `ui-webchat-v3.html`** usam `layout-mestre-api.js` como ponto único de payload,
   criptografia e HTTP — incluindo o HTTP das decisões HIL (`enviarDecisaoHil`/
   `enviarResumeHil`). O motor próprio da v3 (~2.100 linhas de payload/fetch/criptografia/

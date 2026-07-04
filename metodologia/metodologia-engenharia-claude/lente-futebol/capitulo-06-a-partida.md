@@ -62,8 +62,8 @@ sobreposição temporal. Se algo falha, o loop corretivo reinicia. Pelos bastido
 qualquer mutação). *(Cap. 3.3 e 3.4)*
 
 ### Gol? Só se o goleiro validar — `validar-entrega`
-O **goleiro** confronta tudo: o implementado bate com o plano? Cada tarefa cumpriu seu critério? Aciona
-os especialistas `validar-log` e `validar-observabilidade` para conferir o raio-X. A regra é dura:
+O **goleiro** confronta tudo: o implementado bate com o plano? Cada tarefa cumpriu seu critério? Confere
+o raio-X diretamente: a escrita do log e a cobertura diagnóstica do fluxo. A regra é dura:
 **teste verde não prova fluxo real**. Veredito explícito: APROVADO, COM RESSALVAS, REPROVADO ou
 BLOQUEADO. Se reprovado, ele **devolve a bola para o meia** com um inventário do que faltou. *(Cap. 3.1)*
 

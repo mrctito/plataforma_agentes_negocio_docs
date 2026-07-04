@@ -29,28 +29,30 @@ AG-UI e o protocolo de eventos. Ele informa quando o run comecou, qual mensagem 
 
 Generative UI e outra camada: e o formato visual que viaja dentro de alguns desses eventos para a tela montar um painel, um canvas ou um componente dinamico.
 
-Na Plataforma de Agentes de IA, o perfil visual oficial e `DashboardSpec`.
+Na Plataforma de Agentes de IA, o perfil visual oficial do chat generativo e o **A2UI**: um envelope declarativo (`{a2ui_operations: [createSurface, updateComponents]}`) que o supervisor DeepAgent produz via tool `generate_a2ui` quando o YAML declara o bloco `ag_ui.generative`.
 
 Isso significa duas coisas praticas:
 
 1. o frontend Plataforma de Agentes de IA nao renderiza JSON visual arbitrario vindo de fora;
-2. se um integrador tiver uma spec externa propria, ela precisa ser convertida antes para `DashboardSpec` por um adapter seguro no backend.
+2. mesmo usando o formato aberto A2UI, o que de fato chega a tela e restrito a um **catalogo fechado e governado pela plataforma** (8 componentes hoje: `Card`, `Column`, `Row`, `Text`, `Divider`, `BarChart`, `LineChart`, `DataTable`) — declarado no YAML do supervisor, nunca escolhido livremente pelo integrador.
 
 Essa regra existe para manter bloqueio de HTML, script, SQL livre, DSN, segredos e `correlation_id` no payload visual.
 
 ### 1.2. Contrato oficial para adapter externo
 
-Se um integrador usar A2UI, Open JSON UI, MCP-UI ou qualquer formato visual proprio, essa spec nao entra direto no renderer Plataforma de Agentes de IA.
+Se um integrador usar um formato visual proprio diferente do A2UI (Open JSON UI, MCP-UI ou equivalente), essa spec nao entra direto no renderer Plataforma de Agentes de IA.
 
 O contrato oficial e este:
 
 1. O adapter seguro recebe a spec externa no backend, nunca no renderer final.
-2. O adapter converte a spec externa para `DashboardSpec` antes da materializacao AG-UI.
-3. O payload convertido continua sujeito ao mesmo validador seguro do produto.
+2. O adapter converte a spec externa para o formato A2UI, restrito ao catalogo de componentes que o YAML do supervisor declarar, antes da materializacao AG-UI.
+3. O payload convertido continua sujeito ao mesmo renderer fail-closed do produto (componente fora do catalogo, ou dado malformado, derruba a superficie inteira para texto).
 4. HTML, JavaScript, SQL livre, DSN, segredo e `correlation_id` continuam proibidos, mesmo que existam na spec de origem.
 5. Sem adapter explicito, a spec externa deve falhar fechada.
 
-Em linguagem simples: o Plataforma de Agentes de IA nao aceita desenho arbitrario vindo de fora. Ele so aceita o desenho final no formato governado do proprio produto.
+Em linguagem simples: o Plataforma de Agentes de IA nao aceita desenho arbitrario vindo de fora. Ele so aceita o desenho final no catalogo governado do proprio produto — ainda que o formato de transporte (A2UI) seja um padrao aberto.
+
+> Um caminho alternativo existe para quem já integra com o SDK CopilotKit: declarando `chat_renderer: copilotkit` no bloco `ag_ui.generative`, a rota `POST /ag-ui/copilotkit/runs` repassa o envelope A2UI sem filtro para um cliente React que usa `@ag-ui/a2ui-middleware`. Nesse caminho, o catalogo continua vindo do YAML da plataforma — o cliente terceiro não escolhe componentes livremente.
 
 ## 2. Contrato publico recomendado
 
@@ -80,6 +82,66 @@ GET /ag-ui/capabilities
 Use `GET /ag-ui/capabilities` para descobrir o catalogo de negocio Plataforma de Agentes de IA, ou seja, quais capabilities, exemplos, permissoes e `UISpecs` governadas estao disponiveis para o tenant.
 
 Se o seu cliente precisar de um shape equivalente a `AgentCapabilities`, faca esse mapeamento no backend do integrador a partir do proprio payload de `GET /ag-ui/capabilities`. O produto nao mantem um segundo endpoint publico so para projetar esse contrato por `agent_id`.
+
+## 2.1. Cliente CopilotKit (React) via `/ag-ui/copilotkit/runs`
+
+### Por que existe (nivel 101)
+
+O contrato da secao 2 (`POST /ag-ui/runs`) espera o envelope `AgUiRunRequest`, com campos proprios da plataforma (`user_email`, fonte YAML). Um cliente React com **CopilotKit**, porem, nao fala esse envelope: o runtime do CopilotKit aponta o `runtimeUrl` de cada agente para uma URL e faz `POST` de um `RunAgentInput` **AG-UI puro** (a conversa nativa: `threadId`, `runId`, `messages`, `state`, `tools`, `context`, `forwardedProps`). Os dois formatos sao incompativeis.
+
+O endpoint **`POST /ag-ui/copilotkit/runs`** fecha exatamente essa lacuna: ele aceita o `RunAgentInput` puro do CopilotKit, traduz para o `AgUiRunRequest` canonico no **lado da plataforma** e delega ao mesmo boundary de execucao (mesma resolucao de YAML, mesma autenticacao, mesmo stream SSE). Em vez de o parceiro escrever a conversao `RunAgentInput -> AgUiRunRequest` no proprio backend (secao 2), a plataforma faz isso por ele.
+
+**Quando usar:** o parceiro ja tem (ou quer ter) um cliente React sofisticado com CopilotKit e quer que ele consuma os DeepAgents/Workflows da plataforma com chat + Generative UI (dashboards), sem reimplementar o protocolo. Para clientes que nao usam CopilotKit, o caminho continua sendo o `/ag-ui/runs` da secao 2.
+
+### Contrato da requisicao
+
+```text
+POST /ag-ui/copilotkit/runs
+Header:  X-API-Key: <chave-do-servidor>
+Body:    RunAgentInput AG-UI puro (camelCase)
+```
+
+O **corpo** e o `RunAgentInput` que o CopilotKit ja monta. A configuracao da plataforma viaja no sub-objeto **`forwardedProps.platform`** — o escape hatch padrao do CopilotKit para metadados de aplicacao:
+
+| Campo em `forwardedProps.platform` | Obrigatorio | Significado |
+| --- | --- | --- |
+| `userEmail` | Sim | Identidade do usuario final (sem fallback; falha fechada se ausente). |
+| `yamlConfig` \| `yamlInlineContent` \| `encryptedData` | Sim (exatamente uma) | Fonte de configuracao governada, igual ao `/ag-ui/runs`. Mais de uma → erro 400. |
+| `executionKind` | Nao | Cross-check opcional; o runtime real (`deepagent`/`workflow`) e **derivado do YAML**. Se divergir, 400. |
+| `metadata` | Nao | Metadados livres repassados ao contexto canonico. |
+
+Exemplo de corpo (montado pelo backend confiavel do parceiro, **nunca** no browser cru):
+
+```json
+{
+  "threadId": "thread-demo-001",
+  "runId": "run-demo-001",
+  "state": {},
+  "messages": [
+    { "id": "m1", "role": "user", "content": "Mostra o dashboard de vendas do periodo" }
+  ],
+  "tools": [],
+  "context": [],
+  "forwardedProps": {
+    "platform": {
+      "userEmail": "operacao@cliente.exemplo",
+      "yamlInlineContent": "<yaml-governado-no-servidor>"
+    }
+  }
+}
+```
+
+### Como a plataforma trata o payload (e por que e seguro)
+
+1. O sub-objeto `forwardedProps.platform` e **lido e removido** antes de a conversa seguir para o agente. A `yamlConfig`/`encryptedData` entra pela porta confiavel `AgUiRunRequest.yaml_config`/`encrypted_data` (a mesma do `/ag-ui/runs`), **nunca** vaza para dentro do `forwardedProps` que o agente recebe.
+2. O restante do `RunAgentInput` (a conversa: `messages`, `state`, `tools` e os demais `forwardedProps` do parceiro) e propagado integralmente ao `LangGraphAgent` oficial. E por isso que **frontend tools, shared state e HITL nativos do CopilotKit funcionam** — a plataforma nao recorta a conversa.
+3. A resposta e o **mesmo stream AG-UI por SSE** da secao 2 (mesma matriz de eventos da secao 7), com o header `X-Correlation-Id` oficial.
+
+A regra de seguranca da secao 4 continua valendo integralmente: `userEmail`, `yamlConfig`/`encryptedData` e a `X-API-Key` sao injetados pelo **servidor confiavel do parceiro** (o backend-for-frontend que faz a ponte com o CopilotKit), nunca no JavaScript publico. O threat model da secao 4.3 nao muda: campos sensiveis escondidos em `state`/`messages`/`forwardedProps` continuam barrados em falha fechada.
+
+### Onde o CopilotKit aponta
+
+No cliente React do parceiro, o `runtimeUrl` de cada agente aponta para o backend-for-frontend do parceiro, que reescreve a chamada para `POST /ag-ui/copilotkit/runs` adicionando a `X-API-Key` e o `forwardedProps.platform`. O CopilotKit segue falando `RunAgentInput` puro de ponta a ponta; a traducao para o contrato governado acontece nesse salto servidor-a-servidor.
 
 ## 3. Primeiro agent em 10 minutos
 
@@ -325,7 +387,7 @@ Tambem existem limites de tamanho e quantidade para reduzir abuso operacional. I
 
 Quando uma rejeicao acontece, o backend registra uma decisao estruturada em log com `ag_ui.public_payload.decision`, motivo da rejeicao, `agent_id` e contagens nao sensiveis. O log nao grava o segredo, o SQL nem o conteudo completo do payload.
 
-O mesmo principio vale para UI generativa: uma spec visual externa nao entra direto no renderer Plataforma de Agentes de IA. Primeiro ela precisa ser convertida para `DashboardSpec`, que e o perfil governado do produto.
+O mesmo principio vale para UI generativa: uma spec visual externa nao entra direto no renderer Plataforma de Agentes de IA. Primeiro ela precisa ser convertida para o formato A2UI governado, restrito ao catalogo de componentes declarado no YAML (seção 1.1).
 
 ### 4.4. SQL e dados de varejo
 
@@ -424,7 +486,7 @@ Se a integracao vai introduzir um componente novo na UI generativa da Plataforma
 1. O componente foi registrado no Component Catalog da Plataforma de Agentes de IA, nao em JSON arbitrario solto.
 2. Props, actions e bindings ficaram em allowlist explicita.
 3. O cadastro novo continua bloqueando HTML, JavaScript, SQL livre, DSN, segredo e `correlation_id`.
-4. Existe teste backend provando que apenas `DashboardSpec` validada chega na materializacao.
+4. Existe teste backend/frontend provando que apenas payload validado pelo Component Catalog (ou, no caso de A2UI, componente do catálogo fechado de 8 declarado no YAML) chega na materializacao.
 5. Existe teste frontend provando que o Component Catalog e o renderer rejeitam payload fora da allowlist.
 
 Esse checklist evita que um componente novo vire uma excecao escondida no contrato visual.
@@ -442,11 +504,13 @@ Evidencias principais:
 5. [src/api/services/ag_ui_event_store.py](../src/api/services/ag_ui_event_store.py)
 6. [src/api/services/ag_ui_adapter_registry.py](../src/api/services/ag_ui_adapter_registry.py)
 7. [src/api/services/ag_ui_langgraph_agent_factory.py](../src/api/services/ag_ui_langgraph_agent_factory.py)
-8. [templates/ag-ui-official-third-party](../templates/ag-ui-official-third-party)
-9. [tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py](../tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py)
-10. [tests/unit/test_02-01-48_ag_ui_router.py](../tests/unit/test_02-01-48_ag_ui_router.py)
-11. [tests/unit/test_02-01-38_ag_ui_event_store.py](../tests/unit/test_02-01-38_ag_ui_event_store.py)
-12. [tests/js/ag_ui_runtime.test.js](../tests/js/ag_ui_runtime.test.js)
+8. [src/api/services/copilotkit_ag_ui_compat_service.py](../src/api/services/copilotkit_ag_ui_compat_service.py) — traducao `RunAgentInput` (CopilotKit) -> `AgUiRunRequest` da secao 2.1
+9. [templates/ag-ui-official-third-party](../templates/ag-ui-official-third-party)
+10. [tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py](../tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py)
+11. [tests/unit/test_02-01-48_ag_ui_router.py](../tests/unit/test_02-01-48_ag_ui_router.py)
+12. [tests/unit/test_02-01-100_ag_ui_copilotkit_compat.py](../tests/unit/test_02-01-100_ag_ui_copilotkit_compat.py) — prova a secao 2.1 (traducao + wiring da rota)
+13. [tests/unit/test_02-01-38_ag_ui_event_store.py](../tests/unit/test_02-01-38_ag_ui_event_store.py)
+14. [tests/js/ag_ui_runtime.test.js](../tests/js/ag_ui_runtime.test.js)
 
 ## 10. Proximos passos de leitura
 

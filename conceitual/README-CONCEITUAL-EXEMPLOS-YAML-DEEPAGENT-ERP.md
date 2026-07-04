@@ -232,5 +232,5 @@ Em um ERP, isso e importante porque o problema nunca e so "responder". O problem
   - Motivo da leitura: confirmar caso real de cockpit operacional orientado a APIs aprovadas.
   - Comportamento confirmado: especialistas focados em lojas e saude fiscal via dyn_api.
 - app/yaml/rag-config-pdv-vendas-demo.yaml
-  - Motivo da leitura: confirmar DeepAgent real para AG-UI com saida estruturada de dashboard em contexto PDV.
-  - Comportamento confirmado: selected_supervisor explicito, subdominios de negocio e response_format fechado para DashboardSpec.
+  - Motivo da leitura: confirmar DeepAgent real para AG-UI com visualizacao generativa condicional em contexto PDV.
+  - Comportamento confirmado: selected_supervisor explicito, subdominios de negocio e bloco `ag_ui.generative` (chat_renderer + catalogo de componentes A2UI) no supervisor.

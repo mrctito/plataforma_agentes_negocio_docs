@@ -103,8 +103,8 @@
   funções, como nos controles internos de uma empresa: quem aprova não é quem executa."
 
 ### Slide 14 — O laboratório de metrologia ⏩
-- **TELA:** analisar-log · validar-log · validar-observabilidade · corrigir-erros-com-log · testar-cli-log-analyzer.
-- **FALA (rápido):** "Cinco estações que garantem diagnóstico. Detalhe fino: o analisar-log valida
+- **TELA:** analisar-log · corrigir-erros-com-log · testar-cli-log-analyzer.
+- **FALA (rápido):** "Três estações que garantem diagnóstico. Detalhe fino: o analisar-log valida
   **paralelismo real** por sobreposição temporal — 'a UI disse 5 workers' não prova que 5 rodaram juntos."
 
 ### Slide 15 — Manutenção do chão (infra) ⏩

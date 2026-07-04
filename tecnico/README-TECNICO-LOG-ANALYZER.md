@@ -17,8 +17,10 @@ python -m src.log_analyzer query \
     --since 2026-06-01T10:00:03+00:00 \
     --logs-dir /app/logs
 
-python -m src.log_analyzer query --list-types     # lista todos os 22 tipos disponíveis
-python -m src.log_analyzer query --schema         # JSON machine-readable para agentes de IA
+python -m src.log_analyzer                  # contrato JSON raiz da CLI inteira (modo agente)
+python -m src.log_analyzer --help           # ajuda textual para humano
+python -m src.log_analyzer query --list-types     # lista todos os tipos disponíveis
+python -m src.log_analyzer query --schema         # contrato detalhado do subcomando query
 python -m src.log_analyzer analyze --correlation-id abc123 --logs-dir /app/logs
 python -m src.log_analyzer stats --logs-dir /app/logs
 ```
@@ -375,7 +377,16 @@ class AnalysisResult:
     duration_ms: float
     truncated: bool                    # True quando max_records foi atingido
     error: AnalysisError | None
+    schema_contract_findings: list[dict[str, Any]]   # violações de schema toleradas (strict=False)
+    problems: list[dict[str, Any]]     # problemas de integridade (a parte que acusa problemas)
 ```
+
+O campo `problems` é a **parte que acusa problemas**: cada item é um dict com
+`problem_type`, `severity` e `message`. Hoje cobre `foreign_correlation_id` —
+quando o log do alvo contém registros de um `correlation_id` diferente
+(contaminação por append concorrente, vazamento entre execuções ou reúso do id),
+o problema traz `expected_correlation_id`, `distinct_foreign_ids`,
+`affected_records` e amostras em `foreign_correlation_ids`. Lista vazia = log íntegro.
 
 Convertendo para JSON:
 ```python
@@ -492,6 +503,8 @@ Filtros transversais aplicados por todos os handlers:
 | ------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------- |
 | `ErrorWarningPlugin`      | `error_warning_summary`      | total_records, error_count, warning_count, error_rate_pct, top_error_messages, top_warning_messages |
 | `PerformancePlugin`       | `performance_summary`        | duration_stats (min/max/mean/median/p95/p99), slow_operations                                       |
+| `SlowestSegmentsPlugin`   | `slowest_segments`           | analyzed_events, total_window_seconds, top_slowest_gaps, slowest_recurring_transitions (gap entre eventos consecutivos) |
+| `StageTimingPlugin`       | `stage_timing_summary`       | tempo entre etapas (`stage`) já calculado: per_stage (total/avg/occurrences), slowest_stage (gargalo), stage_sequence, total_window_seconds |
 | `EventFlowPlugin`         | `event_flow_summary`         | unique_events, event_distribution, top_events                                                       |
 | `ComponentActivityPlugin` | `component_activity_summary` | active_components, component_activity                                                               |
 
@@ -551,13 +564,39 @@ Subcomandos:
   analyze      análise profunda (Pandas, 4 plugins)
   stats        resumo estatístico de múltiplos logs
   query        consulta rápida por question_type
+  filter       filtro objetivo de registros reais
   list-types   lista o catálogo de tipos de pergunta
+```
+
+### Chamada sem argumentos
+
+```bash
+python -m src.log_analyzer
+```
+
+Quando a CLI é chamada sem parâmetros, ela devolve **JSON machine-readable**
+com o contrato raiz da ferramenta inteira. Esse é o entrypoint preferencial
+para agentes de IA e automações que ainda não sabem qual subcomando usar.
+
+Resumo do payload raiz:
+
+- `default_invocation`: explica o comportamento default sem argumentos
+- `recommended_machine_entrypoints`: atalhos recomendados para descoberta por IA
+- `recommended_human_entrypoints`: atalhos recomendados para humanos
+- `execution_commands`: comandos que executam trabalho real
+- `help_commands`: comandos informacionais
+- `commands`: resumo leve de cada subcomando com `prog`, `description`, argumentos principais e `discovery_hint`
+
+Para ajuda textual de terminal humano, o caminho continua sendo:
+
+```bash
+python -m src.log_analyzer --help
 ```
 
 ### query — todas as opções
 
 ```
---question-type {has_error,has_exception,...}  OBRIGATÓRIO. Tipo da pergunta (22 opções)
+--question-type {has_error,has_exception,...}  OBRIGATÓRIO. Tipo da pergunta
 --correlation-id CORRELATION_ID               OBRIGATÓRIO. ID da execução a consultar
 --logs-dir LOGS_DIR                           Dir de logs. Default: ./logs
 --component COMPONENT                         Filtra por campo "component"
@@ -565,7 +604,7 @@ Subcomandos:
 --since DATETIME                              Filtra registros a partir desta data/hora
 --max-records MAX_RECORDS                     Limite opcional de registros. Omitido = lê o log completo
 --max-evidence MAX_EVIDENCE                   Máx. itens de evidência. Default: 3
---timeout-ms TIMEOUT_MS                       Timeout em ms. Default: 3000
+--timeout-ms TIMEOUT_MS                       Timeout em ms. Default: 9000
 --no-evidence                                 Remove evidências do resultado
 --list-types                                  Imprime catálogo e sai
 --schema                                      Imprime schema JSON para IA e sai
@@ -600,10 +639,12 @@ python -m src.log_analyzer query --schema
 ```
 
 Retorna JSON estruturado com:
-- `question_types`: lista dos 22 tipos com `type`, `answer_type`, `description`, `supports_component_filter`, `early_stop`
-- `query_codes`: lista dos 20 códigos com `code`, `description`
-- `usage`: campos de uso da CLI
-- `output_fields`: campos do resultado JSON
+- `command`, `prog`, `description`
+- `arguments`: contrato detalhado de cada argumento, incluindo `required`, `default`, `type` e `choices`
+- `output`: formato de saída e exit codes
+- `record_contract`: campos canônicos consumidos, aliases proibidos e política fail-close
+- `known_schema`: catálogo conhecido de campos e eventos do analyzer
+- `question_type_catalog`: agrupamento semântico dos valores válidos de `--question-type`
 
 Ideal para agentes de IA que precisam do catálogo sem parsear texto de `--help`.
 
@@ -752,6 +793,19 @@ Após `analyze_individual`, o dict `result.analyses` terá:
     "analysis_id": "performance_summary",
     "duration_stats": {"min": 5.0, "max": 1230.0, "mean": 145.3, "p95": 980.0, "p99": 1180.0, "count": 89},
     "top_slow_event_names": [{"value": "pdf_extraction", "count": 3}, ...]
+}
+
+# stage_timing_summary — tempo entre as etapas (stage) do pipeline já calculado
+{
+    "analysis_id": "stage_timing_summary",
+    "analyzed_stage_events": 18,
+    "distinct_stages": 6,
+    "total_window_seconds": 12.4,
+    "stage_sequence": [
+        {"stage": "retrieval", "from_timestamp": "...", "to_timestamp": "...", "duration_seconds": 7.0}, ...
+    ],
+    "per_stage": [{"stage": "retrieval", "total_seconds": 7.0, "occurrences": 1, "avg_seconds": 7.0}, ...],
+    "slowest_stage": {"stage": "retrieval", "total_seconds": 7.0}   # gargalo
 }
 
 # event_flow_summary

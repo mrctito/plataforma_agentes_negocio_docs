@@ -192,6 +192,16 @@ Na prática, isso quer dizer três coisas.
 
 O efeito prático para tooling é simples: designer visual, schema público e validação semântica passam a enxergar o mesmo caminho canônico, em vez de cada consumidor adivinhar onde a configuração visual deveria morar.
 
+### 8.5.2bis. Contrato DeepAgent -> A2UI generativo no AST
+
+O alvo DeepAgent também expõe, na mesma família `ag_ui`, o bloco `generative` — o mecanismo de renderização condicional no chat embutível (tool `generate_a2ui` bindada no supervisor; ver o tutorial 101 de Generative UI para a visão de produto). É um conceito irmão de `ag_ui.ui_specs` (§8.5.2), não uma variação dele: `ui_specs` é catálogo de UISpec governada, `generative` é o catálogo A2UI + renderer do chat.
+
+1. `DeepAgentAgUiAST.generative: DeepAgentAgUiGenerativeAST | None` (`src/config/agentic_assembly/ast/deepagent.py`) modela `chat_renderer` (`Literal["jspuro", "copilotkit"]`, espelhando `VALID_CHAT_RENDERERS` do parser de runtime `ag_ui_generative_config.py`, guardado por teste) e `a2ui_schema` (`catalog_id` string não vazia + `components` lista não vazia de nome ou definição).
+2. O AST é deliberadamente **tão permissivo quanto o runtime** para `components`: não enumera os 8 nomes do catálogo fechado do renderer frontend, porque esse enforcement vive no renderer (`ag-ui-a2ui-surface-renderer.js`), não no parser de runtime nem no AST — enumerar aqui criaria um AST mais estrito que o runtime real (drift falso).
+3. Ausência do bloco `generative` preserva o comportamento atual do DeepAgent — é uma camada aditiva, nunca obrigatória.
+
+Este bloco substitui um mecanismo anterior (subagente `output_subagent` render-only + flag `middlewares.generative_ui_dashboard` + modelo `DashboardSpec`) que foi removido do AST, do validator e do runtime; nenhum artefato atual do produto usa esses três nomes.
+
 ### 8.5.3. Contrato Workflow -> AG-UI no AST
 
 O alvo Workflow usa o mesmo caminho canônico `ag_ui.ui_specs`, agora representado por `WorkflowAgUiAST` e validado pela mesma regra semântica compartilhada.

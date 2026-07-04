@@ -739,8 +739,8 @@ Estas não são de MCP; estão documentadas em outros manuais (consulte o índic
 
 - **"DeepAgent ou Workflow, qual uso?"** → `README-DEEPAGENTS-SUPERVISOR` e `README-AGENTE-WORKFLOW`.
 - **"Como meu agente faz um gráfico aparecer na tela (AG-UI/Generative UI)?"** e **"como garanto que
-  o JSON do gráfico não seja reescrito pelo LLM?"** → docs de AG-UI / Generative UI e o contrato
-  `DashboardSpec` (ver o demo `rag-config-pdv-vendas-demo.yaml`, regra "repasse idêntico").
+  os dados do gráfico não sejam inventados pelo LLM?"** → [TUTORIAL-101-GENERATIVE-UI.md](../usuario/TUTORIAL-101-GENERATIVE-UI.md)
+  e o bloco `ag_ui.generative` (ver o demo `rag-config-pdv-vendas-demo.yaml`).
 - **"Por que `tools_library` tem que chegar vazia?"** (falha fechada) → `README-TOOLS-LIB`.
 - **"Como dou dados via SQL sem o supervisor explodir?" (`dyn_sql` inline vs registro)** →
   `README-TECNICO-DYNAMIC-SQL-TOOLS`.

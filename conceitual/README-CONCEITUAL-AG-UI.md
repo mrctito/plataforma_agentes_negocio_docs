@@ -80,9 +80,9 @@ O sidecar e o painel auxiliar que acompanha a tela de negocio. Ele concentra sta
 
 HIL significa human in the loop, ou seja, uma decisao humana inserida no fluxo. No slice atual, deepagent e workflow podem encerrar o run com outcome de interrupcao e depois continuar pelo mesmo boundary AG-UI, cada um usando seu mecanismo canônico de continuidade.
 
-### 6.6. DashboardSpec segura
+### 6.6. Envelope A2UI seguro
 
-No dashboard dinamico, o agente nao manda HTML. Ele manda uma especificacao tipada e fechada, com widgets permitidos, fontes de dados governadas, layout controlado e travas de seguranca explicitas. Isso permite flexibilidade visual sem abrir uma fronteira insegura.
+Na visualizacao gerada pelo DeepAgent no chat (A2UI), o agente nao manda HTML. Ele manda um envelope declarativo, com componentes de um catalogo fechado (8 tipos hoje) e dados que ja vieram de tools reais na conversa — nunca inventados. Isso permite flexibilidade visual sem abrir uma fronteira insegura.
 
 ## 7. O que existe hoje, de fato
 
@@ -94,15 +94,16 @@ O slice atual tem sete capacidades estruturais importantes, todas confirmadas no
 4. Replay sanitizado por run e por thread.
 5. Adapters registrados para deepagent, workflow, retail_demo e erp_backoffice_demo.
 6. Runtime compartilhado do frontend em JavaScript puro.
-7. Materializacao governada de dashboard dinamico.
+7. Visualizacao generativa condicional no chat embutivel (A2UI), configurada por YAML no supervisor DeepAgent.
 
 Isso muda o enquadramento correto da feature. O AG-UI deste repositorio nao e apenas a demo de varejo. A demo de varejo e a vitrine mais tangivel do slice. Mas a infraestrutura ja serve tambem como boundary agentic mais amplo, com executionKind para deepagent, workflow e dominios governados.
 
-Existe ainda uma **segunda forma** de consumir AG-UI no frontend, que nao depende do stream `/ag-ui/runs`: renderizar specs AG-UI que chegam **no corpo da resposta** dos endpoints de chat. Esse caminho e usado pelo **componente global de chat embutivel** (`PrometeuEmbeddableChatRuntime`) e pelas telas que o hospedam — a pagina oficial de WebChat (`ui-webchat-v3.html`, host do componente desde 2026-06-10), o host de exemplo (`ui-admin-plataforma-webchat.html`) e a bancada de teste (`ui-embeddable-chat-test.html`). Quando o agente devolve um spec conhecido, o componente o desenha como UI visual; quando devolve so texto, mostra texto. Os specs reconhecidos sao tres:
+Existe ainda uma **segunda forma** de consumir AG-UI no frontend: o **componente global de chat embutivel** (`PrometeuEmbeddableChatRuntime`) e as telas que o hospedam — a pagina oficial de WebChat (`ui-webchat-v3.html`, host do componente desde 2026-06-10), a URL administrativa espelhada (`ui-admin-plataforma-webchat.html`) e a bancada de teste (`ui-embeddable-chat-test.html`). Quando o agente devolve um spec conhecido, o componente o desenha como UI visual; quando devolve so texto, mostra texto. Os specs reconhecidos hoje sao dois:
 
-- **CapabilitiesSpec** — painel "o que voce faz / sobre o que falo", com cards de assuntos e perguntas-exemplo clicaveis. Emitido pela tool builtin `descrever_capacidades`, auto-injetada em todo supervisor DeepAgent. Nunca expoe nomes internos de ferramenta ou subdominio.
-- **DashboardSpec** — dashboard dinamico governado (KPIs, tabelas, rankings e graficos reais).
-- **UISpec** — interface generica governada, delegada ao renderizador oficial.
+- **CapabilitiesSpec** — painel "o que voce faz / sobre o que falo", com cards de assuntos e perguntas-exemplo clicaveis. Emitido pela tool builtin `descrever_capacidades`, auto-injetada em todo supervisor DeepAgent. Nunca expoe nomes internos de ferramenta ou subdominio. Chega no corpo da resposta normal, sem stream.
+- **A2UI** — visualizacao condicional gerada pelo supervisor DeepAgent (cards, tabela, graficos) quando o YAML declara o bloco `ag_ui.generative` e o usuario pede uma visualizacao. Chega pelo mesmo stream `/ag-ui/runs`, consumido de forma opt-in pelo componente.
+
+No caminho dedicado `POST /ag-ui/runs`, essa governanca vale para os dois runtimes agenticos suportados no boundary. A tela pede uma interface governada por `uiSpecId`, e o backend materializa esse identificador a partir do YAML do tenant no dono canonico correto: `multi_agents[].ag_ui.ui_specs` quando o alvo e DeepAgent e `workflows[].ag_ui.ui_specs` quando o alvo e Workflow. Na pratica, essa e a forma de configurar e reutilizar interfaces governadas no fluxo AG-UI dedicado.
 
 Atualizacao 2026-06-10: o **WebChat v3** (`ui-webchat-v3.html`) migrou para o componente embutivel (motor proprio removido) e carrega a cadeia AG-UI completa antes do componente — a renderizacao estruturada esta **ativa** nele, comprovada em runtime real. O detalhe de ativacao, seguranca e estado por tela esta no [guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md).
 
@@ -253,13 +254,13 @@ Como o AG-UI ajuda: a tela usa capability fechada, o backend aciona dyn_sql apro
 
 Valor pratico: a interface passa a ser uma ferramenta de conversa com os dados, mas sem entregar SQL livre ao usuario final.
 
-### 13.4. Dashboard dinamico para gestao
+### 13.4. Visualizacao sob pedido no chat
 
-Cenario: a lideranca quer um painel sob medida para uma reuniao, com KPI, serie temporal, ranking e narrativa curta.
+Cenario: durante uma conversa com o DeepAgent, a lideranca pede "monte um grafico disso" no meio de uma pergunta de negocio, sem sair do chat nem abrir uma tela dedicada.
 
-Como o AG-UI ajuda: o sistema aceita uma DashboardSpec segura, valida a estrutura e monta o canvas dinamicamente por eventos.
+Como o AG-UI ajuda: com o bloco `ag_ui.generative` configurado no supervisor, o proprio DeepAgent monta um card ou grafico a partir de um catalogo fechado de componentes e dos dados que ja obteve na conversa — nunca inventa numero. A mesma pergunta sem pedir visualizacao continua vindo em texto.
 
-Valor pratico: flexibilidade visual com contrato, sem virar uma tela que renderiza qualquer HTML gerado pelo modelo.
+Valor pratico: flexibilidade visual com contrato, sem virar um chat que renderiza qualquer HTML gerado pelo modelo, e sem exigir que o usuario troque de tela.
 
 ### 13.5. ERP com aprovacao humana
 
@@ -291,7 +292,7 @@ Os erros confirmados no codigo se agrupam em cinco familias.
 2. Ausencia de fonte explicita de configuracao.
 3. agent_id inexistente, capability nao autorizada ou runtime legado desligado.
 4. Falha de dominio governado, como SQL livre, parametro proibido ou configuracao PDV ausente.
-5. DashboardSpec invalida ou insegura.
+5. Bloco `ag_ui.generative` malformado no YAML (renderer ou catalogo ausente/invalido) — falha explicita na resolucao do supervisor, antes de qualquer execucao.
 
 O ponto mais importante e este: o slice falha fechado. Ele nao tenta mascarar problema com fallback implicito.
 

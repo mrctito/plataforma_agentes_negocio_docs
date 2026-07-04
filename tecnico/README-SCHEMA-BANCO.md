@@ -10,7 +10,7 @@ Ao final, ele tambem documenta o schema implementado da solucao de integracoes, 
 
 - Banco suportado: PostgreSQL.
 - Tabelas que usam `gen_random_uuid()` dependem de suporte a `pgcrypto`.
-- O schema atual está organizado, na prática, em oito grupos:
+- O schema atual está organizado, na prática, em nove grupos:
 - estado e checkpoints,
 - job core e ledger operacional de jobs,
 - autenticação e login,
@@ -18,7 +18,8 @@ Ao final, ele tambem documenta o schema implementado da solucao de integracoes, 
 - interações, eventos e aprovações humanas,
 - execução agentic em background,
 - tenants e segurança,
-- memória de usuário.
+- memória de usuário,
+- chat embutível (schema `chat`).
 
 ### Estado do modelo de ingestão vetorial `vector_*` (comprovado em runtime — 2026-06-09)
 
@@ -2492,9 +2493,82 @@ Os índices descritos no DDL reforçam principalmente lookup por status e data e
 
 Na prática, esta seção deve ser lida como mapa de domínio do banco demo, não como script de provisionamento. O objetivo operacional é orientar integrações, NL2SQL, SQL dinâmico, dashboards e troubleshooting sem manter blocos DDL extensos dentro do manual geral.
 
+## Domínio Chat Embutível (schema `chat`)
+
+O schema `chat` materializa no PostgreSQL as conversas do componente de chat embutível genérico (`PrometeuEmbeddableChatRuntime`). Antes, o histórico do chat vivia apenas no `localStorage` do browser, o que perdia a conversa ao trocar de dispositivo, limpar o navegador ou reabrir de outra origem. Este schema dá persistência física à conversa e às suas mensagens, seguindo o mesmo padrão de schema dedicado usado por `job_core.*` e `ag_ui.*`.
+
+Em linguagem simples: `chat.conversations` guarda uma linha por conversa (o "cabeçalho": dono, título, status, contadores) e `chat.messages` guarda uma linha por mensagem trocada dentro daquela conversa, na ordem em que aconteceram. Todo acesso é feito no escopo do dono (`tenant_code` + `user_email`), então uma conversa de um usuário nunca vaza para outro.
+
+Convenções canônicas deste schema:
+
+- A chave da conversa é uma **natural key TEXT**: o `conversation_id` (`sess_<base36>_<rand>`) que o próprio frontend gera e já envia no payload. Não há UUID de servidor para a conversa; o servidor reusa o id do cliente.
+- A segregação por ambiente (desenvolvimento, homologação, produção) é feita pela **DSN/conexão por `ENVIRONMENT`**, o padrão real do repositório. Por isso **não existe** coluna `environment` nestas tabelas. A segregação lógica dentro do banco é por `tenant_code`.
+- O DDL versionado de referência está em `scripts/sql/20260701_create_chat_schema.sql`. As tabelas são criadas à mão em janela controlada; DDL em runtime é proibido e a aplicação assume que o schema já existe.
+- Acesso pela camada de aplicação: `src/chat/repository.py` (`ChatConversationsRepository`, `ChatMessagesRepository`), que herdam de `ClientDirectoryBase` (pool, retry, log canônico, `search_path`).
+
+### chat.conversations
+
+- Finalidade prática: registrar o cabeçalho de cada conversa do chat embutível, com dono, título, status de ciclo de vida e contadores de atividade.
+- Chave primária: `conversation_id`.
+- Escopo: multi-tenant por `tenant_code`, com dono por `user_email`.
+- Colunas:
+- `conversation_id`: identificador natural TEXT da conversa, gerado no frontend (`sess_<base36>_<rand>`). É a chave usada por leitura, escrita e pelas mensagens filhas.
+- `tenant_code`: tenant dono da conversa. Segregador lógico obrigatório.
+- `user_email`: usuário dono da conversa dentro do tenant.
+- `config_ref`: referência opcional ao YAML/configuração do assistente usado na conversa.
+- `scope_ref`: dimensão de escopo dedicada para isolar conversas dentro do mesmo dono (`tenant_code` + `user_email`), independente do `config_ref`. Serve a hosts que precisam separar conversas por um recorte além de tenant/usuário (por exemplo, o host DNIT isola por projeto), sem sobrecarregar o `config_ref` — que é o mesmo YAML para todos os projetos daquele host. Semântica de bucket: `scope_ref IS NULL` é o bucket geral do webchat (admin e produção sem projeto); `scope_ref = '<X>'` é o bucket isolado daquele escopo. Nasce no upsert do primeiro turno e não muda depois (turnos seguintes não sobrescrevem um `scope_ref` já gravado com NULL). Na listagem, filtro ausente lista o bucket geral (`WHERE scope_ref IS NULL`) e filtro informado lista só aquele escopo (`WHERE scope_ref = <X>`), de forma que admin/produção não veem conversas de projeto e vice-versa.
+- `mode`: modo do chat na conversa (por exemplo `q&a` ou `deepagent`), quando informado.
+- `thread_id`: identificador de thread de runtime associado à conversa, quando existir.
+- `title`: título amigável da conversa para exibição em lista.
+- `status`: estado do ciclo de vida. O contrato aceito é `active`, `archived` ou `deleted`. Default `active`.
+- `message_count`: contador de mensagens registradas, incrementado a cada atividade.
+- `metadata`: metadados auxiliares em `jsonb`, sempre no formato de objeto.
+- `created_at`: criação do registro.
+- `updated_at`: última atualização do registro.
+- `last_message_at`: momento da última mensagem, usado para ordenar a lista por atividade recente.
+- Índices e restrições:
+- PK em `conversation_id`.
+- Check `conversations_status_check` limitando `status` a `active`, `archived` ou `deleted`.
+- Check `conversations_metadata_json_check` garantindo `metadata` como objeto `jsonb`.
+- Índice `idx_chat_conversations_owner_recent` em `tenant_code, user_email, status, last_message_at DESC NULLS LAST`, que sustenta a listagem paginada por dono ordenada por atividade recente.
+- Índice `idx_chat_conversations_config` em `tenant_code, user_email, config_ref`, para consultas por configuração dentro do escopo do dono.
+- Índice `idx_chat_conversations_scope` em `tenant_code, user_email, scope_ref, status, last_message_at DESC NULLS LAST`, que sustenta a listagem paginada por bucket de `scope_ref` (geral ou de projeto) dentro do escopo do dono, ordenada por atividade recente.
+
+### chat.messages
+
+- Finalidade prática: registrar cada mensagem trocada dentro de uma conversa, preservando ordem estável e vínculo com a correlação de execução que a gerou.
+- Chave primária: `message_id` (UUID gerado por `gen_random_uuid()`).
+- Escopo: multi-tenant por `tenant_code`, com dono por `user_email`, sempre subordinada a uma conversa.
+- Colunas:
+- `message_id`: identificador UUID da mensagem, com geração padrão por `gen_random_uuid()`.
+- `conversation_id`: conversa dona da mensagem. FK para `chat.conversations(conversation_id)` com `ON DELETE CASCADE`.
+- `tenant_code`: tenant dono da mensagem, coerente com a conversa.
+- `user_email`: usuário dono da mensagem, coerente com a conversa.
+- `seq`: número sequencial da mensagem dentro da conversa. Cresce de forma monotônica e define a ordem de leitura.
+- `role`: autor da mensagem. O contrato aceito é `user` ou `assistant`.
+- `content`: conteúdo textual da mensagem. Default vazio.
+- `correlation_id`: `correlation_id` da execução que produziu a mensagem, quando aplicável. É apenas recebido e persistido, nunca criado nesta camada.
+- `payload`: dados estruturados adicionais em `jsonb`, sempre no formato de objeto.
+- `created_at`: criação do registro.
+- Índices e restrições:
+- PK em `message_id`.
+- Check `messages_role_check` limitando `role` a `user` ou `assistant`.
+- Check `messages_payload_json_check` garantindo `payload` como objeto `jsonb`.
+- FK `messages_conversation_fk` para `chat.conversations(conversation_id)` com `ON DELETE CASCADE`: apagar a conversa remove suas mensagens.
+- Unique `messages_conversation_seq_uk` em `conversation_id, seq`, que garante `seq` único por conversa e protege a monotonicidade sob concorrência.
+- Índice `idx_chat_messages_conversation_seq` em `conversation_id, seq`, para leitura ordenada das mensagens de uma conversa.
+
+### Leitura prática do schema chat
+
+- Para listar as conversas de um usuário, filtrar por `tenant_code` + `user_email`, excluir `status = 'deleted'` e ordenar por `last_message_at DESC`. É exatamente o que `idx_chat_conversations_owner_recent` acelera.
+- Para reabrir uma conversa, ler suas mensagens por `conversation_id` no escopo do dono, ordenadas por `seq ASC`.
+- O próximo `seq` de um append é derivado por `SELECT COALESCE(MAX(seq), 0) + 1` dentro do próprio `INSERT`, sem lock pessimista. A unique `messages_conversation_seq_uk` faz um append concorrente colidente falhar por unicidade, e o retry transacional da camada de aplicação reexecuta recalculando o `seq`.
+- Deletar uma conversa é um soft-delete: `status` vai para `deleted` e ela some das listagens, mas a linha e o histórico permanecem para auditoria até uma limpeza física controlada.
+
 ## Observações Finais
 
 - Este manual reflete o DDL atual informado para o schema público, incluindo o modelo final de conta pessoal, autenticação e cobrança organizacional.
+- Este manual também registra o schema `chat`, que persiste as conversas e mensagens do componente de chat embutível genérico, com chave natural `conversation_id` e segregação por `tenant_code`.
 - Este manual também registra o schema `integrations` já implementado e o desenho contratual já aprovado para a tabela global `integrations.builtin_tool_registry`, para documentar no mesmo lugar o armazenamento dos cadastros técnicos, funcionais e do catálogo builtin.
 - Este manual também passa a registrar o schema demo de varejo consultado por `DATABASE_VAREJO_DSN` e `DATABASE_VAREJO_SCHEMA`, para facilitar futuras consultas operacionais de SQL, UCP, dashboards e NL2SQL.
 - Estruturas antigas que não aparecem mais no DDL foram removidas deste documento para evitar ambiguidade.

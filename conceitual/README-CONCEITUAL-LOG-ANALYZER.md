@@ -9,8 +9,10 @@ consumir e extrair inteligência dos logs de execução do sistema.
 O módulo oferece dois modos de operação com propósitos diferentes:
 
 - **Análise profunda** (`LogAnalyzerService`): carrega todos os registros de um log em
-  memória via Pandas, executa 4 plugins analíticos e retorna um relatório completo com
-  métricas de erros, performance, eventos e atividade por componente.
+  memória via Pandas, executa seus plugins analíticos e retorna um relatório completo com
+  métricas de erros, performance, tempo entre as etapas (`stage`) do pipeline, eventos e
+  atividade por componente, além da seção `problems` que acusa problemas de integridade
+  (ex.: `correlation_id` estranho no meio do log).
 
 - **Consulta rápida** (`LogQueryService`): lê o log registro a registro via iterador e
   para assim que a resposta puder ser determinada, sem carregar nada em memória. Responde
@@ -80,6 +82,12 @@ e tempo de investigação manual. Com o Log Analyzer:
 **Diferencial:** A consulta rápida (fastquery) responde perguntas operacionais com
 parada antecipada — não carrega o log inteiro, para na primeira evidência relevante.
 Isso torna viável consultar logs grandes em tempo real sem degradar performance.
+
+Para agentes de IA e automações, a própria CLI já expõe descoberta machine-readable:
+`python -m src.log_analyzer` sem argumentos devolve o contrato JSON raiz da ferramenta,
+com informação suficiente para um agente decidir o próximo comando sem parsear `--help`.
+Para inspeção detalhada do subcomando de consulta rápida, também existe
+`python -m src.log_analyzer query --schema`.
 
 ## 5. Visão estratégica
 

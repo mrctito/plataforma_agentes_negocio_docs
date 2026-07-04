@@ -2,7 +2,7 @@
 
 ## 1. O que esta etapa cobre
 
-Esta etapa cobre o adapter retail_demo, que é a superfície de domínio mais rica do slice AG-UI atual. Ela combina capabilities fechadas, catálogo governado de query, validação estrita de parâmetros e caminho especial para dashboard dinâmico.
+Esta etapa cobre o adapter retail_demo, que é a superfície de domínio mais rica do slice AG-UI atual. Ela combina capabilities fechadas, catálogo governado de query e validação estrita de parâmetros.
 
 O capability pack publico do acelerador e `retail_demo`. A execucao oficial acontece por `POST /ag-ui/runs`, com `AgUiRunRequest` no corpo da requisicao e selecao governada do dominio pelo YAML e pelos metadados do payload.
 
@@ -22,7 +22,6 @@ O catálogo público expõe:
 - checkout_funnel
 - catalog_opportunities
 - customer_segments
-- dashboard_dynamic
 
 Cada capability vem acompanhada de descrição, parâmetros esperados e, quando aplicável, ui specs úteis para renderização.
 
@@ -36,14 +35,11 @@ O adapter protege o domínio de três formas complementares:
 
 As chaves livres bloqueadas incluem sql, raw_sql, sql_query e statement. Essa filtragem é recursiva para evitar bypass por objetos aninhados.
 
-## 5. Dashboard dinâmico
+## 5. Sem materialização de dashboard neste adapter
 
-Quando a capability é dashboard_dynamic, o adapter não segue o fluxo simples de uma query. Ele desvia para o serviço de materialização de dashboard e passa a emitir custom events específicos do processo, além de snapshots de estado com status materializing, ready ou validation_failed.
+O capability pack `retail_demo` já teve uma capability `dashboard_dynamic` que desviava para um serviço de materialização de dashboard, emitindo custom events próprios e snapshots com status `materializing`/`ready`/`validation_failed`. Esse mecanismo foi removido do código — hoje **todas** as capabilities do pack (seção 2) seguem o mesmo caminho uniforme: query governada em `dyn_sql` → `TOOL_CALL_RESULT` → `STATE_SNAPSHOT` com o resultado bruto. Não há mais um segundo caminho especial de materialização visual dentro deste adapter.
 
-Esse comportamento separa dois casos técnicos diferentes:
-
-- consulta governada simples em dyn_sql
-- construção validada de uma DashboardSpec renderizável
+Visualização gerada dinamicamente pelo DeepAgent (gráficos, cards) é responsabilidade de um mecanismo separado — o bloco `ag_ui.generative` do supervisor (tool `generate_a2ui`) — documentado em [README-TECNICO-AG-UI.md](README-TECNICO-AG-UI.md), seção 1A.
 
 ## 6. Erros típicos do domínio
 
@@ -96,8 +92,8 @@ Em termos práticos: a tela pergunta por uma capacidade de negócio; o servidor 
   - Motivo: segurança do catálogo.
   - Comportamento confirmado: queries aprovadas são validadas como uma única instrução SELECT.
 - src/api/services/ag_ui_retail_demo_adapter.py
-  - Motivo: caminho especial de dashboard.
-  - Comportamento confirmado: dashboard_dynamic usa fluxo de materialização dedicado e emite eventos próprios de domínio.
+  - Motivo: confirmar ausência de caminho especial de dashboard.
+  - Comportamento confirmado: zero ocorrência de `dashboard`/`DashboardSpec` no arquivo; as 4 capabilities seguem o mesmo caminho uniforme (seção 5).
 - app/ui/static/js/shared/ag-ui-retail-demo-page.js
   - Motivo: controller público das telas do acelerador.
   - Comportamento confirmado: monta `AgUiRunRequest` para `/ag-ui/runs`, com `capabilityPackId`, fonte YAML explicita e sem DSN, SQL ou `correlation_id` criado no browser.

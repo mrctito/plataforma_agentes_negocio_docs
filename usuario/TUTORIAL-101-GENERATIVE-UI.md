@@ -1,4 +1,4 @@
-# Tutorial 101: Generative UI (AG-UI) — Como fazer o agente desenhar dashboards e cards no chat
+# Tutorial 101: Generative UI (AG-UI) — Como fazer o DeepAgent desenhar gráficos e painéis no chat
 
 > Leitura recomendada antes: [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md) para entender o componente de chat.
 > Referência técnica: [README-TECNICO-AG-UI.md](../tecnico/README-TECNICO-AG-UI.md).
@@ -8,197 +8,167 @@
 
 ## O que é Generative UI nesta plataforma
 
-"Generative UI" (em português: interface gerada pelo agente) significa que o agente de IA, em vez de responder com texto simples, responde com uma **estrutura de dados descrevendo o que mostrar** — e o frontend transforma essa estrutura em botões, gráficos, KPIs e tabelas desenhadas de verdade na tela.
+"Generative UI" (interface gerada pelo agente) significa que o DeepAgent, em vez de responder só com texto, pode desenhar de verdade um card, uma tabela ou um gráfico dentro da própria bolha do chat — quando o usuário pedir uma visualização.
 
-O nome "AG-UI" (Agent-Generated UI) é a sigla usada internamente. O conceito é simples: o agente devolve um "spec" (especificação), e a plataforma sabe renderizá-lo. O usuário final não vê JSON — vê um dashboard ou um painel de cards.
+O nome "AG-UI" (Agent-Generated UI) é a sigla usada internamente. O mecanismo atual, provado em produção, chama-se **A2UI**: o supervisor DeepAgent ganha uma ferramenta (`generate_a2ui`) que devolve um envelope declarativo descrevendo os componentes a desenhar (`{a2ui_operations: [createSurface, updateComponents]}`), e o frontend transforma esse envelope em DOM real usando um catálogo fechado de componentes seguros.
 
-**Por que isso importa?** Porque a alternativa seria o agente devolver texto formatado com números, e quem integrou a plataforma teria que parsear esse texto e montar o visual por conta própria, o que é frágil e não escala. Com AG-UI, o agente define o dado e o visual juntos, de forma governada.
+**Por que isso importa?** Porque a alternativa seria o agente devolver texto e cada integrador ter que "adivinhar" quando havia um número para exibir, ou pior, o agente devolver HTML/JavaScript livre — um risco de segurança sério. Com A2UI, o agente nunca manda marcação ou script: ele só escolhe, entre um catálogo pré-aprovado, quais componentes usar e com quais dados (que ele já obteve de tools reais, nunca inventados).
+
+**A característica mais importante do mecanismo: é aditivo e condicional.**
+
+- **Aditivo:** se o YAML do supervisor não declarar o bloco `ag_ui.generative`, nada muda — o DeepAgent responde exatamente como sempre respondeu, texto puro, byte a byte.
+- **Condicional:** mesmo com o bloco declarado, o gráfico só aparece **quando o usuário pede uma visualização**. A mesma pergunta feita sem pedir gráfico continua vindo em texto normal. Não existe prompt fixo forçando desenho — a decisão de desenhar ou não é do modelo, orientada por regras explícitas no prompt do supervisor (ver Passo 3).
 
 ---
 
 ## As duas superfícies AG-UI desta plataforma
 
-Existem dois caminhos distintos para usar AG-UI. Confundi-los é o erro mais comum de quem começa. A tabela abaixo ajuda a escolher.
+Existem dois caminhos para usar AG-UI nesta plataforma. Confundi-los é a fonte de dúvida mais comum.
 
-| | Superfície A — Render no chat embutível | Superfície B — Borda HTTP dedicada `/ag-ui/runs` |
+| | Superfície A — Chat embutível (`generate_a2ui`) | Superfície B — Telas operacionais dedicadas |
 |---|---|---|
-| **Como funciona** | O agente responde via os endpoints normais de chat (`/rag/execute`, `/agent/execute`). A resposta contém um "spec" embutido. O componente de chat detecta e desenha. | A tela abre uma conexão de streaming (SSE) com o endpoint `/ag-ui/runs`. Os eventos chegam em tempo real. |
-| **Para quem é** | Quem já usa ou vai usar o WebChat v3 / componente `PrometeuEmbeddableChatRuntime`. O caminho mais simples. | Quem precisa de uma tela operacional dedicada com painel lateral, timeline de eventos, contexto visual rico. Demo varejo (PDV, vendas, checkout). |
-| **Configuração** | Só YAML (subagente com `response_format`). Nenhuma alteração no código da plataforma. | Precisa de capability pack no backend + tela frontend dedicada. |
-| **Formato de resposta** | Resposta HTTP normal (síncrona ou polling assíncrono). Spec chega no corpo. | Stream SSE com múltiplos eventos (RUN_STARTED, TOOL_CALL_*, STATE_SNAPSHOT, RUN_FINISHED...). |
-| **Páginas de exemplo** | `ui-webchat-v3.html` (já pronto), `ui-admin-plataforma-webchat.html` | `ui-admin-plataforma-ag-ui-varejo-demo.html`, `ui-admin-plataforma-ag-ui-vendas-cockpit.html`, outras |
-| **Quando usar** | Quando quiser adicionar dashboard ou capacidades ao chat existente, rapidamente, só via YAML. | Quando a experiência for uma tela operacional completa com sidebar, timeline e eventos em tempo real. |
+| **Como funciona** | O componente `PrometeuEmbeddableChatRuntime` abre, de forma **opt-in**, uma conexão SSE com `POST /ag-ui/runs` quando o modo é `deepagent`. O envelope A2UI chega no resultado da tool `generate_a2ui` e é desenhado dentro da bolha do assistente. | Uma tela dedicada (ex.: hub de varejo) chama `POST /ag-ui/runs` diretamente para um **capability pack** governado (ex.: `retail_demo`) que expõe consultas pré-aprovadas como eventos SSE, com painel lateral e timeline própria. |
+| **Para quem é** | Quem já usa (ou vai usar) o WebChat v3 / componente `PrometeuEmbeddableChatRuntime` e quer que o próprio chat desenhe visualizações. | Quem precisa de uma tela operacional dedicada, fora do chat, com múltiplas capabilities de negócio e navegação própria. |
+| **Configuração** | Só YAML: bloco `multi_agents[].ag_ui.generative` no supervisor DeepAgent. | Capability pack no backend (código) + tela frontend dedicada. |
+| **Formato de resposta** | Stream SSE de `/ag-ui/runs`, consumido internamente pelo transporte do componente de chat; o resultado final aparece como uma bolha normal com a superfície A2UI desenhada dentro. | Stream SSE de `/ag-ui/runs` consumido diretamente pela tela (eventos `RUN_STARTED`, `TOOL_CALL_*`, `STATE_SNAPSHOT`, `RUN_FINISHED`...). |
+| **Este tutorial cobre** | **Sim — é o assunto central deste documento.** | Não em profundidade; ver [README-TECNICO-AG-UI.md](../tecnico/README-TECNICO-AG-UI.md) para o boundary de capability packs e discovery. |
 
-A maior parte dos casos de uso de estagiários e consultores cai na **Superfície A**. Este tutorial foca nela. A Superfície B é coberta com mais detalhe no [README-TECNICO-AG-UI.md](../tecnico/README-TECNICO-AG-UI.md).
+A maior parte dos casos de uso de consultor e integrador cai na **Superfície A**. Este tutorial foca nela.
 
 ---
 
-## Parte 1 — Tutorial passo a passo: "quero que meu agente responda com um dashboard"
+## Parte 1 — Tutorial passo a passo: "quero que meu DeepAgent responda com gráficos quando o usuário pedir"
 
-Este é o caminho mais fácil e completamente suportado hoje: o agente DeepAgent tem um subagente especializado em dashboard, e você configura isso só no YAML.
+### Os 3 papéis envolvidos
 
-### O que você precisa entender antes de começar
+Gerar uma visualização no chat envolve três papéis diferentes. Entender a fronteira entre eles evita a maior parte das dúvidas de configuração:
 
-**DeepAgent** é um tipo de agente supervisor. Ele orquestra subagentes especializados. Para gerar dashboard no chat, você cria um subagente dentro do supervisor e configura ele com um `response_format` — isso é uma instrução para a LLM (o modelo de linguagem) devolver a resposta em JSON seguindo um esquema específico, em vez de texto livre.
+| Papel | Quem faz | O que faz |
+|---|---|---|
+| **1. Quem gera** | O próprio **supervisor DeepAgent** — não um subagente separado. Quando o bloco `ag_ui.generative` existe no YAML, a plataforma binda a ferramenta `generate_a2ui` diretamente no supervisor. | Depois que um especialista já trouxe os dados (via `task` + `dyn_sql`), o supervisor decide criar a superfície visual e chama `generate_a2ui` compondo componentes do catálogo com os números que já estão na conversa. |
+| **2. Quem entrega** | A camada de wiring do servidor (adapter + factory AG-UI). | Injeta o catálogo de componentes declarado no YAML (`a2ui_schema`) no estado do grafo (`state["ag-ui"]["a2ui_schema"]`), para a tool saber quais componentes tem à disposição; depois, transporta o envelope produzido pela tool como resultado da chamada (`TOOL_CALL_RESULT`) no stream SSE de `/ag-ui/runs`. |
+| **3. Quem desenha** | O **frontend** — o transporte SSE do componente de chat + o renderer A2UI. | Detecta o envelope `{a2ui_operations}` no stream, valida contra um catálogo fechado de componentes seguros e monta o DOM real (cards, tabelas, gráficos). Componente fora do catálogo ou envelope malformado → cai em texto (falha fechada, nunca quebra a tela). |
 
-**`response_format`** é uma chave YAML que diz ao subagente: "sua resposta deve ser um JSON que siga este esquema". Quando o esquema é o contrato `DashboardSpec 1.0`, o frontend sabe detectar e desenhar o resultado.
+Em uma frase: **o supervisor decide e compõe; o servidor entrega o catálogo e transporta o resultado; o frontend valida e desenha.** Em nenhum desses três papéis a IA manda HTML, script ou SQL livre — ela só escolhe nomes de componentes de uma lista fechada e reaproveita dados que tools já buscaram.
 
-**Nenhuma alteração no código da plataforma é necessária.** Você só escreve YAML.
+> **De onde vêm os dados?** Nunca da tool `generate_a2ui` em si — ela **lê o histórico da conversa** (resultados de tools já chamadas pelos especialistas via `task`). Por isso a ordem importa: primeiro o supervisor obtém os dados delegando para um especialista, só depois chama `generate_a2ui`. O prompt do supervisor reforça essa ordem e proíbe explicitamente inventar números.
 
-### Passo 1 — Verificar o host
+### Passo 1 — Ter um DeepAgent com especialistas que buscam dado real
 
-O WebChat v3 (`ui-webchat-v3.html`) já carrega todos os scripts necessários para renderizar AG-UI, incluindo os gráficos (ApexCharts). Se você está usando essa página, não precisa fazer nada no frontend.
+O bloco `ag_ui.generative` vive dentro de um supervisor `execution.type: deepagent`. Para o gráfico ter o que desenhar, o supervisor precisa de pelo menos um subagente especialista com tools `dyn_sql` (ou equivalente) capaz de trazer números reais — a mesma estrutura de qualquer DeepAgent funcional, sem nada especial. O demo `app/yaml/rag-config-pdv-vendas-demo.yaml` tem vários (`subdominio_vendas`, `subdominio_catalogo` etc.).
 
-Se estiver criando uma página nova, veja a seção "Como carregar os scripts numa tela nova" mais abaixo.
+### Passo 2 — Declarar o bloco `ag_ui.generative` no supervisor
 
-### Passo 2 — Configurar o YAML do supervisor
-
-O exemplo real do repositório é `app/yaml/rag-config-pdv-vendas-demo.yaml`. A estrutura relevante (extraída do arquivo, com simplificações para leitura) é:
+Exemplo real, tirado de `app/yaml/rag-config-pdv-vendas-demo.yaml`:
 
 ```yaml
-# Supervisor DeepAgent
-metadata:
-  name: Meu Agente com Dashboard
-  execution:
-    type: deepagent    # espinha dorsal DeepAgent (obrigatório)
-
 multi_agents:
-  # ... outros subagentes (perguntas e respostas, análises, etc.) ...
-
-  # Subagente especializado em dashboard dinâmico
-  - id: subdominio_dashboard_dinamico
-    name: "Especialista em Dashboard"
-    description: "Responde perguntas que pedem um dashboard visual com gráficos e KPIs."
-    prompt: |
-      Você é especialista em análise visual de dados.
-      Devolva SEMPRE um JSON puro — sem texto antes, sem texto depois, sem marcação markdown.
-      O JSON deve seguir exatamente o contrato DashboardSpec versão 1.0.
-      Nunca inclua HTML, JavaScript, CSS ou SQL livre na resposta.
-      Use apenas as queries aprovadas nas tools disponíveis.
-    tools:
-      - dyn_sql<minha_query_de_vendas>
-      - dyn_sql<minha_query_de_kpi>
-      - dyn_sql<minha_query_de_ranking>
-    limits:
-      max_iterations: 3
-      timeout_seconds: 30
+  - id: ag_ui_pdv_vendas_supervisor
     execution:
-      default_mode: direct_sync
-    response_format:          # <-- AQUI está a chave
-      type: object
-      additionalProperties: false
-      required:
-        - version
-        - title
-        - layout
-        - widgets
-        - dataSources
-        - narrative
-        - refreshPolicy
-        - safety
-      properties:
-        version:
-          type: string
-          const: "1.0"        # a plataforma exige exatamente "1.0"
-        title:
-          type: string
-        layout:
-          type: object
-          properties:
-            kind: { type: string, const: grid }
-            columns: { type: integer, minimum: 1, maximum: 12 }
-            rowHeight: { type: integer, minimum: 80, maximum: 360 }
-            gap: { type: integer, minimum: 4, maximum: 32 }
-        widgets:
-          type: array
-          minItems: 1
-          items:
-            type: object
-        # ... demais campos do contrato DashboardSpec ...
-        safety:
-          type: object
-          properties:
-            htmlAllowed: { type: boolean, const: false }
-            scriptAllowed: { type: boolean, const: false }
-            freeSqlAllowed: { type: boolean, const: false }
-            secretsAllowed: { type: boolean, const: false }
+      type: deepagent          # espinha dorsal DeepAgent (obrigatório)
+    ag_ui:
+      generative:
+        chat_renderer: jspuro  # jspuro (chat embutível JS) ou copilotkit
+        a2ui_schema:
+          catalog_id: "https://plataforma.local/catalogs/pdv-vendas-a2ui.json"
+          components:
+            - Card
+            - Column
+            - Row
+            - Text
+            - BarChart
+            - LineChart
+            - DataTable
+            - Divider
+      ui_specs: []              # conceito distinto (UISpec governada), não usado aqui
+    agents:
+      - id: subdominio_vendas
+        # ... especialistas com tools dyn_sql ...
 ```
 
-O campo `response_format` instrui a LLM a devolver exatamente o JSON daquele esquema. O frontend (`embeddable-chat-spec-runtime.js`) detecta a presença de `version: "1.0"` e `widgets` no payload, valida o contrato e renderiza o dashboard.
+Campos do bloco (contrato completo lido em `src/agentic_layer/supervisor/ag_ui_generative_config.py`):
 
-> **Nota:** O exemplo real completo, com os campos `dataSources`, `narrative`, `refreshPolicy` e a lista de widgets detalhada, está em `app/yaml/rag-config-pdv-vendas-demo.yaml` nas linhas 559-606+. Consulte o arquivo real antes de copiar para produção.
+- **`chat_renderer`** (obrigatório): `jspuro` para o renderer JS nativo do chat embutível, ou `copilotkit` para repassar o envelope A2UI, sem filtro, a um cliente React que usa o SDK CopilotKit. Ver "Eixo — trocar de renderer" mais abaixo.
+- **`a2ui_schema.catalog_id`** (obrigatório): um rótulo/URI estável do catálogo. **Ninguém faz fetch dele** — é só um identificador que o frontend casa com o mesmo id; ele não precisa resolver para nada.
+- **`a2ui_schema.components`** (obrigatório, lista não vazia): os nomes de componente que o supervisor tem autorização de usar ao montar a superfície. Cada item pode ser um nome simples (string) ou uma definição mais rica (dict) — o parser de runtime aceita as duas formas.
 
-### Passo 3 — Testar
+> **Ausência do bloco = comportamento intocado.** Se `ag_ui` nem existir no supervisor, ou existir sem a chave `generative`, o DeepAgent responde exatamente como respondia antes — nenhuma tool nova é bindada, nenhum prompt extra é anexado.
 
-Com o YAML configurado e o agente apontando para ele no WebChat v3:
+### Passo 3 — Por que o gráfico só aparece quando pedido (o contrato de saída do prompt)
 
-1. Faça uma pergunta que acione o subagente de dashboard (ex.: "Mostre o dashboard de vendas do mês").
-2. A resposta deve aparecer como um painel visual — não como texto, não como JSON bruto.
-3. Se aparecer texto ou JSON: veja a seção "Por que às vezes aparece texto em vez do dashboard?" mais abaixo.
+Quando o bloco existe, a plataforma anexa ao prompt do supervisor um bloco de regras curto e direto (pensado para funcionar até com modelos pequenos), resumido assim:
 
-### O que NÃO é necessário
+- Se o usuário pediu gráfico/dashboard/visualização, a resposta só é válida **depois** de chamar `generate_a2ui` — responder só texto nesse caso é tratado como erro.
+- Ordem obrigatória: primeiro obter os dados (o mínimo de delegações possível), só depois chamar `generate_a2ui` **uma única vez**, e encerrar com uma frase curta.
+- Desenhar é responsabilidade exclusiva do supervisor via `generate_a2ui` — os especialistas (chamados via `task`) **nunca** têm acesso a essa ferramenta e nunca devem receber a instrução de "desenhar".
+- Se o usuário **não** pediu visualização, o supervisor responde em texto normal e não chama `generate_a2ui`.
+- Nunca inventar números: a superfície só pode usar dados que já apareceram no histórico da conversa.
 
-- Não é necessário mexer no código da plataforma.
-- Não é necessário mexer no componente `PrometeuEmbeddableChatRuntime`.
-- Não é necessário criar endpoint novo ou adapter backend.
-- Não é necessário abrir stream SSE.
-- Se estiver usando o WebChat v3, não é necessário nem carregar scripts extras — ele já faz isso.
+É esse contrato — não uma heurística de UI — que garante a ortogonalidade: mesma pergunta, sem pedir gráfico, sempre em texto; pedindo gráfico, sempre com `generate_a2ui` chamada.
+
+### Passo 4 — Testar
+
+Com o YAML configurado e o agente selecionado no WebChat v3 (ou na bancada `ui-embeddable-chat-test.html`) com o transporte SSE ligado (ver "Como habilitar no host" abaixo):
+
+1. Faça uma pergunta **sem** pedir visualização (ex.: "qual o faturamento do mês?"). Deve vir texto normal.
+2. Faça uma pergunta pedindo visualização (ex.: "monte um gráfico de vendas por loja"). Deve aparecer um card com o gráfico desenhado na própria bolha.
+3. Pelo `correlation_id` da execução, a ordem esperada no log é: `task` (especialista busca dado) → `dyn_sql` (query real) → `generate_a2ui` (supervisor desenha) → `render_a2ui` (frontend consome o resultado).
+
+### Como habilitar o transporte no host (Superfície A)
+
+O bloco `ag_ui.generative` no YAML **não é suficiente sozinho** para o chat embutível desenhar — a tela host também precisa ligar o transporte SSE opt-in na configuração do componente:
+
+```javascript
+const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
+  mode: 'deepagent',          // obrigatório: só deepagent ativa o transporte A2UI
+  chatRenderer: 'jspuro',     // precisa bater com o chat_renderer do YAML
+  agUiSseTransport: true,     // opt-in explícito — sem isso, segue no síncrono de sempre
+  // ... demais configs (yaml, email, apiKey) ...
+});
+```
+
+Esse confinamento é proposital (ver `embeddable-chat-runtime.js::isAgUiSseTransportEnabled`): **qualquer** outra combinação de modo/renderer (Q&A/RAG, workflow, agente simples, ou `chatRenderer: 'copilotkit'` no mesmo componente) permanece no caminho síncrono de sempre, sem tentar o transporte SSE. Sem os três — `mode: 'deepagent'`, `chatRenderer: 'jspuro'` e `agUiSseTransport: true` — o A2UI nunca ativa mesmo com o YAML correto.
+
+Os scripts que a página host precisa carregar estão na seção "Como carregar os scripts" mais abaixo.
 
 ---
 
 ## Parte 2 — Como o painel de capacidades funciona (CapabilitiesSpec)
 
-Quando o usuário pergunta "o que você faz?" ou "sobre o que posso te perguntar?", um supervisor DeepAgent automaticamente responde com um painel visual de capacidades — cards com grupos de assuntos e chips clicáveis de perguntas-exemplo.
+Quando o usuário pergunta "o que você faz?" ou "sobre o que posso te perguntar?", um supervisor DeepAgent responde automaticamente com um painel visual de capacidades — cards com grupos de assuntos e chips clicáveis de perguntas-exemplo. **Este mecanismo é independente do A2UI** — não depende do bloco `ag_ui.generative` nem do transporte SSE.
 
-Isso acontece porque a tool builtin `descrever_capacidades` é **auto-injetada em todo supervisor DeepAgent**. Você não precisa configurar nada. Basta ter um agente do tipo DeepAgent.
+Isso acontece porque a tool builtin `descrever_capacidades` é auto-injetada em todo supervisor DeepAgent. O painel lê os subagentes declarados em `multi_agents[].agents[]` do YAML e monta os cards a partir das descrições amigáveis de cada subagente — por isso a qualidade do painel depende da qualidade dos campos `name` e `description` dos seus subagentes.
 
-O painel lê os subagentes declarados em `multi_agents[]` do YAML e monta os cards a partir das descrições amigáveis de cada subagente. Por isso, a qualidade do painel depende da qualidade dos campos `name` e `description` dos seus subagentes — escreva-os como se fosse para um usuário leigo, não para um desenvolvedor.
-
-O painel **nunca** expõe nomes internos de tool, ID de subagente, SQL ou qualquer dado técnico. Um validador no backend barra qualquer vazamento antes de emitir o spec.
+O painel nunca expõe nome interno de tool, id de subagente, SQL ou qualquer dado técnico; um validador no backend barra vazamento antes de emitir o spec.
 
 ---
 
-## Parte 3 — Que tipos de componentes visuais existem
+## Parte 3 — O catálogo de componentes A2UI (renderer `jspuro`)
 
-### Os três specs reconhecidos
+O renderer nativo do chat embutível (`ag-ui-a2ui-surface-renderer.js`) é **fail-closed com um catálogo fechado de 8 componentes**. A superfície inteira só é desenhada quando toda a árvore de componentes é reconhecida; qualquer componente fora da lista, ou envelope malformado, faz o componente inteiro cair em texto — nunca desenha "pela metade".
 
-A plataforma reconhece três tipos de "spec" AG-UI no caminho do chat embutível:
-
-| Spec | Nome técnico interno | O que renderiza |
+| Componente | Categoria | O que é |
 |---|---|---|
-| Painel de capacidades | `capabilities` | Título + cards de grupos de assuntos + chips clicáveis de perguntas |
-| Dashboard dinâmico | `dashboard` | KPIs, gráficos (barra, linha, rosca), tabela, ranking, alert, timeline, insight_card |
-| Interface genérica governada | `uiSpec` | Delega ao renderizador oficial de UISpec (table, kpi, insight_card) |
+| `Card` | layout | contêiner visual com borda/agrupamento |
+| `Column` | layout | empilha filhos verticalmente |
+| `Row` | layout | organiza filhos lado a lado |
+| `Text` | conteúdo | texto simples |
+| `Divider` | conteúdo | linha separadora |
+| `BarChart` | gráfico | gráfico de barras (via ChartAdapter + ApexCharts) |
+| `LineChart` | gráfico | gráfico de linha (via ChartAdapter + ApexCharts) |
+| `DataTable` | conteúdo | tabela com linhas e colunas |
 
-### Widgets do DashboardSpec (confirmados no código)
+Os gráficos (`BarChart`/`LineChart`) reaproveitam a mesma **porta neutra de gráfico** (`ChartAdapter`, `ag-ui-chart-adapter.js`) usada por outras superfícies AG-UI da plataforma — o renderer A2UI não depende diretamente do ApexCharts; se o adapter concreto não estiver carregado, o gráfico simplesmente não valida, e a superfície cai em texto (nunca quebra a tela).
 
-Os seguintes tipos de widget estão registrados e são reconhecidos pelo renderer:
+O array `components` do bloco `ag_ui.generative.a2ui_schema` no YAML declara **quais desses componentes o supervisor pode usar** — normalmente você declara todos os 8, como no demo, mas pode restringir a um subconjunto se quiser limitar o vocabulário visual daquele agente.
 
-- `kpi` — número de destaque (ex.: total de vendas R$ 1,2M)
-- `line_chart` — gráfico de linha (ex.: evolução de vendas por mês)
-- `bar_chart` — gráfico de barras (ex.: vendas por loja)
-- `donut_chart` — gráfico de rosca / pizza (ex.: mix de categorias)
-- `table` — tabela com linhas e colunas
-- `insight_card` — card de texto analítico (interpretação de um número)
-- `alert` — destaque de alerta ou aviso
-- `timeline` — sequência de eventos no tempo
-- `ranking` — lista ordenada (ex.: top 5 produtos)
-
-Gráficos (`line_chart`, `bar_chart`, `donut_chart`) são renderizados com **ApexCharts** quando o adapter está carregado na página. Se o vendor não estiver presente, o widget cai em um placeholder estático — o restante do dashboard continua funcionando. Isso é por design (falha fechada, nunca quebra a tela).
-
-### Componentes do UISpec (confirmados no código)
-
-- `table`
-- `kpi`
-- `insight_card`
+> **Diferença entre parser e renderer:** o parser de runtime (backend) que lê o YAML é **permissivo** — aceita qualquer nome de componente não vazio, porque quem decide o vocabulário renderizável de verdade é o **frontend**. Declarar no YAML um nome fora dos 8 acima não quebra o parse, mas a IA nunca vai conseguir desenhá-lo de fato (o renderer recusa e cai em texto).
 
 ---
 
 ## Parte 4 — Como dar bind em campos da tela e mandar junto com a pergunta
 
-"Bind" aqui significa: quando o usuário digitar uma pergunta e apertar Enviar, a plataforma envia ao backend não só a pergunta digitada, mas também o contexto da tela — por exemplo, o projeto aberto, os arquivos marcados, ou o período selecionado. O usuário vê a pergunta limpa na bolha; o agente recebe a pergunta + contexto enriquecido.
-
-Esse mecanismo existe, é estável e funciona **sem mexer no componente e sem mexer no YAML**.
+"Bind" aqui significa: quando o usuário digitar uma pergunta e apertar Enviar, a plataforma envia ao backend não só a pergunta digitada, mas também o contexto da tela — por exemplo, o projeto aberto, os arquivos marcados, ou o período selecionado. O usuário vê a pergunta limpa na bolha; o agente recebe a pergunta + contexto enriquecido. Este mecanismo é independente do A2UI e funciona em qualquer modo do componente.
 
 ### O hook `buildPayloadText`
 
@@ -220,13 +190,7 @@ A bolha exibe `perguntaDigitada`. O backend recebe o texto completo com o contex
 
 ### Exemplo real: tela de projetos DNIT
 
-A tela `app/ui/static/js/gesdoc-project-detail.js` usa exatamente esse hook. Quando o usuário faz uma pergunta na aba de chat de um projeto DNIT, o componente enriquece automaticamente o payload com:
-
-- o título do projeto aberto;
-- os arquivos marcados pelo usuário na lista de documentos;
-- trechos de contexto selecionados.
-
-O código relevante (linhas 1483, 1572-1614 do arquivo):
+A tela `app/ui/static/js/gesdoc-project-detail.js` usa exatamente esse hook. Quando o usuário faz uma pergunta na aba de chat de um projeto DNIT, o componente enriquece automaticamente o payload com o título do projeto aberto, os arquivos marcados pelo usuário na lista de documentos e trechos de contexto selecionados:
 
 ```javascript
 // registro do hook na criação do componente (gesdoc-project-detail.js ~L1483)
@@ -241,7 +205,7 @@ chatComporPayloadText(pergunta) {
 }
 ```
 
-O `_chatContextoSessao` é montado previamente pela tela com título do projeto, arquivos e trechos. O usuário não vê esse contexto na bolha — ele aparece apenas no log interno com o `correlation_id`, para auditoria.
+O `_chatContextoSessao` é montado previamente pela tela. O usuário não vê esse contexto na bolha — ele aparece apenas no log interno com o `correlation_id`, para auditoria.
 
 ### Alternativa por chamada: `payloadText` direto
 
@@ -257,200 +221,153 @@ A bolha exibe "Qual o status do contrato?". O backend recebe o texto completo.
 
 ---
 
-## Parte 5 — Como expandir para fazer mais
+## Parte 5 — Como expandir
 
-### O caminho genérico `multi_agents[].ag_ui.ui_specs`
+### Eixo 1 — Trocar de renderer: `jspuro` × `copilotkit`
 
-Existe na plataforma um campo `ag_ui.ui_specs` nos modelos internos (AST, validators, compilação) que permite declarar specs de interface por subagente diretamente no YAML. Porém, ao verificar o repositório, **nenhum arquivo YAML no projeto usa esse campo hoje** — está implementado no código mas não exercitado por nenhum exemplo real. Se quiser explorar esse caminho, entre em contato com o time de plataforma para entender o contrato atual; não há exemplo documentado para copiar.
+`chat_renderer` no bloco `ag_ui.generative` escolhe **quem desenha** o envelope A2UI:
 
-O caminho comprovado hoje é o `response_format` (Parte 1 deste tutorial).
+- **`jspuro`**: o renderer nativo descrito na Parte 3, embutido no componente `PrometeuEmbeddableChatRuntime`. Catálogo fechado de 8 componentes, fail-closed.
+- **`copilotkit`**: a rota de compatibilidade `POST /ag-ui/copilotkit/runs` repassa o envelope A2UI **sem filtro** para um cliente React que usa o SDK oficial CopilotKit (`@ag-ui/a2ui-middleware`, já embutido no runtime deles). Use quando o consumidor final é uma aplicação React que já integra CopilotKit, em vez do chat embutível JS puro desta plataforma.
 
-### A Superfície B: experiências operacionais dedicadas
+O valor de `chat_renderer` não muda o que o supervisor gera (o envelope A2UI é o mesmo); ele documenta e sinaliza qual frontend é o consumidor esperado.
 
-Para criar uma tela operacional completa — com painel lateral de contexto, timeline de eventos em tempo real, botões rápidos de ação, múltiplas capabilities encadeadas — o caminho é a Superfície B: `POST /ag-ui/runs` com SSE.
+### Eixo 2 — Restringir ou ampliar o vocabulário visual
 
-Essa superfície tem:
-- um capability pack no backend definindo quais consultas e ações são permitidas;
-- um adapter que recebe a requisição e emite eventos padronizados;
-- um cliente SSE no frontend (`ag-ui-client.js`) que recebe e aplica cada evento;
-- um sidecar visual (`ag-ui-sidecar-chat.js`) com painel lateral e histórico.
+Edite a lista `a2ui_schema.components` do YAML para conter só o subconjunto dos 8 componentes que faz sentido para aquele agente. Isso não muda o catálogo do renderer (que continua fixo), apenas o que você **autoriza** o supervisor a escolher para aquele domínio.
 
-Os diagramas abaixo mostram o fluxo completo da Superfície B.
+### Eixo 3 — Adicionar um componente novo ao catálogo (requer código)
 
-#### Diagrama 1 — Fluxo macro da Superfície B
+O catálogo de 8 componentes é fechado por decisão de segurança — não é configurável só por YAML. Ampliá-lo é evolução de código: é preciso estender `SUPPORTED_COMPONENTS` e a lógica de render em `app/ui/static/js/shared/ag-ui-a2ui-surface-renderer.js` (frontend), e — se o novo componente for um gráfico — também o mapeamento de tipo em `app/ui/static/js/shared/ag-ui-chart-adapter.js`. O parser de runtime (`ag_ui_generative_config.py`) já é permissivo e não precisa mudar.
 
-![Fluxo macro AG-UI Superfície B](../assets/diagrams/docs-tutorial-101-generative-ui-diagrama-01.svg)
+### Eixo 4 — Superfície B: telas operacionais dedicadas
 
-O operador abre a tela, monta contexto e aciona o envio. A página monta o payload e faz `POST /ag-ui/runs`. O router valida permissão e o orquestrador emite `RUN_STARTED`. O adapter decide o caminho (capability fixa com `dyn_sql` aprovado, ou `dashboard_dynamic` com `DashboardSpec`). Os eventos chegam pelo stream SSE e o cliente os aplica no store. O sidecar atualiza a timeline e a página exibe o resultado.
-
-#### Diagrama 2 — Sequência de eventos (Superfície B)
-
-![Sequência de eventos AG-UI](../assets/diagrams/docs-tutorial-101-generative-ui-diagrama-02.svg)
-
-Detalhe da troca de eventos entre frontend e backend nos dois ramos: capability fixa (STEP_STARTED, TOOL_CALL_*, STATE_SNAPSHOT, TEXT_MESSAGE, STEP_FINISHED) e dashboard_dynamic (CUSTOM spec.started, STATE_SNAPSHOT, CUSTOM spec.validated, STATE_DELTA, CUSTOM widget.added, CUSTOM render.ready).
-
-#### Diagrama 3 — Componentes do backend (Superfície B)
-
-![Componentes backend AG-UI](../assets/diagrams/docs-tutorial-101-generative-ui-diagrama-03.svg)
-
-Mapa das camadas: entry points (router), orquestração, agents/graphs (YAML), tools e integrações (adapter, dyn_sql, materialização), contratos (schemas Pydantic), dados e UI (banco, ag-ui-client, sidecar, dashboard-dinamico).
-
-#### Diagrama 4 — Navegação entre telas (Superfície B, demo varejo)
-
-![Navegação telas AG-UI varejo](../assets/diagrams/docs-tutorial-101-generative-ui-diagrama-04.svg)
-
-Hub de varejo com 4 telas (Vendas, Checkout, Catálogo, Dashboard), todas usando o mesmo `ag-ui-client.js` e chegando ao mesmo orquestrador backend.
-
-#### Diagrama 5 — Governança de ponta a ponta
-
-![Governança AG-UI ponta a ponta](../assets/diagrams/docs-tutorial-101-generative-ui-diagrama-05.svg)
-
-Mostra os três domínios de governança: YAML define supervisor e tools; validador bloqueia HTML/JS/SQL livre; browser não cria `correlation_id` (ele vem do backend). Princípio central: a segurança é construída nas camadas e não depende de boa vontade do cliente.
-
-> **Importante:** todos os 5 diagramas acima descrevem a **Superfície B** (`/ag-ui/runs`, SSE, adapter). Eles **não** cobrem a Superfície A (render no chat embutível via `response_format`). Na Superfície A não há stream, não há adapter dedicado e não há sidecar — o frontend detecta o spec no corpo da resposta HTTP normal.
-
-Para documentação técnica completa da Superfície B: [README-TECNICO-AG-UI.md](../tecnico/README-TECNICO-AG-UI.md).
+Para uma experiência fora do chat — painel lateral, timeline de eventos, múltiplas capabilities de negócio encadeadas — o caminho é um capability pack dedicado consumindo `POST /ag-ui/runs` diretamente (Superfície B da tabela acima), não o mecanismo `ag_ui.generative` deste tutorial. Documentação técnica completa: [README-TECNICO-AG-UI.md](../tecnico/README-TECNICO-AG-UI.md).
 
 ---
 
 ## Como carregar os scripts numa tela host nova (Superfície A)
 
-Se você vai criar uma nova página HTML e quer que ela suporte render AG-UI no chat embutível, carregue os scripts **nesta ordem**, antes do `embeddable-chat-runtime.js`:
+Se você vai criar uma página HTML nova e quer que ela suporte A2UI no chat embutível, carregue os scripts **nesta ordem** (ordem real comprovada em `ui-embeddable-chat-test.html`, a bancada de testes do componente):
 
 ```html
-<!-- 1. vendor da lib de gráfico (necessário para widgets de gráfico) -->
+<!-- 1. ApexCharts (vendor) + porta neutra de gráfico. Dependência OPCIONAL: sem
+     ela, gráficos não validam e a superfície cai em texto. -->
 <script src="/ui/static/js/vendor/apexcharts.min.js?v=5.14.0"></script>
-<!-- 2. porta neutra de gráfico -->
 <script src="/ui/static/js/shared/ag-ui-chart-adapter.js"></script>
-<!-- 3. adapter ApexCharts (se auto-registra ao carregar) -->
 <script src="/ui/static/js/shared/ag-ui-chart-adapter-apexcharts.js"></script>
-<!-- 4. detecção de spec + registry de renderizadores + renderer de Capacidades -->
+
+<!-- 2. Renderer A2UI (fail-closed, catálogo fechado de 8 componentes). -->
+<script src="/ui/static/js/shared/ag-ui-a2ui-surface-renderer.js"></script>
+
+<!-- 3. Detecção de spec (CapabilitiesSpec + A2UI) + registry de renderizadores. -->
 <script src="/ui/static/js/shared/embeddable-chat-spec-runtime.js"></script>
-<!-- 5. bridge ESM: liga os renderizadores e publica em window.PrometeuEmbeddableChatSpecRuntime -->
+<!-- 4. Bridge ESM: liga os renderizadores (inclusive A2UI) e publica em window. -->
 <script type="module" src="/ui/static/js/shared/ag-ui-spec-render-bridge.js"></script>
-<!-- 6. por fim, o componente de chat -->
+
+<!-- 5. Transporte SSE opt-in (só ativa em mode:'deepagent' + chatRenderer:'jspuro'
+     + agUiSseTransport:true; demais combinações seguem no síncrono de sempre). -->
+<script src="/ui/static/js/shared/embeddable-chat-ag-ui-transport.js"></script>
+<script type="module" src="/ui/static/js/shared/ag-ui-embeddable-transport-bridge.js"></script>
+
+<!-- 6. Por fim, o componente de chat. -->
 <script src="/ui/static/js/shared/embeddable-chat-runtime.js"></script>
 ```
 
-A ordem importa porque cada script depende do anterior. O bridge (passo 5) é `type="module"` — executa de forma diferida, mas o componente resolve o runtime de spec de forma lazy no momento de renderizar, então isso não causa problema.
+A ordem importa porque cada script depende do anterior (o bridge de passo 4 lê `window.AgUiA2uiSurfaceRenderer` e `window.AgUiChartAdapter`, publicados pelos passos 1-2). O `renderStructured` do componente vem **ligado por padrão**; para forçar texto puro numa host específica, passe `renderStructured: false` na configuração.
 
-O `renderStructured` vem **ligado por padrão**. Se quiser forçar 100% texto numa host específica, passe `renderStructured: false` na configuração.
-
-O WebChat v3 (`ui-webchat-v3.html`) já inclui tudo isso. Se você parte dele, não precisa repetir.
+O WebChat v3 (`ui-webchat-v3.html`) já inclui tudo isso — se você parte dele, não precisa repetir.
 
 ---
 
-## Por que às vezes aparece texto em vez do dashboard
+## Por que às vezes aparece texto em vez do gráfico
 
-O componente tem um **fallback duro**: se qualquer coisa der errada no render estruturado, ele mostra o texto/JSON da resposta em vez de travar. Isso é por design — nunca piora a experiência, nunca quebra a tela.
+O componente tem um **fallback duro**: se qualquer coisa der errada no render estruturado, ele mostra o texto/JSON bruto da resposta em vez de travar. Isso é por design.
 
-Razões para cair no fallback:
+Razões reais para isso acontecer:
 
-1. **Spec não reconhecido:** o agente devolveu algo que não tem `version: "1.0"` + `widgets`, nem os outros marcadores de spec. Verifique o prompt do subagente e o `response_format`.
-2. **JSON com texto extra:** o agente devolveu markdown com o JSON dentro (ex.: ````json ... ````). O prompt do subagente deve proibir isso explicitamente: "Devolva APENAS o JSON, sem texto antes ou depois, sem marcação markdown."
-3. **`response_format` com schema errado:** se o esquema não corresponde ao contrato `DashboardSpec 1.0`, a LLM pode devolver JSON inválido que o validador rejeita. Compare com o esquema do arquivo real.
-4. **Scripts fora de ordem ou ausentes:** se `ag-ui-spec-render-bridge.js` não foi carregado ou veio antes do `embeddable-chat-spec-runtime.js`, o runtime não está disponível e o componente renderiza texto. Verifique o console do navegador — o WebChat v3 lança erro explícito nesses casos.
-5. **ApexCharts ausente:** só os widgets de gráfico caem em placeholder; KPIs, tabelas e cards continuam renderizando. Se só os gráficos sumiram, o vendor não foi carregado.
-6. **`renderStructured: false`:** foi desligado explicitamente na configuração. Verifique a config da host.
-7. **Modo errado:** o componente em modo `qa` (pergunta-resposta sobre documentos) raramente produz dashboard; dashboard é mais natural em modo `deepagent`. Verifique o modo configurado no YAML.
+1. **O usuário não pediu visualização.** Comportamento correto e esperado — o contrato de saída do supervisor (Passo 3) só chama `generate_a2ui` quando o pedido é de visualização.
+2. **YAML sem o bloco `ag_ui.generative`.** Sem o bloco, a tool nem existe para o supervisor — sempre texto.
+3. **Transporte SSE não habilitado no host.** Sem `agUiSseTransport: true` + `mode: 'deepagent'` + `chatRenderer: 'jspuro'` na configuração do componente, o chat segue no caminho síncrono de sempre e nunca vê o envelope A2UI.
+4. **Componente fora do catálogo dos 8, ou envelope malformado.** O renderer é fail-closed: qualquer parte não reconhecida derruba a superfície inteira para texto.
+5. **Dados que a LLM não tinha no histórico.** O prompt proíbe inventar números; se o especialista não trouxe dado suficiente, o supervisor tende a responder em texto em vez de desenhar com dados incompletos.
+6. **Scripts fora de ordem ou ausentes.** Se `ag-ui-spec-render-bridge.js` ou `ag-ui-embeddable-transport-bridge.js` não carregaram (ou vieram fora de ordem), o runtime de spec ou o transporte não existem em `window` e o componente cai em texto. Verifique o console do navegador.
+7. **`renderStructured: false`** foi passado explicitamente na configuração do host.
+
+Para confirmar pelo log: a ordem esperada de eventos numa execução com gráfico é `task` → `dyn_sql` → `generate_a2ui` → `render_a2ui`, pelo `correlation_id` daquela pergunta.
 
 ---
 
-## FAQ do estagiário
+## FAQ 101
 
-**P: Preciso mexer no código da plataforma para usar AG-UI?**
-R: Não, para os caminhos suportados. Dashboard via `response_format` é 100% YAML. Painel de capacidades é automático em supervisores DeepAgent. Para embutir numa tela nova, você configura a página HTML (carrega os scripts) — isso é configuração de página, não alteração do core.
+**P: Preciso mexer no código da plataforma para usar A2UI?**
+R: Não. É um bloco YAML (`ag_ui.generative`) no supervisor DeepAgent + três flags na configuração do componente de chat (`mode`, `chatRenderer`, `agUiSseTransport`). Nenhuma alteração no core.
 
-**P: Basta o YAML? Como?**
-R: Sim, para o dashboard. Você adiciona um subagente dentro do `multi_agents[]` do seu supervisor DeepAgent, escreve o prompt pedindo JSON puro, lista as tools de consulta de dados (`dyn_sql`) e adiciona o `response_format` com o esquema `DashboardSpec 1.0`. O frontend detecta e renderiza automaticamente.
+**P: O A2UI substitui algum recurso antigo de dashboard?**
+R: Sim — este é o único mecanismo de generative UI no chat hoje. Um mecanismo anterior, baseado num subagente de saída dedicado injetado por uma flag de middleware e num contrato de spec de dashboard versionado, existiu no passado e foi removido do código; qualquer documentação ou exemplo que ainda descreva esse fluxo está desatualizado.
 
-**P: Preciso mexer no componente de chat (`embeddable-chat-runtime.js`)?**
-R: Não. O componente já suporta render AG-UI e vem com `renderStructured: true` por padrão. Você não edita o componente — você apenas configura a tela host (scripts, YAML, buildPayloadText se precisar).
+**P: O supervisor precisa de um subagente especial para desenhar?**
+R: Não. `generate_a2ui` é bindada **diretamente no supervisor**, não num subagente separado. Os subagentes especialistas continuam só buscando dado (via `dyn_sql`); quem desenha é sempre o supervisor.
 
-**P: Além de gráficos, o que mais dá para mostrar?**
-R: No DashboardSpec: kpi, line_chart, bar_chart, donut_chart, table, insight_card, alert, timeline, ranking. No CapabilitiesSpec: cards de grupos + chips de perguntas clicáveis. No UISpec: table, kpi, insight_card.
+**P: Por que a mesma pergunta às vezes vem com gráfico e às vezes só texto?**
+R: Porque a decisão de desenhar depende do **pedido do usuário**, nunca de um prompt fixo. Peça explicitamente "monte um gráfico"/"mostre num dashboard" para acionar `generate_a2ui`; pergunta neutra vem em texto.
 
-**P: Como dar bind em campos da tela e mandar junto com a pergunta?**
-R: Via hook `buildPayloadText` passado na criação do componente. Sua função recebe o texto digitado e devolve o texto enriquecido. O componente envia o enriquecido ao backend e mostra o original na bolha. Veja a Parte 4 deste tutorial.
+**P: Quais componentes visuais existem hoje?**
+R: 8, fixos: `Card`, `Column`, `Row`, `Text`, `Divider`, `BarChart`, `LineChart`, `DataTable` (Parte 3). A lista `a2ui_schema.components` do YAML restringe quais desses o supervisor pode usar.
+
+**P: `catalog_id` precisa apontar para uma URL real que eu publico?**
+R: Não. É só um rótulo/identificador estável — ninguém faz fetch dele. O frontend só usa esse valor para casar com o mesmo catálogo do lado do YAML.
+
+**P: O parser do YAML valida os nomes dos componentes contra os 8 do renderer?**
+R: Não — o parser de runtime (`ag_ui_generative_config.py`) é permissivo (aceita qualquer nome não vazio). Quem de fato restringe ao catálogo de 8 é o **renderer no frontend**; declarar um nome fora da lista no YAML não quebra o parse, mas a IA nunca vai conseguir desenhá-lo.
+
+**P: `chat_renderer: jspuro` e `chat_renderer: copilotkit` mudam o que a IA gera?**
+R: Não. O envelope A2UI que o supervisor produz é o mesmo nos dois casos. O campo só sinaliza/documenta qual frontend deve consumir — `jspuro` para o renderer nativo desta plataforma, `copilotkit` para um cliente React com o SDK CopilotKit consumindo `/ag-ui/copilotkit/runs`.
+
+**P: Preciso ligar `middlewares.subagents.enabled: true` para o A2UI funcionar?**
+R: Indiretamente sim, mas não por causa do A2UI em si: sem subagentes especialistas habilitados, o supervisor não tem como delegar a busca de dados via `task`, e sem dado real no histórico o `generate_a2ui` não tem o que desenhar. O bind da tool `generate_a2ui` em si só depende do bloco `ag_ui.generative` existir.
+
+**P: Como dar "bind" nos campos da minha tela para mandar contexto junto com a pergunta?**
+R: Via hook `buildPayloadText` (Parte 4). Independente do A2UI — funciona em qualquer modo do componente.
 
 **P: Como testo se está funcionando?**
-R: Abra o WebChat v3 (`/ui/static/ui-webchat-v3.html`), configure o YAML do agente com o subagente de dashboard, faça uma pergunta que acione o subagente (ex.: "mostre o dashboard"). Se aparecer UI visual (cards, gráficos), funcionou. Se aparecer texto ou JSON, leia a seção "Por que às vezes aparece texto" acima e verifique o console do navegador por erros de script.
+R: Abra a bancada `ui-embeddable-chat-test.html` (ou o WebChat v3) com um YAML que tenha o bloco `ag_ui.generative`, `mode: 'deepagent'`, `chatRenderer: 'jspuro'` e `agUiSseTransport: true`. Peça uma pergunta sem visualização (deve vir texto) e uma pedindo gráfico (deve desenhar). Se algo falhar, veja "Por que às vezes aparece texto" acima e confira o console do navegador.
 
-**P: Por que às vezes vem texto em vez do gráfico?**
-R: Porque o fallback duro está funcionando como esperado. O componente nunca trava — se não conseguir renderizar o spec (por JSON inválido, schema errado, scripts fora de ordem, `renderStructured: false`, ou agente que não retornou spec), ele mostra texto. Diagnose verificando: (a) a resposta bruta no log com o `correlation_id`, (b) se o JSON bate com o esquema DashboardSpec, (c) se os scripts foram carregados na ordem certa (console do navegador).
-
-**P: Como descubro os widgets disponíveis?**
-R: A lista canônica está na Parte 3 deste tutorial (confirmada lendo os arquivos `ag-ui-dashboard-renderer.js` e `ag-ui-dashboard-validator.js`). Para o esquema completo do contrato DashboardSpec 1.0, veja `src/api/schemas/ag_ui_dashboard_models.py` e o exemplo em `app/yaml/rag-config-pdv-vendas-demo.yaml`.
-
-**P: O agente precisa ser DeepAgent para usar AG-UI?**
-R: Para o CapabilitiesSpec (painel automático de capacidades): sim, porque a tool `descrever_capacidades` é auto-injetada só em supervisores DeepAgent. Para o DashboardSpec via `response_format`: tecnicamente qualquer agente com subagentes configurados pode usar, mas o modelo natural é DeepAgent com subagente especializado. Para a Superfície B (`/ag-ui/runs`): o `executionKind` é definido no capability pack, que pode ser `retail_demo`, `deepagent`, `workflow` ou outro.
+**P: O A2UI funciona com Q&A (RAG) ou Workflow?**
+R: Não. O transporte SSE só ativa com `mode: 'deepagent'` — Q&A/RAG, workflow e agente simples continuam sempre no caminho síncrono de sempre, mesmo que o YAML tenha (por engano) um bloco `ag_ui.generative` em outro contexto.
 
 **P: Qual a diferença entre a Superfície A e a Superfície B na prática?**
-R: Superfície A = chat normal com resposta que vira UI. Superfície B = tela dedicada com streaming de eventos em tempo real. Para um chat corporativo simples com dashboard, use A. Para uma tela de cockpit operacional com timeline, múltiplos contextos visuais e ações rápidas, use B.
-
-**P: Posso ter dashboard E texto na mesma conversa?**
-R: Sim. Cada mensagem do assistente é avaliada individualmente. Se o subagente de dashboard responde, você vê dashboard. Se o subagente de texto responde, você vê texto. A conversa mistura os dois naturalmente.
+R: Superfície A = chat embutível que também sabe desenhar (este tutorial). Superfície B = tela dedicada fora do chat, consumindo capability packs próprios (ex.: `retail_demo`) diretamente em `/ag-ui/runs`. São mecanismos independentes; um YAML pode ter os dois, mas eles não se misturam.
 
 **P: O que é `correlation_id` e por que aparece nos logs?**
-R: É um identificador único gerado pelo backend para cada envio. Ele serve para rastrear o que aconteceu naquela requisição — você consegue abrir o log exato daquela interação usando `python -m src.log_analyzer <correlation_id>`. Se o agente respondeu de forma estranha, você pega o `correlation_id` do componente (`chat.obterEstadoAtual().correlationId`) e abre o log para investigar.
+R: É o identificador único gerado pelo backend para cada envio, usado para reconstruir o que aconteceu numa execução (`python -m src.log_analyzer analyze --correlation-id <id>`). Pegue-o em `chat.obterEstadoAtual().correlationId` quando precisar investigar por que um gráfico não apareceu.
 
----
-
-## As 10 dúvidas de um estagiário que vai criar um agente AG-UI
-
-**1. Preciso mexer no código-fonte da plataforma para fazer dashboard funcionar?**
-Não. O código da plataforma já está pronto. Você só escreve YAML (subagente com `response_format`) e, se for criar uma página nova, carrega os scripts na ordem certa. O core não é modificado.
-
-**2. Só YAML mesmo? Qual parte do YAML?**
-Sim, só YAML para o dashboard. A parte que importa é a seção `multi_agents` do seu supervisor DeepAgent. Você adiciona um subagente com `response_format` apontando para o esquema DashboardSpec 1.0. O supervisor envia as perguntas de dashboard para esse subagente, que responde com o JSON que o frontend desenha.
-
-**3. Preciso mexer no componente de chat?**
-Não. O componente `PrometeuEmbeddableChatRuntime` já tem o render AG-UI ligado por padrão (`renderStructured: true`). Você não edita o componente; você configura a tela host onde ele vive.
-
-**4. Como faço para que a LLM não quebre o contrato e devolva texto errado?**
-No prompt do subagente, seja explícito: "Devolva APENAS o JSON do DashboardSpec 1.0. Sem texto antes, sem texto depois, sem marcação markdown, sem cercas de código." E garanta que o `response_format` no YAML tenha o `const: "1.0"` no campo `version` — isso força a LLM a usar exatamente essa versão.
-
-**5. Além de gráficos, posso mostrar KPIs e tabelas?**
-Sim. O DashboardSpec suporta `kpi`, `table`, `ranking`, `insight_card`, `alert`, `timeline`, `line_chart`, `bar_chart` e `donut_chart`. Uma resposta de dashboard pode misturar widgets diferentes numa mesma grade. Você não é obrigado a ter gráficos — pode ser só KPIs e tabela.
-
-**6. Como dar "bind" nos campos da minha tela para mandar contexto junto com a pergunta?**
-Via hook `buildPayloadText`. Ao criar o componente na sua página host, você passa uma função que recebe o texto digitado e devolve o texto enriquecido com o contexto da sua tela. O componente envia o enriquecido ao backend e mostra o original na bolha. Exemplo real: tela DNIT enriquece cada pergunta com o projeto aberto e os arquivos marcados.
-
-**7. Como testo localmente antes de colocar em produção?**
-Abra `http://127.0.0.1:5555/ui/static/ui-webchat-v3.html`, carregue o YAML do seu agente (ou cole diretamente no campo), faça uma pergunta que acione o subagente de dashboard. Observe: se aparecer UI visual, funcionou. Se aparecer texto, abra o DevTools (F12) → Console para ver erros de script, e pegue o `correlation_id` do `obterEstadoAtual()` para investigar o log com `python -m src.log_analyzer`.
-
-**8. Por que às vezes aparece texto JSON cru em vez do dashboard?**
-Porque o fallback funcionou — o componente não conseguiu renderizar e caiu no texto. Causas mais comuns: (a) o agente devolveu JSON com texto antes/depois; (b) o esquema está errado e o validador rejeitou; (c) algum script não foi carregado ou está fora de ordem. Veja a seção "Por que às vezes aparece texto" acima.
-
-**9. Precisa que o agente seja do tipo DeepAgent?**
-Para o CapabilitiesSpec automático: sim. Para o DashboardSpec via `response_format`: o modelo natural é DeepAgent com subagente especializado, mas qualquer agente que consiga devolver o JSON correto funciona. Para a Superfície B (`/ag-ui/runs`): depende do `executionKind` configurado no capability pack.
-
-**10. Se eu errar o `response_format` e a LLM devolver JSON diferente do esperado, a tela vai quebrar?**
-Não. O componente tem fallback duro — em qualquer falha de validação ou renderização, ele mostra o texto/JSON bruto em vez de travar ou mostrar erro genérico. O pior caso é o usuário ver o JSON na bolha. Isso é ruim visualmente, mas não quebra a tela nem causa erro.
+**P: Existe algum limite de quantas vezes o supervisor chama `generate_a2ui` numa resposta?**
+R: O prompt instrui explicitamente **uma única chamada** por resposta, para evitar redesenhos repetidos (thrashing) — não é um limite técnico rígido da tool, é uma regra de contrato reforçada no prompt.
 
 ---
 
 ## Erros a evitar (pegadinhas)
 
-**Esquecer o bridge ESM ou colocar fora de ordem.** Sem `ag-ui-spec-render-bridge.js`, o runtime não existe em `window.PrometeuEmbeddableChatSpecRuntime`. O componente renderiza texto sem aviso. O WebChat v3 tem uma checagem que lança erro explícito (`_exigirSpecRuntimeAgUi` em `ui-webchat-v3.js`), mas páginas customizadas não têm esse gate. Sempre carregue na ordem documentada.
+**Confundir "sem bloco YAML" com "bug".** Se `ag_ui.generative` não está no supervisor, o comportamento correto é texto puro sempre — não é falha, é o contrato aditivo por design.
 
-**Esquecer que o bridge é `type="module"`.** Scripts `type="module"` executam de forma diferida. Se você colocar scripts dependentes do bridge antes do `DOMContentLoaded`, podem rodar antes do bridge. O componente lida com isso fazendo resolução lazy — mas se você chamar `setWelcomeCapabilities` imediatamente na criação antes do bridge terminar, o onboarding pode não funcionar. A solução é chamar dentro de um `DOMContentLoaded` ou após o evento `ready` do componente.
+**Esquecer de ligar as 3 flags no host.** O YAML sozinho não é suficiente: sem `mode: 'deepagent'` + `chatRenderer: 'jspuro'` + `agUiSseTransport: true` na configuração do componente, o transporte SSE nunca ativa e o chat nunca vê o envelope A2UI, mesmo com o YAML perfeito.
 
-**`response_format` com schema parcial.** Se o schema que você colocou no YAML não cobre todos os campos obrigatórios do DashboardSpec 1.0 (`version`, `title`, `layout`, `widgets`, `dataSources`, `narrative`, `refreshPolicy`, `safety`), a LLM pode devolver um JSON que passa no `required` do seu schema mas falha no validador da plataforma. Use o exemplo real como base, não recrie do zero.
+**Pedir gráfico e esperar dado que nenhum especialista busca.** Se não existe subagente/tool `dyn_sql` capaz de trazer aquele número, o supervisor não tem histórico suficiente para desenhar — o prompt proíbe inventar dado, então tende a responder em texto.
 
-**Prompt do subagente sem instrução de formato.** Sem dizer explicitamente "devolva APENAS JSON puro", a LLM vai devolver markdown com o JSON dentro (ex.: ` ```json ... ``` `). O detector de spec não consegue parsear isso e o fallback entra. A instrução de formato no prompt é obrigatória, não opcional.
+**Declarar componente fora dos 8 em `a2ui_schema.components`.** O parser aceita, mas o renderer nunca vai conseguir desenhá-lo — a superfície cai em texto na hora H. Use só os 8 nomes da Parte 3.
 
-**Agente sem `tools` de dados.** Um subagente de dashboard que não tem `dyn_sql` configurado não tem como buscar dados reais. Ele pode alucinar números ou devolver um dashboard vazio. Sempre configure as tools de consulta aprovadas antes de ativar o subagente.
+**Misturar `chat_renderer` do YAML com a configuração do host.** Se o YAML diz `chat_renderer: jspuro` mas a tela host configura `chatRenderer: 'copilotkit'` (ou vice-versa), o comportamento não é o esperado — mantenha os dois alinhados.
 
-**Usar `renderStructured: false` acidentalmente.** Se a host page passou `renderStructured: false` (por segurança ou por cópia de outro projeto), o render AG-UI fica desligado e toda resposta vira texto, mesmo que o spec seja perfeito. Verifique a config do componente.
+**Confundir as duas superfícies.** `generate_a2ui` (Superfície A, chat embutível) e capability packs de telas dedicadas (Superfície B) são mecanismos independentes que compartilham o mesmo endpoint (`/ag-ui/runs`), mas não a mesma configuração nem o mesmo propósito.
 
-**Confundir as duas superfícies.** O caminho `response_format` + chat embutível (Superfície A) e o caminho `/ag-ui/runs` + SSE (Superfície B) são independentes. Não tente usar `ag-ui-client.js` ou `ag-ui-sidecar-chat.js` no chat embutível — eles são da Superfície B. Não tente detectar spec da Superfície A no stream SSE — eles são transportes diferentes.
+**Documentação ou exemplo antigo citando `DashboardSpec`, `output_subagent` ou `middlewares.generative_ui_dashboard`.** Esses três nomes descrevem um mecanismo anterior que foi removido do código. Se você encontrar um desses termos em algum material, trate como desatualizado — o mecanismo vigente é o `ag_ui.generative` descrito neste tutorial.
 
 ---
 
 ## Referências cruzadas
 
-- [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md) — detalhe completo do componente, API pública, eventos, HIL, payloadText, messageActions.
-- [README-TECNICO-AG-UI.md](../tecnico/README-TECNICO-AG-UI.md) — referência técnica completa: endpoints, eventos SSE, adapters, capability packs, modelos Pydantic, runtime JS da Superfície B.
+- [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md) — detalhe completo do componente de chat, API pública, eventos, HIL, payloadText, messageActions.
+- [README-TECNICO-AG-UI.md](../tecnico/README-TECNICO-AG-UI.md) — referência técnica completa: endpoints, eventos SSE, adapters, capability packs, wiring backend do A2UI.
 - [README-CONCEITUAL-AG-UI.md](../conceitual/README-CONCEITUAL-AG-UI.md) — visão de produto, conceitos e posicionamento.
-- [GUIA-AG-UI-SDK-TERCEIROS.md](GUIA-AG-UI-SDK-TERCEIROS.md) — integração via SDK para terceiros.
+- [GUIA-AG-UI-SDK-TERCEIROS.md](GUIA-AG-UI-SDK-TERCEIROS.md) — integração via SDK para terceiros (inclusive o caminho `copilotkit`).

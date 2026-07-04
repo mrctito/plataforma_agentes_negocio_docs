@@ -64,23 +64,23 @@ Quando um executionKind não funciona:
 
 ## 6.1. Porta de gráfico `ChartAdapter` (registry + adapter no frontend)
 
-O mesmo padrão registry+adapter do backend reaparece no frontend, na renderização de gráficos do dashboard AG-UI. É uma fronteira hexagonal pequena, mas com contrato real e teste de regressão.
+O mesmo padrão registry+adapter do backend reaparece no frontend, na renderização de gráficos do envelope A2UI do chat embutível (componentes `BarChart`/`LineChart`, ver [README-TECNICO-AG-UI-RUNTIME-COMPARTILHADO-DO-FRONTEND.md](README-TECNICO-AG-UI-RUNTIME-COMPARTILHADO-DO-FRONTEND.md), seção 7.2). É uma fronteira hexagonal pequena, mas com contrato real e teste de regressão.
 
 **Modelo neutro.** `ChartModel` descreve um gráfico independente de lib: `kind` (`bar` | `line` | `pie` | `donut`, conjunto fechado), `series` (`number[]` para série única ou `[{name, data:number[]}]` multi-série), `categories` (`string[]`, sempre texto) e `options` (`{title?, stacked?, height?, colors?}`).
 
 **Porta + registry.** `ag-ui-chart-adapter.js` (UMD, `window.AgUiChartAdapter`) expõe:
 
-- `WIDGET_TYPE_TO_CHART_KIND` — mapa fechado de tipo de widget do DashboardSpec para `kind` neutro: `bar_chart→bar`, `line_chart→line`, `donut_chart→donut`. KPI/tabela/ranking/insight **não** são gráfico de lib e não aparecem aqui;
-- `buildChartModel(widget, theme)` — converte um widget já resolvido (com números em `series`/`categories`, diretos ou no bloco `data`) no `ChartModel`. Sem dados numéricos válidos, devolve `null` e o renderer cai no placeholder (fail-closed);
+- `WIDGET_TYPE_TO_CHART_KIND` — mapa fechado de tipo para `kind` neutro: `bar_chart→bar`, `line_chart→line`, `donut_chart→donut`. O renderer A2UI passa `'bar_chart'`/`'line_chart'` como `widgetType` ao chamar esta porta para os componentes `BarChart`/`LineChart`;
+- `buildChartModel(widget, theme)` — converte dados já resolvidos (números em `series`/`categories`, diretos ou no bloco `data`) no `ChartModel`. Sem dados numéricos válidos, devolve `null` — e, no renderer A2UI, isso derruba a superfície inteira para texto (fail-closed por árvore, não por widget isolado);
 - `setActiveChartAdapter` / `registerChartAdapter` / `getActiveChartAdapter` — registry de slot único do adapter ativo. `registerChartAdapter` só aceita objeto que cumpra a interface mínima (`isAvailable`, `supports`, `render`, `destroy`).
 
 A porta **não importa nenhuma lib de gráfico**. Esse é o invariante que o teste de acoplamento protege.
 
-**Adapter concreto.** `ag-ui-chart-adapter-apexcharts.js` (UMD) é o **único** arquivo que conhece a API do ApexCharts. Mapeia `ChartModel` → opções ApexCharts (`bar/line/pie/donut`) e, ao carregar no browser, **se auto-registra** como adapter ativo via `registerChartAdapter`. Dependência opcional: se `window.ApexCharts` (vendor em `js/vendor/apexcharts.min.js`, v5.14.0) não existir, `isAvailable()` é `false` e o renderer degrada para placeholder/texto sem quebrar.
+**Adapter concreto.** `ag-ui-chart-adapter-apexcharts.js` (UMD) é o **único** arquivo que conhece a API do ApexCharts. Mapeia `ChartModel` → opções ApexCharts (`bar/line/pie/donut`) e, ao carregar no browser, **se auto-registra** como adapter ativo via `registerChartAdapter`. Dependência opcional: se `window.ApexCharts` (vendor em `js/vendor/apexcharts.min.js`, v5.14.0) não existir, `isAvailable()` é `false` e o gráfico não é desenhado (o que, no renderer A2UI, cai a superfície inteira em texto).
 
 **Segurança.** O adapter desliga todo caminho de HTML: `dataLabels`/`tooltip`/`legend`/`labels`/`xaxis` usam texto puro, `legend.formatter` devolve `String(...)` sem markup, `tooltip.custom` é `undefined`, `toolbar` off. O gráfico desenha SVG só de número e texto já validados — não vira vetor de injeção.
 
-**Trocar de lib** = escrever outro adapter implementando a mesma interface e registrá-lo; zero mudança no renderer (`ag-ui-dashboard-renderer.js`, que fala só com `window.AgUiChartAdapter`). A renderização desses gráficos no componente global de chat embutível depende dessa porta — ver o [guia do componente](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md), seção 18.1.
+**Trocar de lib** = escrever outro adapter implementando a mesma interface e registrá-lo; zero mudança no renderer (`ag-ui-a2ui-surface-renderer.js`, que fala só com `window.AgUiChartAdapter`). A renderização desses gráficos no componente global de chat embutível depende dessa porta — ver o [guia do componente](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md), seção 18.1.
 
 ## 7. Evidências no código
 

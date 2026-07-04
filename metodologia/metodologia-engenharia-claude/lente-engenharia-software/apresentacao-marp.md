@@ -257,13 +257,11 @@ uma empresa."
 # O laboratório de metrologia (observabilidade) ⏩
 
 - `analisar-log` — lê os instrumentos (sem corrigir)
-- `validar-log` — calibração do registro (escreveu certo?)
-- `validar-observabilidade` — cobertura de sensores (há registro suficiente?)
 - `corrigir-erros-com-log` — análise de causa raiz (RCA)
 - `testar-cli-log-analyzer` — calibra o próprio instrumento
 
 <!--
-FALA (rápido): "Cinco estações que garantem que o sistema seja diagnosticável. Detalhe fino do analisar-log:
+FALA (rápido): "Três estações que garantem que o sistema seja diagnosticável. Detalhe fino do analisar-log:
 ele valida PARALELISMO REAL por sobreposição temporal — 'a UI disse 5 workers' não prova que 5 rodaram
 juntos."
 -->

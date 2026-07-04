@@ -100,8 +100,8 @@ quase todo trabalho não-trivial.
   - **Hierarquia de verdade absoluta:** código executável > teste > log > plano > doc. Teste verde
     **não** prova fluxo real.
   - **Validação ponta a ponta por tarefa:** cada T1..Tn é conferida individualmente.
-  - **Pode acionar especialistas:** chama `validar-log` e `validar-observabilidade` como evidência
-    subordinada (não terceiriza a decisão).
+  - **Audita a observabilidade diretamente:** confere a escrita local do log e a cobertura diagnóstica
+    do fluxo, conforme `log-instructions.md` (a decisão é sempre dele).
   - **Se reprova, gera inventário de não-entregas e aciona o `planejar`** para um novo plano focado.
 - **Problema que evita:** **falso-verde** chegando à produção; legado não removido; observabilidade
   insuficiente; reuso negligenciado.
@@ -116,7 +116,7 @@ quase todo trabalho não-trivial.
 
 ## 3.2 A defesa especializada — observabilidade (o setor do raio-X)
 
-Cinco agentes que garantem que o sistema seja **diagnosticável**. Giram em torno do `correlation_id` e
+Três agentes que garantem que o sistema seja **diagnosticável**. Giram em torno do `correlation_id` e
 dos logs canônicos.
 
 ### 🔍 `analisar-log` — o OLHEIRO/SCOUT (primeiro sensor)
@@ -128,26 +128,6 @@ sobreposição temporal, não por configuração nominal ("a UI disse 5 workers"
 juntos de verdade").
 - **Evita:** análise manual de log fraca, conclusão por "parece". **Valor:** debug offline com
   evidência estruturada e reprodutível.
-
-### 🧱 `validar-log` — o ZAGUEIRO DE MARCAÇÃO (audita a escrita do log)
-
-Audita se os logs de um escopo seguem o contrato (logger oficial, `correlation_id` preservado,
-`event_name` correto, builders canônicos). Regra de ouro: **falha fechada anti-amostragem** — audita
-**100%** do escopo, não para por "já vi o padrão". Caça `logger.error` dentro de `except` e
-`event_name` ausente.
-- **Evita:** logs "bonitos" que violam o contrato e quebram a análise forense. **Valor:**
-  observabilidade garantida por construção.
-
-### 🧱 `validar-observabilidade` — o ZAGUEIRO CENTRAL (audita a cobertura)
-
-Vai além: valida se **todo o fluxo** está coberto — parâmetros, decisões, ifs, chamadas externas,
-início/fim de processos e jobs, telemetria. A pergunta que ele responde: *"um operador consegue
-reconstruir o que aconteceu, como e por quê, sem abrir o código?"* Também com falha fechada.
-- **Evita:** cobertura parcial com "buracos" no fluxo. **Valor:** debug offline **completo**.
-
-> 🛠️ A divisão `validar-log` × `validar-observabilidade` é cirúrgica: um valida **se o log foi
-> escrito certo** (contrato), o outro valida **se há log suficiente** (cobertura). Dois defeitos
-> diferentes, dois especialistas.
 
 ### 🩺 `corrigir-erros-com-log` — o CIRURGIÃO (resolve a causa raiz)
 
@@ -258,8 +238,6 @@ desconhecimento do que existe, instruções contraditórias, promessa comercial 
 | implementar | Atacante | Põe código novo ativo no caminho oficial |
 | validar-entrega | Goleiro | Aprova ou reprova com base em evidência real |
 | analisar-log | Olheiro | Lê log por correlation_id, sem corrigir |
-| validar-log | Zagueiro marcação | Audita se o log foi escrito segundo o contrato |
-| validar-observabilidade | Zagueiro central | Audita se há log suficiente para reconstruir o fluxo |
 | corrigir-erros-com-log | Cirurgião | Corrige a causa raiz usando o log como verdade |
 | testar-cli-log-analyzer | VAR | Valida a ferramenta de análise de logs |
 | gerenciar-postgresql | Zagueiro infra | Opera o PostgreSQL real, auditável |

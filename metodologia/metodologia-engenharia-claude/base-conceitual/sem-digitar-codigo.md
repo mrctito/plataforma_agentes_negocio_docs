@@ -52,7 +52,7 @@ A confiança **não** é fé no agente. Ela é a soma de seis garantias estrutur
 | **1. Não há alucinação** | O código nasce de evidência real lida, não de "achismo" | `CLAUDE.md §1` + `investigar` (afirmação só com path/linha) |
 | **2. Funções segregadas** | Quem implementa **não** se auto-aprova — há revisor independente | eixo `investigar→planejar→implementar→validar-entrega` |
 | **3. Anti-falso-verde** | A entrega só vale **ativa no runtime**, provada | `definicao-de-pronto.md` + check discriminante |
-| **4. Observabilidade (raio-X)** | Você audita o **comportamento pelo log**, não pela leitura do código | `log-instructions.md` + `validar-observabilidade` |
+| **4. Observabilidade (raio-X)** | Você audita o **comportamento pelo log**, não pela leitura do código | `log-instructions.md` + auditoria de observabilidade do `validar-entrega` |
 | **5. Auto-correção com teto** | O sistema **converge ou declara bloqueio** — não entrega "quase certo" | loops em `validar-entrega`, `executar-testes`, `corrigir-erros-com-log` |
 | **6. Arbitragem automática** | Violações de estilo/disciplina são pegas **no ato**, deterministicamente | hooks (`py-lint`, `logging-nudge`, `bash-guard`…) |
 
@@ -122,7 +122,8 @@ Aqui está o ponto central do apêndice. Para cada etapa, três blocos:
   - **Hierarquia de verdade absoluta:** código executável > teste > log > plano > doc. **"Teste verde
     não prova fluxo real."** É exatamente o ceticismo que um bom revisor sênior aplica — codificado.
   - **Validação ponta a ponta por tarefa:** cada T1..Tn é conferida individualmente.
-  - **Pode acionar `validar-log` e `validar-observabilidade`** como evidência subordinada.
+  - **Audita a observabilidade diretamente:** escrita local do log e cobertura diagnóstica do fluxo,
+    conforme `log-instructions.md`.
   - **Veredito explícito** (APROVADO / RESSALVAS / REPROVADO / BLOQUEADO) e, se reprovado, **devolve a
     bola para o `planejar`** com inventário do que faltou.
 - 🧪 **Como você confere sem digitar:** lê o relatório de validação. Ele te diz **qual boundary foi
@@ -179,7 +180,7 @@ faz** e mostra que **cada função já tem um dono contínuo no processo**:
 | Garantir que **há testes** | `criar-testes` + nudge `stop-loop` (src sem tests) + teste de regressão da `definicao-de-pronto` |
 | Checar **arquitetura/design** | `planejar` (postura crítica **antes** do código) + `CLAUDE.md §6` (SOLID, limites de classe) |
 | Evitar **duplicação** | `reuso-instructions.md` + `inventario-componentes` — busca obrigatória antes de criar |
-| Garantir **observabilidade** | `logging-nudge` + `validar-observabilidade` + `validar-log` |
+| Garantir **observabilidade** | `logging-nudge` + auditoria de observabilidade do `validar-entrega` |
 | Impedir **código morto/legado** | default anti-legado do `implementar` + checklist de fechamento do `CLAUDE.md §14` |
 | Barrar **risco de segurança** | `bash-guard` (guard) + `CLAUDE.md §8` (tools falha fechado) |
 | Confirmar que **está realmente pronto** | `definicao-de-pronto.md` (anti-falso-verde) + `validar-entrega` |

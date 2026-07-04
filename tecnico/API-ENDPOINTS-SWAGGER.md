@@ -347,6 +347,54 @@ Os contratos mais importantes confirmados no código são:
 - POST /admin/background-executions/communications/{communication_id}/ack:
   confirma consumo idempotente de um item de comunicação assíncrona do
   webchat para o tenant autenticado.
+- GET /chat/conversations (200): lista, mais recentes primeiro e paginadas,
+  as conversas NÃO deletadas do dono do chat embutível. Escopo obrigatório
+  por `tenant_code` + `user_email` (nunca vaza conversa de outro dono).
+  Autenticação por header `X-API-Key` (primária) ou YAML via
+  `?yaml_config=<path>` same-origin, sob a permissão `RAG_ASK`
+  (HEADER_OR_YAML). Query params: `user_email` (obrigatório), `limit`
+  (1..200, default 50), `offset` (>=0), `config_ref`, `mode` e `scope_ref`
+  (filtros opcionais). `scope_ref` seleciona o bucket de isolamento: ausente
+  lista o bucket geral (conversas sem projeto, `scope_ref IS NULL`); informado
+  lista só aquele escopo (ex.: `scope_ref=<projeto>`), de forma que conversas
+  gerais e de projeto não se misturam. A resposta traz `correlation_id` e
+  `items` (cada item com `conversation_id`, `tenant_code`, `user_email`,
+  `config_ref`, `scope_ref`, `mode`, `thread_id`, `title`, `status`,
+  `message_count`, `created_at`, `updated_at`, `last_message_at`). Devolve o
+  `correlation_id` no corpo e no header `X-Correlation-Id`.
+- GET /chat/conversations/{conversation_id} (200): abre uma conversa do
+  dono com suas mensagens, ordenadas por `seq`. Mesmo escopo e mesma
+  autenticação do endpoint de lista. Query params: `user_email`
+  (obrigatório), `message_limit` (1..500, default 200) e `message_offset`
+  (>=0). A resposta traz `correlation_id`, `conversation` (o mesmo cabeçalho
+  da lista) e `messages` (cada uma com `message_id`, `seq`, `role`,
+  `content`, `correlation_id`, `created_at`). Responde 404 quando a conversa
+  não existe ou é de outro dono. Devolve o `correlation_id` no corpo e no
+  header `X-Correlation-Id`, inclusive no 404 (na mensagem entre parênteses).
+- PATCH /chat/conversations/{conversation_id} (200): renomeia a conversa do
+  dono. Corpo JSON com `user_email` (obrigatório), `title` (obrigatório) e
+  `encrypted_data` (opcional, YAML cifrado para autenticação HEADER_OR_YAML
+  quando não vier `X-API-Key`). O título é normalizado (trim e truncado em
+  80 caracteres). A resposta traz `correlation_id` e `conversation`
+  atualizada. Responde 404 quando inexistente ou de outro dono. Devolve o
+  `correlation_id` no corpo e no header `X-Correlation-Id`.
+- DELETE /chat/conversations/{conversation_id} (200): soft-delete
+  (marca `status=deleted`) da conversa do dono; idempotente. Query param
+  `user_email` (obrigatório); autenticação por X-API-Key/YAML (HEADER_OR_YAML).
+  Sem corpo: o cliente HTTP oficial não define `Content-Type: application/json`
+  em DELETE, então o escopo viaja na query, não no corpo.
+  A resposta traz `correlation_id` e `deleted` (bool): `true` quando algo
+  foi afetado, `false` no no-op idempotente (conversa inexistente, já
+  deletada ou de outro dono) — não é 404. Devolve o `correlation_id` no
+  corpo e no header `X-Correlation-Id`.
+
+Observações do domínio de conversas do chat: não existe `POST
+/chat/conversations`. A criação é *lazy*: a conversa nasce no primeiro turno
+persistido (o front gera o `conversation_id` estável e o backend faz upsert
+pela chave natural na primeira gravação de turno). "Nova conversa" é um gesto
+local do cliente; a linha aparece no banco quando o primeiro turno é
+persistido pelo caminho síncrono de execução (`/agent/execute`,
+`/workflow/execute`, `/rag/execute`).
 
 ### 12.1. Reset local de senha com provider transacional interno
 
@@ -753,6 +801,14 @@ O que fica confirmado:
   - Motivo da leitura: contrato de execução e retomada de workflows.
   - Comportamento confirmado: /workflow/execute decide entre sync e
     async e publica URLs de acompanhamento.
+- src/api/routers/chat_conversations_router.py
+  - Motivo da leitura: contrato CRUD das conversas persistidas do chat
+    embutível.
+  - Comportamento confirmado: GET /chat/conversations e
+    GET/PATCH/DELETE /chat/conversations/{conversation_id} escopam por
+    tenant + user_email, devolvem `X-Correlation-Id`, respondem 404 em
+    leitura/rename de conversa inexistente e soft-delete idempotente com
+    `deleted` bool. Não há POST: a criação é lazy no primeiro turno.
 - src/api/routers/rag_ingestion_router.py
   - Motivo da leitura: status HTTP de ingestão.
   - Comportamento confirmado: /rag/ingest responde com 202 Accepted.

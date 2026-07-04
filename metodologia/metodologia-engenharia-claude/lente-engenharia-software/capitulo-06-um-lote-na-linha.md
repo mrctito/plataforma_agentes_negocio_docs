@@ -67,7 +67,7 @@ qualquer mutação). *(Cap. 3.3 e 3.4)*
 
 ### Expedição? Só se o controle de qualidade liberar — `validar-entrega`
 O **controle de qualidade** confronta tudo: o fabricado bate com o roteiro? Cada tarefa cumpriu seu
-critério? Aciona o laboratório (`validar-log`, `validar-observabilidade`) para conferir o raio-X. A regra
+critério? Confere o raio-X diretamente: a escrita do log e a cobertura diagnóstica do fluxo. A regra
 é dura: **ensaio verde não prova linha real**. Veredito explícito: APROVADO, COM RESSALVAS, REPROVADO ou
 BLOQUEADO. Se reprovado, **devolve o lote ao PCP** com um inventário do que faltou. *(Cap. 3.1)*
 

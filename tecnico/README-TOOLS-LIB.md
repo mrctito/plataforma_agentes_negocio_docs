@@ -1422,7 +1422,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Uso atual observado: Sim. Consumido por [app/ui/static/js/ui-analise-interacoes.js](../app/ui/static/js/ui-analise-interacoes.js), [app/ui/static/js/admin-sql-natural.js](../app/ui/static/js/admin-sql-natural.js) e coberto por [tests/frontend/admin_workspace_shell_correlation_contract.test.js](../tests/frontend/admin_workspace_shell_correlation_contract.test.js).
 - Seguro reutilizar como esta?: Sim, quando a pagina seguir o contrato de Layout Mestre do projeto.
 - Riscos ou limitacoes: nao e um cliente HTTP generico; conhece payload criptografado e convencoes desse layout.
-- Fonte unica de montagem de envelope/chamada de API consumida pelo componente embutivel e pela host de exemplo (envelope identico ao v3). Expoe a opcao `registrarPayloadOffline` (default `true`): quando `false`, pula o POST em `/crypto/offline-store`, replicando o v3 — usado pelo componente embutivel. Demais consumidores seguem no default `true`.
+- Fonte unica de montagem de envelope/chamada de API consumida pelo componente embutivel, pela host oficial v3 e pela URL administrativa espelhada (envelope identico ao v3). Expoe a opcao `registrarPayloadOffline` (default `true`): quando `false`, pula o POST em `/crypto/offline-store`, replicando o v3 — usado pelo componente embutivel. Demais consumidores seguem no default `true`.
 - Sugestao de melhoria: documentar melhor o contrato de inicializacao minima da pagina consumidora.
 - Prioridade: Alta
 
@@ -1440,10 +1440,10 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Responsabilidade principal: encapsular renderização do chat, envio de perguntas, polling assíncrono, exportação de estado e publicação de eventos para a página hospedeira.
 - Capacidades adicionadas em 2026-06-10 (Fases A/B da migração, provadas em runtime): HIL completo (normalização fail-closed via `HilContract`, painel `HilReviewPanel`, bloqueio de envio com pendência, 2 caminhos de decisão via fonte única `enviarDecisaoHil`/`enviarResumeHil`); cancelamento (`cancelar()`/`cancel()` sync e async, `signal` na fonte única); modo `agent` puro (sem coerção para `qa`); markdown seguro + sanitização de segredos (helpers únicos em `WebchatRuntimeUtils`); apiKey resolvida de `authentication.access_key` do YAML via `PrometeuYamlExtractor` quando não há `setApiKey` (falha fechada, erro visível); hidratação (`restaurarConversa`/`inserirMensagemExterna`, re-hidratando pendência HIL); opção `payloadText` (bolha limpa × payload enriquecido); `messageActions` (ações da host por mensagem, `label`+`onSelect`+`quando` opcional). Eventos novos: `hil-pending`, `hil-decision-sent`, `hil-decision-completed`, `hil-decision-failed`, `send-cancelled`, `conversation-restored`.
 - Sessões de conversa (headless, 2026-06-13): o componente conhece a sessão ATIVA (`sessionId` em `obterEstadoAtual()` e carimbado em todo evento) e avisa o host para gravar via callback `onConversationChanged({ sessionId, messages, lastInteraction, reason })`; NÃO persiste nada nem conhece a lista de sessões. API: `definirSessaoAtiva`/`setActiveSessionId`, `obterSessaoAtiva`/`getActiveSessionId`, `carregarSessao`/`loadSession` (define ativa + re-hidrata, sem re-persistir), `novaSessao`/`newSession`. Eventos novos: `session-loaded`, `session-started`. Renomear/excluir são do host. A persistência (localStorage) é do helper `PrometeuChatSessionStore`; banco fica para depois (backlog).
-- Renderização AG-UI estruturada (aditiva, com fallback de texto): detecta specs AG-UI no corpo da resposta e os desenha como UI — CapabilitiesSpec (painel de capacidades, novo), DashboardSpec (KPIs/tabelas/rankings/gráficos via porta `AgUiChartAdapter`) e UISpec (delegado ao renderizador oficial). Ligado por padrão (`renderStructured`, desligável); onboarding opcional via `definirCapacidadesBoasVindas(spec, enabled)`/`setWelcomeCapabilities` + `welcomeCapabilities`. Sem spec reconhecido, spec inválido, `renderStructured:false` ou runtime de spec ausente → texto puro. Exige carregar `embeddable-chat-spec-runtime.js` + `ag-ui-spec-render-bridge.js` (e os scripts de gráfico) antes do componente. Detalhe de ativação e estado por host: [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md) §18.1.
+- Renderização AG-UI estruturada (aditiva, com fallback de texto): detecta specs AG-UI numa resposta já normalizada e os desenha como UI — CapabilitiesSpec (painel de capacidades) e A2UI (envelope `{a2ui_operations}` do `TOOL_CALL_RESULT` de `generate_a2ui`, catálogo fechado de 8 componentes via porta `AgUiChartAdapter` para gráfico). Ligado por padrão (`renderStructured`, desligável); onboarding opcional via `definirCapacidadesBoasVindas(spec, enabled)`/`setWelcomeCapabilities` + `welcomeCapabilities`. Sem spec reconhecido, spec inválido, `renderStructured:false` ou runtime de spec ausente → texto puro. Exige carregar `embeddable-chat-spec-runtime.js` + `ag-ui-spec-render-bridge.js` (e os scripts de gráfico); para A2UI via SSE opt-in, também `embeddable-chat-ag-ui-transport.js` + `ag-ui-embeddable-transport-bridge.js`. Detalhe de ativação e estado por host: [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md) §18.1.
 - Dependencias principais: [app/ui/static/js/shared/layout-mestre-api.js](../app/ui/static/js/shared/layout-mestre-api.js), [app/ui/static/js/shared/ui-webchat-runtime-utils.js](../app/ui/static/js/shared/ui-webchat-runtime-utils.js), [app/ui/static/js/shared/ui-webchat-async-runtime.js](../app/ui/static/js/shared/ui-webchat-async-runtime.js); para render estruturado (opcional): [embeddable-chat-spec-runtime.js](../../app/ui/static/js/shared/embeddable-chat-spec-runtime.js) + [ag-ui-spec-render-bridge.js](../../app/ui/static/js/shared/ag-ui-spec-render-bridge.js) + porta de gráfico `AgUiChartAdapter`.
 - Acoplamento forte com dominio?: Baixo. Reaproveita o contrato canônico da UI, mas não depende mais do runtime lateral DNIT.
-- Uso atual observado: Sim — incluindo página real de produto: [app/ui/static/ui-webchat-v3.html](../app/ui/static/ui-webchat-v3.html) é host fino do componente desde 2026-06-10 (motor próprio removido; single-source protegido por [tests/frontend/webchat_single_source_regression_contract.test.js](../tests/frontend/webchat_single_source_regression_contract.test.js)). Coberto por [tests/frontend/embeddable_chat_runtime_contract.test.js](../tests/frontend/embeddable_chat_runtime_contract.test.js) e pelo E2E Playwright [tests/playwright/test_08-01-10_embeddable_chat_isolated.py](../tests/playwright/test_08-01-10_embeddable_chat_isolated.py). Bancada de validação isolada em [app/ui/static/ui-embeddable-chat-test.html](../app/ui/static/ui-embeddable-chat-test.html). Host de exemplo em [app/ui/static/ui-admin-plataforma-webchat.html](../app/ui/static/ui-admin-plataforma-webchat.html). Comportamento HTTP do chat alinhado ao v3 (não chama `/crypto/offline-store`; instancia o cliente com `registrarPayloadOffline: false`). Provado em runtime real (FastAPI local) em desktop e mobile.
+- Uso atual observado: Sim — incluindo página real de produto: [app/ui/static/ui-webchat-v3.html](../app/ui/static/ui-webchat-v3.html) é host fino do componente desde 2026-06-10 (motor próprio removido; single-source protegido por [tests/frontend/webchat_single_source_regression_contract.test.js](../tests/frontend/webchat_single_source_regression_contract.test.js)). Coberto por [tests/frontend/embeddable_chat_runtime_contract.test.js](../tests/frontend/embeddable_chat_runtime_contract.test.js) e pelo E2E Playwright [tests/playwright/test_08-01-10_embeddable_chat_isolated.py](../tests/playwright/test_08-01-10_embeddable_chat_isolated.py). Bancada de validação isolada em [app/ui/static/ui-embeddable-chat-test.html](../app/ui/static/ui-embeddable-chat-test.html). A URL administrativa [app/ui/static/ui-admin-plataforma-webchat.html](../app/ui/static/ui-admin-plataforma-webchat.html) espelha deliberadamente a mesma host visual e operacional da v3. Comportamento HTTP do chat alinhado ao v3 (não chama `/crypto/offline-store`; instancia o cliente com `registrarPayloadOffline: false`). Provado em runtime real (FastAPI local) em desktop e mobile.
 - Seguro reutilizar como esta?: Sim, para telas que precisem montar um chat reutilizável e reagir ao estado fora dele.
 - Riscos ou limitacoes: depende da presença explícita de `prometeuLayoutMestreApi`, `WebchatRuntimeUtils` e `WebchatAsyncRuntime`; sem isso ele falha fechado.
 - Sugestao de melhoria: manter documentação e exemplos sincronizados sempre que a API pública do componente evoluir.
@@ -1461,7 +1461,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Responsabilidade principal: CRUD de sessões por **namespace** (`create({ storageKey, scopeRef?, maxSessions? })`) — `scopeRef` isola conversas por escopo (ex.: projeto DNIT). Instância: `listar`, `obter`, `obterMensagensComponente` (pronto para `carregarSessao`), `criar`, `salvarConversa` (upsert), `renomear`, `excluir`. Mappers componente⇄armazenado são **fonte única** aqui (`mapStoredMessagesToComponent`/`mapComponentMessagesToStored`); o `WebchatV3HostBridge` delega a eles. Formato preservado da v3 (`webchat_history`).
 - Dependencias principais: nenhuma (só `localStorage`; storage injetável para teste).
 - Acoplamento forte com dominio?: Nenhum. Neutro e reutilizável por qualquer host de chat.
-- Uso atual observado: Sim — v3 ([ui-webchat-v3.js](../../app/ui/static/js/ui-webchat-v3.js)), admin-plataforma-webchat ([ui-admin-plataforma-webchat.js](../../app/ui/static/js/ui-admin-plataforma-webchat.js)) e DNIT detalhe ([gesdoc-project-detail.js](../../app/ui/static/js/gesdoc-project-detail.js), escopado por projeto). Protegido por [tests/frontend/chat_session_store_contract.test.js](../../tests/frontend/chat_session_store_contract.test.js) e pelos contratos de sessão por host. Provado em runtime real (FastAPI local) nas 3 telas + bancada.
+- Uso atual observado: Sim — v3 ([ui-webchat-v3.js](../../app/ui/static/js/ui-webchat-v3.js)), URL administrativa espelhada `ui-admin-plataforma-webchat.html` (que agora reutiliza o mesmo runtime `ui-webchat-v3.js`) e DNIT detalhe ([gesdoc-project-detail.js](../../app/ui/static/js/gesdoc-project-detail.js), escopado por projeto). Protegido por [tests/frontend/chat_session_store_contract.test.js](../../tests/frontend/chat_session_store_contract.test.js) e pelos contratos de sessão por host. Provado em runtime real (FastAPI local) nas 3 telas + bancada.
 - Seguro reutilizar como esta?: Sim, para qualquer tela que embuta o chat e queira sessões salvas no navegador.
 - Riscos ou limitacoes: persiste só no navegador (localStorage) — a versão em banco (multi-dispositivo) fica para depois (backlog). Falhas de quota/modo privado são observáveis (`console.warn`), não silenciosas.
 - Sugestao de melhoria: quando a persistência em banco entrar, manter o MESMO contrato e adicionar um backend de servidor por trás dele (sem mudar os hosts).
@@ -1469,17 +1469,17 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 
 ### AgUiChartAdapter (porta neutra de gráfico AG-UI) + ApexChartsAdapter
 
-- Descricao: porta (interface) genérica de gráfico para o renderizador de dashboard AG-UI, com modelo neutro `ChartModel` (kind/series/categories/options), registry simples do adapter ativo e helper `buildChartModel(widget)`. A única implementação atual é o `ApexChartsAdapter`, que mapeia o modelo neutro para opções ApexCharts. Desacopla o renderizador da lib (arquitetura hexagonal): trocar de lib no futuro = escrever outro adapter e registrá-lo, sem tocar o renderer.
+- Descricao: porta (interface) genérica de gráfico para superfícies AG-UI, com modelo neutro `ChartModel` (kind/series/categories/options), registry simples do adapter ativo e helper `buildChartModel(widget)`. A única implementação atual é o `ApexChartsAdapter`, que mapeia o modelo neutro para opções ApexCharts. Desacopla o renderizador da lib (arquitetura hexagonal): trocar de lib no futuro = escrever outro adapter e registrá-lo, sem tocar o renderer.
 - Tags: frontend, ag-ui, grafico, porta, apexcharts
 - Tipo: porta + adapter
 - Arquivo: [app/ui/static/js/shared/ag-ui-chart-adapter.js](../../app/ui/static/js/shared/ag-ui-chart-adapter.js) (porta + registry + ChartModel); [app/ui/static/js/shared/ag-ui-chart-adapter-apexcharts.js](../../app/ui/static/js/shared/ag-ui-chart-adapter-apexcharts.js) (implementação ApexCharts)
 - Linguagem: JavaScript (UMD)
-- Responsabilidade principal: oferecer ao renderizador de dashboard um contrato neutro de gráfico (barra/linha/pizza/rosca) que recebe número e texto já validados e desenha SVG seguro (sem HTML em tooltip/label/legend), degradando para placeholder quando a lib não está presente.
+- Responsabilidade principal: oferecer a um renderizador AG-UI um contrato neutro de gráfico (barra/linha) que recebe número e texto já validados e desenha SVG seguro (sem HTML em tooltip/label/legend), degradando sem desenhar quando a lib não está presente.
 - Dependencias principais: `window.ApexCharts` (vendor opcional em [app/ui/static/js/vendor/apexcharts.min.js](../../app/ui/static/js/vendor/apexcharts.min.js), v5.14.0); a porta não depende de nenhuma lib.
 - Acoplamento forte com dominio?: Baixo. A porta é neutra e o adapter concreto é o único ponto que conhece o ApexCharts.
-- Uso atual observado: Sim. Consumido por [app/ui/static/js/shared/ag-ui-dashboard-renderer.js](../../app/ui/static/js/shared/ag-ui-dashboard-renderer.js) (via `window.AgUiChartAdapter`, nunca importa ApexCharts direto). Protegido por [tests/frontend/ag_ui_chart_adapter_contract.test.js](../../tests/frontend/ag_ui_chart_adapter_contract.test.js), incluindo teste de regressão de desacoplamento. Carregado nas hosts [app/ui/static/ui-admin-plataforma-webchat.html](../../app/ui/static/ui-admin-plataforma-webchat.html) e na bancada [app/ui/static/ui-embeddable-chat-test.html](../../app/ui/static/ui-embeddable-chat-test.html).
+- Uso atual observado: Sim. Consumido por [app/ui/static/js/shared/ag-ui-a2ui-surface-renderer.js](../../app/ui/static/js/shared/ag-ui-a2ui-surface-renderer.js) (renderer do envelope A2UI gerado pela tool `generate_a2ui`; via `window.AgUiChartAdapter`, nunca importa ApexCharts direto). Protegido por [tests/frontend/ag_ui_chart_adapter_contract.test.js](../../tests/frontend/ag_ui_chart_adapter_contract.test.js), incluindo teste de regressão de desacoplamento. Carregado nas hosts [app/ui/static/ui-admin-plataforma-webchat.html](../../app/ui/static/ui-admin-plataforma-webchat.html) e na bancada [app/ui/static/ui-embeddable-chat-test.html](../../app/ui/static/ui-embeddable-chat-test.html).
 - Seguro reutilizar como esta?: Sim, para qualquer renderização de gráfico AG-UI que parta de dados numéricos e rótulos de texto já validados.
-- Riscos ou limitacoes: o gráfico real só aparece quando o widget já carrega dados numéricos resolvidos (caminho de runtime materializado); no contrato base de `DashboardSpec` (sem dados), cai no placeholder por design.
+- Riscos ou limitacoes: o gráfico real só aparece quando o componente já carrega dados numéricos resolvidos e reconhecíveis (`normalizeChartSeries` no renderer A2UI); sem dado válido, o componente de gráfico simplesmente não é desenhado, por design fail-closed.
 - Sugestao de melhoria: ao surgir necessidade de outra lib, criar um novo adapter implementando a mesma interface e registrá-lo como ativo, sem alterar o renderer.
 - Prioridade: Media
 
@@ -1645,36 +1645,20 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Sugestao de melhoria: manter matriz de exemplos validos e invalidos por versao da especificacao.
 - Prioridade: Alta
 
-### validateDashboardSpec
+### createA2uiSurfaceRenderer
 
-- Descricao: validador seguro do contrato de dashboard AG-UI, com verificacao estrutural e protecao contra conteudo proibido antes da renderizacao.
-- Tags: ag-ui, dashboard, validacao
-- Tipo: validator
-- Arquivo: [app/ui/static/js/shared/ag-ui-dashboard-validator.js](../app/ui/static/js/shared/ag-ui-dashboard-validator.js)
-- Linguagem: JavaScript
-- Responsabilidade principal: validar payloads de dashboard dinamico.
-- Dependencias principais: [app/ui/static/js/shared/ag-ui-safe-content.js](../app/ui/static/js/shared/ag-ui-safe-content.js)
-- Acoplamento forte com dominio?: Medio. Especifico de dashboards AG-UI.
-- Uso atual observado: Sim. Consumido por [app/ui/static/js/ag-ui-dashboard-dinamico.js](../app/ui/static/js/ag-ui-dashboard-dinamico.js) e reexportado via [packages/ag-ui-runtime/index.js](../packages/ag-ui-runtime/index.js).
-- Seguro reutilizar como esta?: Sim.
-- Riscos ou limitacoes: qualquer extensao da spec exige atualizar validacao e testes em conjunto.
-- Sugestao de melhoria: manter um inventario publico dos codigos de erro mais comuns.
-- Prioridade: Alta
-
-### AgUiDashboardRenderer
-
-- Descricao: renderer OO de `DashboardSpec`, acoplado aos validadores e renderers de evento para transformar a especificacao segura em interface navegavel.
-- Tags: ag-ui, dashboard, renderer
-- Tipo: classe
-- Arquivo: [app/ui/static/js/shared/ag-ui-dashboard-renderer.js](../app/ui/static/js/shared/ag-ui-dashboard-renderer.js)
-- Linguagem: JavaScript
-- Responsabilidade principal: renderizar dashboard AG-UI a partir da especificacao validada.
-- Dependencias principais: [app/ui/static/js/shared/ag-ui-dashboard-validator.js](../app/ui/static/js/shared/ag-ui-dashboard-validator.js), [app/ui/static/js/shared/ag-ui-event-renderer.js](../app/ui/static/js/shared/ag-ui-event-renderer.js)
-- Acoplamento forte com dominio?: Medio. Especifico do runtime AG-UI.
-- Uso atual observado: Sim. Reexportado via [packages/ag-ui-runtime/index.js](../packages/ag-ui-runtime/index.js).
-- Seguro reutilizar como esta?: Sim, para dashboards AG-UI.
-- Riscos ou limitacoes: depende do shape de `DashboardSpec` e do renderer de eventos.
-- Sugestao de melhoria: explicitar melhor pontos de extensao de componentes visuais customizados.
+- Descricao: renderer fail-closed do envelope A2UI (`{a2ui_operations: [createSurface, updateComponents]}`) gerado pela tool `generate_a2ui` do supervisor DeepAgent. Despacha por catálogo fechado de 8 componentes (`Card`, `Column`, `Row`, `Text`, `Divider`, `BarChart`, `LineChart`, `DataTable`); qualquer componente fora do catálogo ou dado malformado derruba a árvore inteira, sem desenhar pela metade.
+- Tags: ag-ui, a2ui, renderer, generative-ui
+- Tipo: factory + classe
+- Arquivo: [app/ui/static/js/shared/ag-ui-a2ui-surface-renderer.js](../../app/ui/static/js/shared/ag-ui-a2ui-surface-renderer.js)
+- Linguagem: JavaScript (UMD)
+- Responsabilidade principal: transformar o envelope A2UI validado em DOM seguro, delegando gráficos à porta neutra `AgUiChartAdapter`.
+- Dependencias principais: `AgUiChartAdapter` (`ag-ui-chart-adapter.js`, injetado), `ag-ui-safe-content.js` (validação de conteúdo inseguro), primitivas DOM de `ag-ui-event-renderer.js`.
+- Acoplamento forte com dominio?: Medio. Especifico da renderização generativa AG-UI, mas o catálogo é genérico (não amarrado a varejo).
+- Uso atual observado: Sim. Montado por [app/ui/static/js/shared/ag-ui-spec-render-bridge.js](../../app/ui/static/js/shared/ag-ui-spec-render-bridge.js) e injetado em `embeddable-chat-spec-runtime.js`. Protegido por [tests/frontend/ag_ui_a2ui_surface_renderer_contract.test.js](../../tests/frontend/ag_ui_a2ui_surface_renderer_contract.test.js).
+- Seguro reutilizar como esta?: Sim, para qualquer superfície AG-UI que precise renderizar o envelope A2UI com o mesmo catálogo de 8 componentes.
+- Riscos ou limitacoes: ampliar o catálogo (novo componente) exige código no renderer e, se for gráfico, também no `ChartAdapter` — não é configurável só por YAML.
+- Sugestao de melhoria: nenhuma identificada nesta rodada.
 - Prioridade: Alta
 
 ### AG-UI tool timeline

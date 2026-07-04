@@ -217,13 +217,11 @@
 
 ### Slide 14 — A defesa de observabilidade ⏩
 🖥️ **TELA**
-> analisar-log (olheiro) · validar-log (escreveu certo?) · validar-observabilidade (cobriu tudo?)
-> corrigir-erros-com-log (cirurgião) · testar-cli-log-analyzer (VAR da ferramenta)
+> analisar-log (olheiro) · corrigir-erros-com-log (cirurgião) · testar-cli-log-analyzer (VAR da ferramenta)
 
 🎤 **FALA**
-> "Um setor inteiro só pra garantir que o sistema seja **diagnosticável**. Repare na divisão
-> cirúrgica: um valida se o log foi **escrito certo**, outro valida se tem log **suficiente**. Dois
-> defeitos diferentes, dois especialistas. E tem até um VAR que valida a própria ferramenta de análise."
+> "Um setor inteiro só pra garantir que o sistema seja **diagnosticável**. O olheiro lê o jogo pelo
+> log, o cirurgião corrige a causa raiz — e tem até um VAR que valida a própria ferramenta de análise."
 
 ---
 

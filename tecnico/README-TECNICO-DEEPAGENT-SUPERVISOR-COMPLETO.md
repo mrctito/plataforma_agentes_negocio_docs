@@ -34,6 +34,7 @@ O contrato AST especializado do DeepAgent expõe recursos que o WorkflowAgent n�
 O bloco middlewares contém a fonte de verdade dos toggles principais.
 
 - filesystem
+- filesystem_file_search
 - shell
 - memory
 - subagents
@@ -43,10 +44,12 @@ O bloco middlewares contém a fonte de verdade dos toggles principais.
 - pii
 - todo_list
 - skills
+- interpreter
 
 Defaults confirmados no AST:
 
 - filesystem.enabled = true
+- filesystem_file_search.enabled = true
 - shell.enabled = false
 - memory.enabled = true
 - subagents.enabled = true
@@ -56,6 +59,17 @@ Defaults confirmados no AST:
 - pii.enabled = true
 - todo_list.enabled = true
 - skills.enabled = false
+- interpreter.enabled = true
+
+Os built-ins seguem a propriedade do middleware que os fornece:
+
+- `todo_list.enabled=false` remove `write_todos` da lista enviada ao modelo;
+- `filesystem_file_search.enabled=false` remove `glob` e `grep`;
+- `filesystem.enabled=false` remove `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep` e o `execute` fornecido pelo filesystem;
+- `subagents.enabled=false` remove `task`;
+- `interpreter.enabled=false` impede a criação do `CodeInterpreterMiddleware` e da tool configurada por `interpreter.tool_name`.
+
+O `FilesystemMiddleware` do DeepAgents já fornece `glob` e `grep`. Por isso, `filesystem_file_search` governa essas tools no stack existente em vez de montar um segundo `FilesystemFileSearchMiddleware`, que duplicaria nomes de tools. O built-in `execute` só fica visível quando o backend efetivo suporta execução; o toggle não transforma um backend sem sandbox em backend executável.
 
 ## 4.2. Features top-level do supervisor
 
@@ -239,7 +253,7 @@ Guardrail operacional confirmado no runtime atual:
 - shell.enabled=true não pode ser combinado com human_in_the_loop.enabled=true no mesmo supervisor;
 - quando essa combinação aparece, o runtime falha fechado com ValueError antes de montar os middlewares.
 
-## 7.8. Summarization
+## 7.8. Summarization e compactação de contexto
 
 Quando summarization.enabled=true, o runtime injeta SummarizationMiddleware ou create_summarization_middleware, dependendo do contrato disponível no runtime carregado.
 
@@ -252,6 +266,33 @@ Parâmetros observados:
 - truncate_args_settings
 
 Essa etapa é especialmente útil para execuções longas, porque ajuda a comprimir contexto sem perder histórico essencial.
+
+### 7.8.1. O que é "compactação de contexto" (nível 101)
+
+Uma conversa DeepAgent longa acumula muitas mensagens no estado do LangGraph. Quanto maior esse histórico, mais caro e lento fica cada turno, porque o modelo precisa reler tudo. **Compactar o contexto** é resumir o histórico antigo em um bloco curto e manter só as mensagens recentes intactas — reduzindo custo e latência **sem perder o fio da conversa**.
+
+A plataforma usa o mecanismo **oficial do ecossistema LangChain/deepagents** para isso, não uma solução caseira. São duas formas complementares:
+
+- **Automática (`SummarizationMiddleware`):** dispara sozinha durante a execução quando o histórico cruza o `trigger` (ex.: número de mensagens ou tokens), mantendo as últimas `keep` mensagens.
+- **Sob demanda (`SummarizationToolMiddleware`):** expõe a tool `compact_conversation`, que o agente (ou a plataforma) chama explicitamente para compactar naquele momento.
+
+### 7.8.2. Como a tool `compact_conversation` altera o estado (importante)
+
+Ponto que evita mal-entendido ao ler o código: a tool `compact_conversation` **não reescreve nem apaga a lista de mensagens** do estado. Ela faz duas coisas:
+
+1. **Acrescenta** uma `ToolMessage` de confirmação ao final das mensagens.
+2. Grava no estado um evento `_summarization_event` com o resumo gerado (`summary_message`) e um índice de corte **absoluto** (`cutoff_index`).
+
+O resumo é aplicado **de forma virtual** na hora de chamar o modelo: a conversa efetiva vista pelo LLM passa a ser `[resumo] + mensagens[cutoff_index:]`. As mensagens originais continuam no estado; o que muda é o recorte que o modelo enxerga. Por isso a compactação é reversível em termos de auditoria (o histórico bruto persiste) e barata (não há reescrita destrutiva da lista).
+
+### 7.8.3. Compactação programática diária (rotina de manutenção)
+
+Além da compactação automática/sob demanda dentro de um turno, a plataforma roda uma **compactação programática diária** das conversas DeepAgent persistidas, para manter o custo sob controle mesmo em conversas que ficam paradas entre turnos.
+
+- **Quem executa:** o método `DeepAgentSupervisor.compact_conversation(thread_id)`, acionado pelo job de manutenção `chat-conversation-compaction`.
+- **Como executa:** monta um agente isolado que expõe **apenas** a tool `compact_conversation`, resolve o YAML original da conversa pelo `config_ref`, e opera o checkpoint **somente pelas APIs públicas do LangGraph** (`get_state`, `invoke`, `update_state`, `RemoveMessage`) — nunca manipulando tabelas de checkpoint diretamente. As mensagens internas usadas para disparar a tool são removidas do estado ao final, deixando a conversa limpa.
+- **Escopo por atividade:** só entram conversas com atividade recente (janela default de 2 dias). Conversa parada há mais tempo não tem conteúdo novo a compactar e é ignorada, o que limita o trabalho por rodada.
+- **Agendamento e cadência:** ver **[Scheduler §7.3.2](README-TECNICO-AGENDAMENTO-AGENTIC-BACKGROUND-HIL.md)** (cron `0 6 * * *` = 03:00 BRT). O ciclo de vida completo das conversas está em **[Gestão e ciclo de vida das conversas](README-TECNICO-GESTAO-CONVERSAS-CHAT.md)**.
 
 ## 7.9. Memory top-level e memória de prompt
 
@@ -379,6 +420,7 @@ Middlewares oficiais confirmados:
 - ContextEditingMiddleware
 - ClearToolUsesEdit
 - FilesystemMiddleware
+- FilesystemFileSearchMiddleware
 - ShellToolMiddleware
 - MemoryMiddleware
 - SubAgentMiddleware
@@ -387,15 +429,17 @@ Middlewares oficiais confirmados:
 - SummarizationMiddleware
 - PIIMiddleware
 - TodoListMiddleware
+- CodeInterpreterMiddleware
 - SkillsMiddleware
 - PatchToolCallsMiddleware
 
 Middlewares de plataforma confirmados:
 
-- ToolSelectionAuditMiddleware
-- ToolExecutionMiddleware
+- ToolLoggingMiddleware
 - ResponsePostProcessingMiddleware
 - ErrorHandlingMiddleware
+
+A observabilidade de chamada/retorno de tool usa o hook oficial que o runtime LangChain realmente invoca (`wrap_tool_call`/`awrap_tool_call`), emitido pelo `ToolLoggingMiddleware`. Ele registra os eventos canônicos `deepagent_supervisor.tool.start/.end/.error` (com `correlation_id`, duração e SHAPE — contagem e nomes dos argumentos, tipo/tamanho do retorno, nunca o conteúdo) e alimenta a telemetria de uso. Esse mesmo middleware roda tanto no runtime top-level do supervisor quanto por subagente.
 
 Na prática, isso significa que o runtime combina disciplina de execução do framework com telemetria, auditoria e pós-processamento específicos do produto.
 

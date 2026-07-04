@@ -72,9 +72,9 @@ Para adaptar o acelerador a outro ERP ou PDV, mantenha a mesma ideia:
 
 Cada query aprovada passa por SqlReadOnlyPolicy usando sqlparse. Na pratica, a etapa se protege contra evolucao indevida para escrita no banco.
 
-### 5.3. Dashboard dinamico e um caminho governado separado
+### 5.3. Visualização gerada pelo agente é um caminho separado
 
-Quando a capability e dashboard_dynamic, o fluxo muda para materializacao de DashboardSpec segura. Isso evita forcar toda experiencia visual a passar por query textual.
+Este domínio de varejo (retail_demo) expõe só consulta governada — todas as capabilities devolvem o resultado da query como confirmação de texto, sem nenhuma materialização visual própria. Quando o objetivo é o DeepAgent desenhar gráficos ou cards a partir do que descobriu, o caminho é outro, opcional e configurado à parte no supervisor: o bloco `ag_ui.generative`, coberto no [manual conceitual de AG-UI](README-CONCEITUAL-AG-UI.md).
 
 ## 6. O que pode dar errado
 

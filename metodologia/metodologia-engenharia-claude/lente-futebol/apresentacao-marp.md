@@ -264,14 +264,12 @@ anular o gol do próprio time se for falso-verde — e devolve a bola pro meia c
 # A defesa de observabilidade
 
 - **analisar-log** (olheiro)
-- **validar-log** — escreveu certo?
-- **validar-observabilidade** — cobriu tudo?
 - **corrigir-erros-com-log** (cirurgião)
 - **testar-cli-log-analyzer** (VAR da ferramenta)
 
 <!--
-FALA: "Um setor inteiro só pra garantir que o sistema seja diagnosticável. Divisão cirúrgica: um valida
-se o log foi ESCRITO certo, outro valida se tem log SUFICIENTE. Dois defeitos, dois especialistas."
+FALA: "Um setor inteiro só pra garantir que o sistema seja diagnosticável. O olheiro lê o jogo pelo log,
+o cirurgião corrige a causa raiz, e o VAR valida a própria ferramenta de análise."
 -->
 
 ---

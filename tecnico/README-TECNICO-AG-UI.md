@@ -18,21 +18,21 @@ O recorte executavel confirmado do lado web inclui estas superficies de reuso.
 3. app/ui/static/js/shared/ag-ui-client.js.
 4. app/ui/static/js/shared/ag-ui-state-store.js.
 5. app/ui/static/js/shared/ag-ui-sidecar-chat.js.
-6. app/ui/static/js/shared/ag-ui-dashboard-renderer.js.
-7. app/ui/static/js/shared/ag-ui-dashboard-validator.js.
-8. app/ui/static/js/shared/ag-ui-retail-demo-page.js.
+6. app/ui/static/js/shared/ag-ui-retail-demo-page.js.
 
-Existe uma segunda superficie de consumo AG-UI no frontend, **independente do stream `/ag-ui/runs`**: a renderizacao de specs que chegam no **corpo da resposta** dos endpoints de chat (`/rag/execute`, `/agent/execute`). Ela e usada pelo componente global de chat embutivel e suas hosts. As superficies de reuso desse caminho sao:
+Existe uma segunda superficie de consumo AG-UI no frontend: o chat embutivel (`PrometeuEmbeddableChatRuntime`) tambem consome `/ag-ui/runs` via SSE, de forma **opt-in** e confinada a `mode: 'deepagent'` + `chatRenderer: 'jspuro'` — detalhe na seção 1A logo abaixo. As superficies de reuso desse caminho sao:
 
 1. app/ui/static/js/shared/embeddable-chat-spec-runtime.js (deteccao de spec + registry de renderizadores + renderer de Capacidades).
 2. app/ui/static/js/shared/ag-ui-spec-render-bridge.js (ponte ESM que liga os renderizadores oficiais ao componente UMD).
-3. app/ui/static/js/shared/ag-ui-chart-adapter.js + ag-ui-chart-adapter-apexcharts.js (porta de grafico neutra + adapter ApexCharts).
-4. src/api/schemas/ag_ui_capabilities_models.py (contrato fail-closed do **CapabilitiesSpec**).
-5. src/agentic_layer/tools/system_tools/describe_capabilities.py (tool builtin `descrever_capacidades`, auto-injetada em todo supervisor DeepAgent).
+3. app/ui/static/js/shared/embeddable-chat-ag-ui-transport.js + ag-ui-embeddable-transport-bridge.js (transporte SSE opt-in que consome `/ag-ui/runs` dentro do componente de chat).
+4. app/ui/static/js/shared/ag-ui-a2ui-surface-renderer.js (renderer fail-closed do envelope A2UI, catalogo fechado de 8 componentes).
+5. app/ui/static/js/shared/ag-ui-chart-adapter.js + ag-ui-chart-adapter-apexcharts.js (porta de grafico neutra + adapter ApexCharts, reutilizada pelo renderer A2UI).
+6. src/api/schemas/ag_ui_capabilities_models.py (contrato fail-closed do **CapabilitiesSpec**).
+7. src/agentic_layer/tools/system_tools/describe_capabilities.py (tool builtin `descrever_capacidades`, auto-injetada em todo supervisor DeepAgent).
 
-Os tres specs reconhecidos nessa superficie sao CapabilitiesSpec (painel de capacidades), DashboardSpec (dashboard dinamico) e UISpec (interface generica). Ativacao, ordem de scripts e estado por host estao no [guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md) — incluindo o status atual: `ui-webchat-v3.html` tem o wiring AG-UI **ativo** desde 2026-06-10 (Fase B), com gate falha-fechada que exige o spec runtime resolvido. A porta de grafico esta detalhada em [Registry e adapters](README-TECNICO-AG-UI-REGISTRY-E-ADAPTERS.md).
+Os dois specs reconhecidos hoje nessa superficie sao CapabilitiesSpec (painel de capacidades, via resposta normal do chat) e A2UI (envelope `{a2ui_operations}` do resultado da tool `generate_a2ui`, via SSE opt-in). Um mecanismo anterior baseado em DashboardSpec/UISpec nessa mesma superficie foi removido do codigo (reset registrado no handover `docs/.interno/.planos/ag-ui-generico-2.md`); qualquer material citando `output_subagent`, `DashboardSpec` ou `middlewares.generative_ui_dashboard` descreve algo que nao existe mais. Ativacao, ordem de scripts e estado por host estao no [guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md).
 
-O tutorial de entrada para quem vai configurar AG-UI pela primeira vez (como fazer o agente devolver dashboard via YAML, os tres specs, bind de campos, FAQ) esta em [TUTORIAL-101-GENERATIVE-UI.md](../usuario/TUTORIAL-101-GENERATIVE-UI.md).
+O tutorial de entrada para quem vai configurar AG-UI pela primeira vez (como fazer o DeepAgent desenhar A2UI condicional via YAML, o painel de capacidades, bind de campos, FAQ) esta em [TUTORIAL-101-GENERATIVE-UI.md](../usuario/TUTORIAL-101-GENERATIVE-UI.md).
 
 Detalhamento técnico por etapa:
 
@@ -44,35 +44,33 @@ Detalhamento técnico por etapa:
 6. [Runtime compartilhado do frontend](README-TECNICO-AG-UI-RUNTIME-COMPARTILHADO-DO-FRONTEND.md)
 7. [Replay e auditoria](README-TECNICO-AG-UI-REPLAY-E-AUDITORIA.md)
 
-Como **configurar por YAML** um agente que responde com gráficos (as 3 peças — regra de roteamento no prompt do supervisor, subagente com `response_format` DashboardSpec 1.0 e renderização automática no frontend), com o demo varejo como exemplo comentado: capítulo [35. AG-UI no YAML](README-CONFIGURACAO-YAML.md#35-ag-ui-no-yaml-respostas-com-gráficos-generative-ui--exemplo-real-do-demo-varejo) do manual de configuração YAML.
+Como **configurar por YAML** um DeepAgent que desenha visualizações condicionais no chat (bloco `multi_agents[].ag_ui.generative` com `chat_renderer` + `a2ui_schema`), com o demo varejo como exemplo comentado: capítulo [35. AG-UI no YAML](README-CONFIGURACAO-YAML.md#35-ag-ui-no-yaml-respostas-com-gráficos-generative-ui--exemplo-real-do-demo-varejo) do manual de configuração YAML.
 
 ## 1A. Contrato de geração do spec no caminho do chat embutível
 
-Esta seção detalha como um spec AG-UI nasce no backend e chega ao componente `PrometeuEmbeddableChatRuntime` (Superfície A). Difere do fluxo `/ag-ui/runs` (Superfície B, SSE) em transporte, ciclo de vida e configuração.
+Esta seção detalha como um spec AG-UI nasce no backend e chega ao componente `PrometeuEmbeddableChatRuntime` (Superfície A). Difere do fluxo `/ag-ui/runs` para telas dedicadas (Superfície B, capability packs) em propósito e configuração, mas hoje **reutiliza o mesmo endpoint e o mesmo transporte SSE** — a diferença é que a Superfície A o consome de forma opt-in, encapsulada dentro do componente de chat.
 
-### 1A.1. Como o DashboardSpec é gerado via `response_format`
+### 1A.1. Como o envelope A2UI é gerado (mecanismo vigente)
 
-O mecanismo é a instrução `response_format` em JSON Schema aplicada a um subagente dentro de um supervisor DeepAgent. Essa instrução força a LLM a devolver a resposta inteiramente como JSON válido segundo o esquema fornecido, sem texto antes, sem markdown.
+O mecanismo central é a tool oficial `generate_a2ui` (pacote `ag_ui_langgraph`, função `get_a2ui_tools`), bindada **diretamente no supervisor DeepAgent** — não num subagente separado — quando o YAML declara o bloco `multi_agents[].ag_ui.generative`. Contrato completo do bloco: `chat_renderer` (`jspuro` | `copilotkit`) e `a2ui_schema` (`catalog_id` estável + `components` não vazio), lido por `src/agentic_layer/supervisor/ag_ui_generative_config.py`.
 
-O ciclo de vida completo:
+Wiring de ponta a ponta, na ordem real de execução:
 
-1. O usuário envia uma pergunta pelo chat embutível (`/rag/execute` ou `/agent/execute`).
-2. O supervisor DeepAgent roteia a pergunta para o subagente especializado em dashboard.
-3. A LLM do subagente gera o JSON do DashboardSpec 1.0 conforme o `response_format` declarado no YAML.
-4. O backend devolve o JSON no corpo da resposta HTTP normal (sem stream, sem SSE).
-5. O componente recebe a resposta já normalizada.
-6. `embeddable-chat-spec-runtime.js` executa `detectAgUiSpec(payload)`: procura o spec na raiz e em chaves container (`ag_ui`, `structured`, `data`, `result`); classifica como `dashboard` se encontrar `version: "1.0"` + `widgets`.
-7. O spec passa pelo validador fail-closed de DashboardSpec (`ag-ui-dashboard-validator.js`).
-8. Se válido, o renderer de DashboardSpec (`ag-ui-dashboard-renderer.js`) monta o DOM — widgets, gráficos (ApexCharts), KPIs, tabelas, rankings — na bolha do assistente.
-9. Qualquer falha em qualquer etapa acima aciona o fallback: o componente exibe o conteúdo como texto. A tela nunca quebra.
+1. `config_resolver.py` parseia o bloco do YAML e expõe `ActiveSupervisorContext.ag_ui_generative`.
+2. `deep_agent_supervisor.py` usa esse contexto para: (a) bindar `generate_a2ui` como tool extra do grafo (`build_generate_a2ui_tool`, em `ag_ui_generative_tool.py`); (b) estender o `DeepAgentState` com o canal `ag-ui` (`build_ag_ui_deepagent_state_schema`), necessário para o catálogo sobreviver ao filtro de payload do `LangGraphAgent`; (c) anexar ao prompt do supervisor o bloco `A2UI_ORDERING_PROMPT_BLOCK` — contrato de saída que só permite chamar `generate_a2ui` quando o usuário pediu visualização, exige obter os dados antes de desenhar, proíbe delegar o desenho a subagentes via `task` e proíbe inventar números.
+3. No boundary AG-UI (`ag_ui_deepagent_adapter.py`), o servidor injeta o catálogo (`a2ui_schema` serializado) em `state["ag-ui"]["a2ui_schema"]` via um context-entry oficial do `LangGraphAgent` (descrição mágica que o SDK roteia automaticamente) — o catálogo vem sempre do YAML, nunca do request.
+4. Quando o supervisor decide desenhar, ele chama `generate_a2ui`, que lê os dados **do histórico da conversa** (resultados de tools já chamadas pelos especialistas via `task` + `dyn_sql`) e produz o envelope `{a2ui_operations: [createSurface, updateComponents]}`.
+5. Esse envelope viaja no `TOOL_CALL_RESULT` da chamada, dentro do stream SSE de `POST /ag-ui/runs`.
+6. No frontend, o transporte opt-in do componente de chat (`embeddable-chat-ag-ui-transport.js` + `ag-ui-embeddable-transport-bridge.js`) só ativa quando o host liga `agUiSseTransport: true` **e** `mode: 'deepagent'` **e** `chatRenderer: 'jspuro'`; qualquer outra combinação segue no caminho síncrono de sempre.
+7. `embeddable-chat-spec-runtime.js::detectAgUiSpec` reconhece o envelope pelo discriminador `a2ui_operations` (array).
+8. `ag-ui-a2ui-surface-renderer.js` valida e desenha, fail-closed, contra um catálogo fechado de 8 componentes (`Card`, `Column`, `Row`, `Text`, `Divider`, `BarChart`, `LineChart`, `DataTable`); gráficos reutilizam a mesma porta neutra `ChartAdapter` + ApexCharts de outras superfícies AG-UI. Componente fora do catálogo, ou qualquer parte malformada, derruba a superfície inteira para texto — nunca renderiza pela metade.
+9. Quando `chat_renderer: copilotkit`, a rota de compatibilidade `POST /ag-ui/copilotkit/runs` repassa o mesmo envelope A2UI sem filtro para um cliente React com o SDK oficial CopilotKit (`@ag-ui/a2ui-middleware`).
 
-O contrato das 3 peças obrigatórias no YAML do subagente:
+Comportamento aditivo e condicional comprovado: sem o bloco `ag_ui.generative`, nenhuma tool nova é bindada e o DeepAgent responde byte a byte como antes; com o bloco, a mesma pergunta sem pedido de visualização continua vindo em texto — o gráfico só aparece quando o usuário pede.
 
-- `prompt`: instrui a LLM a devolver JSON puro, sem texto extra, sem markdown, proibindo HTML/JS/CSS/SQL livre.
-- `tools`: lista apenas as queries `dyn_sql` aprovadas (o subagente não pode executar SQL arbitrário).
-- `response_format`: JSON Schema com `const: "1.0"` no campo `version` e os campos obrigatórios do DashboardSpec (`version`, `title`, `layout`, `widgets`, `dataSources`, `narrative`, `refreshPolicy`, `safety`).
+Passo a passo de configuração YAML, exemplos e FAQ: [TUTORIAL-101-GENERATIVE-UI.md](../usuario/TUTORIAL-101-GENERATIVE-UI.md).
 
-Exemplo real desta estrutura em producao: `app/yaml/rag-config-pdv-vendas-demo.yaml`, subagente `subdominio_dashboard_dinamico` (linhas 504-606+).
+> Este mecanismo substitui um anterior baseado em subagente render-only (`output_subagent: true`), flag `middlewares.generative_ui_dashboard` e contrato `DashboardSpec`, removido do AST, dos validators e do runtime. Nenhum artefato do produto usa mais esses três nomes.
 
 ### 1A.2. Como o CapabilitiesSpec é gerado
 
@@ -82,9 +80,16 @@ O spec e emitido como resposta normal do endpoint de chat. O componente detecta 
 
 Guardrails do CapabilitiesSpec: quatro flags de segurança (`htmlAllowed`, `scriptAllowed`, `sqlAllowed`, `secretsAllowed`) devem ser todas `false`; o validador fail-closed rejeita o spec se qualquer flag vier diferente. O backend usa `src/api/schemas/ag_ui_capabilities_models.py` para garantir o contrato antes de emitir.
 
-### 1A.3. O campo `multi_agents[].ag_ui.ui_specs` (implementado, sem uso exercitado)
+### 1A.3. Os campos governados `multi_agents[].ag_ui.ui_specs` e `workflows[].ag_ui.ui_specs` (implementados, sem uso exercitado)
 
-Os modelos internos (AST, validators, compilacao) reconhecem um campo `ag_ui.ui_specs` por subagente que permitiria declarar specs de interface diretamente no YAML por subagente. Ao verificar o repositorio em 2026-06-12, **nenhum arquivo YAML no projeto usa esse campo**. Esta implementado no codigo mas nao exercitado por nenhum exemplo real. O caminho comprovado e operacional hoje e o `response_format` descrito em 1A.1.
+Os modelos internos (AST, validators, compilacao) e o runtime AG-UI reconhecem o namespace `ag_ui.ui_specs` em **dois donos canonicos**:
+
+1. `multi_agents[].ag_ui.ui_specs` para DeepAgent.
+2. `workflows[].ag_ui.ui_specs` para Workflow.
+
+No boundary `POST /ag-ui/runs`, os adapters dos dois runtimes passam pela mesma politica `AgUiGovernedUiSpecService`: o payload referencia a interface por `uiSpecId`, e o runtime resolve a UISpec governada dentro do dono canônico correspondente no YAML resolvido.
+
+Ao verificar o repositorio, **nenhum arquivo YAML do projeto usa esses campos em nenhum dos dois caminhos**. O contrato esta implementado no codigo, inclusive com lookup e validacao separados para DeepAgent e Workflow, mas ainda nao ha exemplo real exercitado em YAML versionado. O caminho comprovado e operacional hoje para render generativo no chat embutivel e o bloco `ag_ui.generative` (A2UI), descrito em 1A.1 — conceito distinto e sem sobreposicao com `ag_ui.ui_specs`.
 
 ### 1A.4. Deteccao no frontend: como o componente decide o tipo do spec
 
@@ -96,9 +101,9 @@ O modulo `embeddable-chat-spec-runtime.js` executa `detectAgUiSpec(payload)` em 
 4. Retorna o primeiro que casar. Se nenhum casar, retorna `null` e o componente renderiza texto.
 
 `classifyCandidate` identifica o tipo por:
+
 - `specType === 'capabilities'` → CapabilitiesSpec.
-- presenca de `version` + `widgets` em formato esperado → DashboardSpec.
-- marcadores do UISpec → UISpec.
+- presenca de um array `a2ui_operations` → A2UI (o envelope vindo do `TOOL_CALL_RESULT` de `generate_a2ui`, ver 1A.1). A validacao real do conteudo (componentes, dados) fica a cargo do renderer fail-closed, nao do detector.
 
 Esse mecanismo nao inventa contrato de backend — apenas detecta padroes conhecidos na resposta normalizada, qualquer que seja o container que o backend usou.
 
@@ -367,48 +372,29 @@ No estado atual, esse exemplo serve apenas para entender o shape historico que p
 }
 ```
 
-### 3.2.3. Exemplo de dashboard dinamico legado
+### 3.2.3. Exemplo de capability governada do retail_demo
+
+O capability pack `retail_demo` não materializa mais um canvas de dashboard — cada capability roda uma query governada e devolve o resultado como `TOOL_CALL_RESULT` + `STATE_SNAPSHOT` (texto de confirmação, sem visual estruturado). Exemplo real de request para a capability `sales_summary`:
 
 ```json
 {
-  "threadId": "dashboard-dinamico",
-  "runId": "dashboard-dinamico-1",
+  "threadId": "retail-demo-thread",
+  "runId": "retail-demo-run-1",
   "executionKind": "retail_demo",
   "user_email": "diretoria@empresa.com",
   "input": {
-    "message": "Monte um painel executivo",
-    "capability": "dashboard_dynamic",
-    "dashboardSpec": {
-      "version": "1.0",
-      "title": "Painel executivo",
-      "layout": {
-        "kind": "grid",
-        "columns": 12,
-        "rowHeight": 120,
-        "gap": 12
-      },
-      "widgets": [],
-      "dataSources": [],
-      "narrative": {
-        "summary": "Exemplo",
-        "insights": ["Exemplo"]
-      },
-      "refreshPolicy": {
-        "mode": "manual",
-        "maxAgeSeconds": 300
-      },
-      "safety": {
-        "htmlAllowed": false,
-        "scriptAllowed": false,
-        "freeSqlAllowed": false,
-        "secretsAllowed": false,
-        "correlationIdAllowed": false
-      }
+    "message": "Resuma as vendas do período",
+    "capability": "sales_summary",
+    "parameters": {
+      "period_start": "2026-01-01",
+      "period_end": "2026-01-31"
     }
   },
   "yaml_inline_content": "schema_version: \"1.0.0\"\n..."
 }
 ```
+
+> Para o DeepAgent desenhar visualizações condicionais dentro do chat (gráficos, cards, tabelas), o caminho vigente é o bloco YAML `ag_ui.generative` + tool `generate_a2ui`, descrito na seção 1A — não este capability pack.
 
 ## 4. Contrato dos eventos
 
@@ -478,7 +464,7 @@ O adapter workflow usa `Workflowagent`, obtem o `CompiledStateGraph` do runtime 
 
 ### 7.3. retail_demo
 
-Esse adapter continua sendo o mais rico em termos de dominio visual pronto. Agora ele e entregue como capability pack governado, consumido pelo registry AG-UI comum, e continua suportando query governada e dashboard dinamico.
+Esse adapter e entregue como capability pack governado, consumido pelo registry AG-UI comum. Hoje ele suporta apenas query governada (catálogo fechado de capabilities PDV) — o mecanismo de dashboard dinâmico que existia aqui foi removido; visualização condicional no chat é responsabilidade do bloco `ag_ui.generative` (seção 1A), não deste adapter.
 
 ### 7.4. erp_backoffice_demo
 
@@ -504,7 +490,6 @@ O catalogo de capabilities fechadas do retail_demo inclui estas entradas.
 2. checkout_funnel.
 3. catalog_opportunities.
 4. customer_segments.
-5. dashboard_dynamic.
 
 As protecoes tecnicas confirmadas nesse adapter sao essenciais.
 
@@ -529,7 +514,7 @@ As protecoes tecnicas confirmadas nesse pack sao estas.
 2. O discovery publica apenas o contrato do procedimento, sem expor `CALL`, segredo ou DSN.
 3. O resultado atual e uma fixture governada de preview baseada no contrato `prc_fechar_caixa` lido no repositório.
 4. As duas superficies administrativas existentes usam capabilities publicas diferentes, mas continuam no mesmo pack governado e no mesmo procedimento homologado.
-4. Os parametros `p1` e `p2` continuam obrigatorios e escalares.
+5. Os parametros `p1` e `p2` continuam obrigatorios e escalares.
 
 ### 8.3. Como uma software house cria um pack seguro
 
@@ -541,60 +526,11 @@ O caminho seguro agora e este.
 4. Executar apenas query, procedure ou fixture previamente aprovada no codigo ou em contrato real do repositório.
 5. Registrar o pack no registry comum. Discovery e runtime passam a enxergar o novo dominio pelo mesmo ponto de registro.
 
-## 9. Dashboard dinamico
+## 9. Visualização generativa hoje: onde ela vive de verdade
 
-### 9.1. Rota especial do retail_demo
+Esta seção existia para documentar um mecanismo de "dashboard dinâmico" do capability pack `retail_demo` (rota especial por `capability=dashboard_dynamic`, `DashboardMaterializationService`, eventos `retail.dashboard.*`, contrato `DashboardSpec` com 9 tipos de widget). **Esse mecanismo foi removido do código** — `retail_demo` hoje só executa as 4 capabilities de query governada listadas em 8.1, cada uma devolvendo `TOOL_CALL_RESULT` + `STATE_SNAPSHOT` com o resultado bruto, sem nenhuma materialização visual.
 
-Quando capability = dashboard_dynamic, o adapter nao segue o fluxo padrao de dyn_sql unico. Em vez disso, ele desvia para DashboardMaterializationService.
-
-### 9.2. Eventos customizados emitidos
-
-Os eventos customizados agora seguem o `eventPrefix` do `uiNamespace`. Quando o dashboard usa o namespace default de compatibilidade, os eventos continuam exatamente estes.
-
-1. retail.dashboard.spec.started.
-2. retail.dashboard.spec.validated.
-3. retail.dashboard.data.bound.
-4. retail.dashboard.widget.added.
-5. retail.dashboard.render.ready.
-6. retail.dashboard.validation.failed.
-
-### 9.3. Estado inicial e estado final
-
-O service sempre comeca com um `STATE_SNAPSHOT` na chave definida por `uiNamespace.stateKey`. No default compatível, essa chave continua sendo `retailDashboard`. Em caso de sucesso, o estado termina com `status=ready`. Em caso de falha de validacao, termina com `validation_failed` e `errors` estruturados.
-
-### 9.4. Contrato da DashboardSpec
-
-Os blocos estruturais confirmados sao estes.
-
-1. version = 1.0.
-2. layout grid.
-3. widgets tipados.
-4. dataSources com sourceType dyn_sql.
-5. narrative.
-6. refreshPolicy.
-7. safety com cinco flags obrigatoriamente false.
-8. uiNamespace com `specType`, `stateKey`, `eventPrefix` e `version`.
-
-### 9.5. Tipos de widget confirmados
-
-1. kpi.
-2. line_chart.
-3. bar_chart.
-4. donut_chart.
-5. table.
-6. insight_card.
-7. alert.
-8. timeline.
-9. ranking.
-
-### 9.6. Regras de validacao mais importantes
-
-1. Rejeicao de HTML e script.
-2. Rejeicao de SQL ou query livre em strings ou chaves.
-3. Rejeicao de segredos e correlation_id no payload.
-4. Rejeicao de widget apontando para data source inexistente.
-5. Rejeicao de parametro nao declarado em allowedParameters.
-6. Rejeicao de layout impossivel ou sobreposicao de widgets.
+O mecanismo vigente de visualização generativa é o **A2UI** (seção 1A): tool `generate_a2ui` bindada no supervisor DeepAgent quando o YAML declara `ag_ui.generative`, envelope `{a2ui_operations}` no `TOOL_CALL_RESULT`, catálogo fechado de 8 componentes (`Card`, `Column`, `Row`, `Text`, `Divider`, `BarChart`, `LineChart`, `DataTable`) renderizado fail-closed no frontend. É um mecanismo do chat embutível (Superfície A), não do capability pack `retail_demo` (Superfície B) — os dois compartilham o endpoint `/ag-ui/runs`, mas não a lógica de geração visual.
 
 ## 10. Runtime compartilhado do frontend
 
@@ -608,7 +544,7 @@ O codigo fica em app/ui/static/js/shared/ag-ui-component-catalog.js e e reexport
 2. PrometeuComponentRegistry carrega somente catalogo valido.
 3. validateComponentSpec valida componentId, props, actions e bindings antes de renderizar.
 4. buildCustomEvent emite a spec validada em evento AG-UI CUSTOM schemaado com name prometeu.component.render.
-5. app/ui/static/js/shared/ag-ui-safe-content.js bloqueia HTML, script, SQL livre, segredos e correlation_id tanto no DashboardSpec quanto no ComponentCatalog.
+5. app/ui/static/js/shared/ag-ui-safe-content.js bloqueia HTML, script, SQL livre, segredos e correlation_id nas superfícies AG-UI que o consomem, inclusive o ComponentCatalog e o renderer A2UI (seção 1A).
 
 Isso evita dois problemas comuns. Primeiro, impede que um agente envie um componente desconhecido e a tela tente adivinhar como renderizar. Segundo, impede que actions ou bindings virem atalhos escondidos para HTML, SQL, segredo ou dado interno.
 
@@ -618,7 +554,7 @@ Checklist minimo para cadastrar componente novo com seguranca:
 2. Validar o catalogo com `validatePrometeuComponentCatalog`.
 3. Garantir props, actions e bindings em allowlist explicita.
 4. Cobrir o cadastro com teste frontend do catalogo ou renderer.
-5. Cobrir o fluxo backend com teste de `DashboardSpec` validada ou materializacao segura.
+5. Cobrir o fluxo backend com teste do envelope A2UI validado (seção 1A) ou materialização segura equivalente.
 
 ### 10.1. Cliente SSE via POST
 
@@ -849,18 +785,18 @@ Isso significa que um terceiro pode seguir esta estrategia.
 11. STEP_FINISHED.
 12. RUN_FINISHED.
 
-### 15.2. dashboard dinamico
+### 15.2. A2UI no chat embutível (visualização condicional)
+
+Sequência confirmada por log de execução real (`correlation_id 20260703_060827-31e45e89`), com o bloco `ag_ui.generative` declarado e o usuário pedindo uma visualização:
 
 1. RUN_STARTED.
-2. CUSTOM `<eventPrefix>.spec.started`.
-3. STATE_SNAPSHOT inicial.
-4. CUSTOM de validacao.
-5. STATE_DELTA da spec.
-6. CUSTOM e STATE_DELTA de data source.
-7. CUSTOM e STATE_DELTA de widgets.
-8. CUSTOM `<eventPrefix>.render.ready`.
-9. STATE_DELTA final com status ready.
-10. RUN_FINISHED.
+2. TOOL_CALL_START/ARGS/END/RESULT do `task` — o supervisor delega a um especialista, que chama `dyn_sql` e traz dado real para o histórico.
+3. TOOL_CALL_START/ARGS/END do `generate_a2ui` — o supervisor compõe a superfície com os dados já obtidos.
+4. TOOL_CALL_RESULT do `generate_a2ui`, contendo o envelope `{a2ui_operations: [createSurface, updateComponents]}` (ver 1A.1).
+5. TEXT_MESSAGE_START/CONTENT/END com uma frase curta de encerramento.
+6. RUN_FINISHED.
+
+O passo de renderização em si (`render_a2ui`) não é um evento do stream — acontece no frontend, fora do backend: o transporte SSE opt-in extrai o envelope do `TOOL_CALL_RESULT` e o renderer fail-closed (seção 1A.1, item 8) desenha a superfície na bolha. Sem pedido de visualização na mesma pergunta, o passo 3-4 não acontece e a resposta é só texto.
 
 ### 15.3. deepagent ou workflow com HIL
 
@@ -924,20 +860,20 @@ Causa provavel: DATABASE_VAREJO_DSN ou DATABASE_VAREJO_SCHEMA ausentes.
 
 Confirmacao: code AG_UI_RETAIL_CONFIG_MISSING.
 
-### 16.7. Dashboard recusado antes da renderizacao
+### 16.7. Envelope A2UI recai em texto (renderer fail-closed)
 
-Sintoma: a UI recebe validation_failed e nao recebe render.ready.
+Sintoma: o chat embutível responde texto/JSON cru em vez de desenhar a superfície, mesmo com `ag_ui.generative` configurado e o `TOOL_CALL_RESULT` do `generate_a2ui` presente no log.
 
-Causa provavel: DashboardSpec insegura ou semanticamente invalida.
+Causa provavel: um componente fora do catálogo fechado de 8 (`ag-ui-a2ui-surface-renderer.js`), envelope malformado, ou algum dos scripts de 1A.1 (item 6-8) ausente/fora de ordem na página host.
 
-Confirmacao: custom event `<eventPrefix>.validation.failed` com errors estruturados. No namespace default de compatibilidade, ele continua aparecendo como `retail.dashboard.validation.failed`.
+Confirmacao: este não é um erro de backend com `code` estruturado — é um degrade silencioso e por design do renderer frontend (`renderInto` devolve `{rendered: false}`, sem lançar exceção). Diagnosticar pelo console do navegador (script ausente) e pela comparação entre o `TOOL_CALL_RESULT` no log do `correlation_id` e o catálogo de 8 componentes suportados.
 
 ## 17. Observabilidade
 
 O slice se preocupa com observabilidade em quatro niveis.
 
 1. Correlation_id retornado no header de runs.
-2. Logging estruturado no orchestrator e na materializacao de dashboard.
+2. Logging estruturado no orchestrator, no wiring do A2UI generativo (`ag_ui.deepagent.a2ui_schema.injected`, seção 1A.1) e nos capability packs.
 3. Replay por run e por thread.
 4. Event store sanitizado para nao reexpor segredos.
 
@@ -972,7 +908,7 @@ O erro mais comum a evitar e tratar o AG-UI como se fosse apenas streaming de te
 Esta secao resume o que ainda nao deve ser exagerado em documentacao ou venda.
 
 1. Event store nao e mais apenas memoria: em development/test ele pode usar `InMemoryAgUiEventStore`, mas fora disso depende de provider canônico configurado e hoje o provider duravel suportado e postgres.
-2. O discovery ja foi generalizado para capability packs governados e hoje cobre pelo menos `retail_demo` e `erp_backoffice_demo`, mas o dominio visual mais maduro continua sendo o demo de varejo porque so ele traz dashboard dinamico pronto.
+2. O discovery ja foi generalizado para capability packs governados e hoje cobre pelo menos `retail_demo` e `erp_backoffice_demo`; nenhum dos dois materializa dashboard — visualização generativa fica a cargo do bloco `ag_ui.generative` (A2UI, seção 1A) no chat embutível.
 3. O dominio mais bem servido visualmente e o varejo demo.
 4. O pacote de runtime e interno e privado.
 5. O controller compartilhado das demos depende do contexto mestre da plataforma para API key, YAML e user_email.
@@ -989,21 +925,22 @@ O slice AG-UI nao esta documentado no vazio. Ele tem protecao automatizada relev
 4. tests/unit/test_02-01-38_ag_ui_event_store.py.
 5. tests/unit/test_02-01-36_ag_ui_deepagent_adapter.py.
 6. tests/unit/test_02-01-56_ag_ui_workflow_adapter.py.
-7. tests/unit/test_02-01-34_ag_ui_dashboard_materialization.py.
+7. tests/unit/agentic_layer/supervisor/test_02-10-08_ag_ui_generative_config.py (parser do bloco `ag_ui.generative`).
+8. tests/unit/agentic_layer/supervisor/test_02-10-09_ag_ui_generative_tool.py (wiring da tool `generate_a2ui`, catálogo, prompt de ordenação).
 
 ### 20.2. Frontend e pacote runtime
 
 1. tests/js/ag_ui_runtime.test.js.
 2. tests/js/ag_ui_sidecar_chat.test.js.
 3. tests/frontend/ag_ui_varejo_demo_hub_contract.test.js.
-4. tests/frontend/ag_ui_dashboard_dinamico_contract.test.js.
+4. tests/frontend/ag_ui_a2ui_surface_renderer_contract.test.js (renderer fail-closed, catálogo de 8 componentes).
+5. tests/frontend/embeddable_chat_ag_ui_sse_transport_contract.test.js (transporte SSE opt-in, extração do envelope A2UI do `TOOL_CALL_RESULT`).
 
 ### 20.3. Playwright
 
 1. tests/playwright/test_08-01-05_ag_ui_varejo_demo_pages.py.
-2. tests/playwright/test_08-01-04_ag_ui_dashboard_dinamico.py.
 
-Esses testes protegem contrato, fluxo visual, HIL, replay, dashboard dinamico e ausencia de acoplamento ao webchat legado.
+Esses testes protegem contrato, fluxo visual, HIL, replay, geração/render do A2UI e ausencia de acoplamento ao webchat legado.
 
 ## 21. Explicacao 101
 
@@ -1031,7 +968,7 @@ Ele e um jeito padronizado de a tela conversar com o runtime de IA sem ficar ceg
 - src/api/services/ag_ui_retail_demo_adapter.py
   - Motivo da leitura: confirmar capabilities e guardrails do pack PDV.
   - Simbolo relevante: RetailDemoCapabilityPack, RetailDemoQueryCatalog, RetailDemoAgUiAdapter.
-  - Comportamento confirmado: pack governado, SQL read-only e dashboard_dynamic.
+  - Comportamento confirmado: pack governado com 4 capabilities de query SQL read-only (`sales_summary`, `checkout_funnel`, `catalog_opportunities`, `customer_segments`); zero ocorrência de `dashboard`/`DashboardSpec` no arquivo.
 
 - src/api/services/ag_ui_capability_pack.py
   - Motivo da leitura: confirmar o contrato comum dos dominios governados.
@@ -1043,10 +980,10 @@ Ele e um jeito padronizado de a tela conversar com o runtime de IA sem ficar ceg
   - Simbolo relevante: ErpBackofficeDemoCapabilityPack.
   - Comportamento confirmado: capabilities `fechar_caixa` e `conferir_turno_caixa` publicadas sem SQL/DSN e executadas como fixtures seguras baseadas em contrato real do repositório.
 
-- src/api/schemas/ag_ui_dashboard_models.py
-  - Motivo da leitura: confirmar o contrato seguro do canvas dinamico.
-  - Simbolo relevante: DashboardSpec, DashboardSpecValidator.
-  - Comportamento confirmado: contrato versionado, widget types e safety obrigatoria.
+- src/agentic_layer/supervisor/ag_ui_generative_config.py + ag_ui_generative_tool.py
+  - Motivo da leitura: confirmar o contrato do bloco `ag_ui.generative` e o wiring da tool `generate_a2ui`.
+  - Simbolo relevante: AgUiGenerativeConfig, VALID_CHAT_RENDERERS, build_generate_a2ui_tool, A2UI_ORDERING_PROMPT_BLOCK.
+  - Comportamento confirmado: parser permissivo (`chat_renderer` fechado em `jspuro`/`copilotkit`; `a2ui_schema.components` livre), tool bindada direto no supervisor, prompt condicional anti-thrashing. `src/api/schemas/ag_ui_dashboard_models.py` (o contrato `DashboardSpec` antigo) não existe mais no código.
 
 - app/ui/static/js/shared/ag-ui-client.js
   - Motivo da leitura: entender o transporte no browser.

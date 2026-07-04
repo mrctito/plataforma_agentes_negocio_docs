@@ -295,6 +295,40 @@ O JobScheduler local do processo scheduler-only agenda tarefas periódicas de ma
 
 Esse JobScheduler local não é a fonte canônica do calendário dos trabalhos de negócio. Ele é o relógio interno do processo scheduler para disparar jobs de manutenção, claim e reconciliação.
 
+#### 7.3.1. Como o scheduler roda os jobs (modelo de execução real)
+
+O `JobScheduler` (`src/core/job_scheduler.py`) **não usa subprocess nem um pool de threads por job**. Ele funciona assim:
+
+- Ao iniciar (`start()`), cria **uma única thread daemon** que roda o laço interno `_run_loop`.
+- Esse laço, a cada `poll_interval`, coleta os jobs vencidos e **executa cada um em série, inline, dentro da própria thread do laço** (`_execute_job`). Se o callback é uma corrotina, ela é aguardada até o fim; se é síncrono, é chamado direto.
+- Exceções de um job são contidas por um guard interno, não derrubam o laço, e ficam registradas no log canônico com `correlation_id`.
+
+Consequências práticas que o operador precisa conhecer:
+
+- **Execução serial (head-of-line blocking):** enquanto um job roda, os demais vencidos esperam e o `poll_interval` não avança. Por isso, jobs de manutenção devem ser curtos e limitados; trabalho pesado e assíncrono não roda aqui — ele é **publicado para o Worker** pela rotina `universal-scheduler-dispatcher` (ver seção 6).
+- **Somente no líder:** as rotinas só sobem quando o processo é líder do scheduler (liderança Redis, seção 7.2). Sem liderança, ficam inibidas com log explícito.
+- **Cron em UTC:** as expressões cron das rotinas agendadas são interpretadas em **UTC**. Ex.: `0 6 * * *` = 06:00 UTC = **03:00 em America/Sao_Paulo** (UTC−3).
+
+#### 7.3.2. Rotinas agendadas hoje (catálogo confirmado no código)
+
+Todas são registradas em `src/api/startup/runtime_bootstrap.py` e executam dentro do maintenance scheduler descrito acima. Cada rotina tem uma flag de habilitação e sua cadência própria em `src/config/settings.py`.
+
+| Rotina (nome do job) | Tipo | Cadência default | Habilitada por default | O que faz |
+| --- | --- | --- | --- | --- |
+| `log-cleanup` | intervalo | 7200s (2h) | sim | Coleta e limpa logs conforme a política de retenção de logs. |
+| `ingestion-reconciliation` | intervalo | 900s (15min) | sim | Reconcilia jobs de ingestão em estado inconsistente. |
+| `job-core-reconciliation` | intervalo | 60s | sim | Reconcilia runs "fantasma" do Job Core (travados/órfãos) além de um limite de tempo. |
+| `agent-hil-approval-maintenance` | intervalo | 300s (5min) | não | Fecha aprovações HIL expiradas (TTL vencido). |
+| `chat-conversation-retention-cleanup` | cron | `0 5 * * *` (02:00 BRT) | sim | Purga conversas do chat paradas há mais de 60 dias e apaga seus checkpoints via API oficial do LangGraph. Detalhe em **[Gestão e ciclo de vida das conversas](README-TECNICO-GESTAO-CONVERSAS-CHAT.md)**. |
+| `chat-conversation-compaction` | cron | `0 6 * * *` (03:00 BRT) | sim | Compacta o contexto das conversas DeepAgent com atividade recente (janela default de 2 dias), usando a tool oficial `compact_conversation`. Detalhe do mecanismo em **[DeepAgent Supervisor §7.8](README-TECNICO-DEEPAGENT-SUPERVISOR-COMPLETO.md)**. |
+| `universal-scheduler-dispatcher` | intervalo | 30s | sim | Faz o claim transacional dos runs agendados e os **publica para o Worker** (não executa o trabalho pesado inline). É a ponte entre o calendário e a execução assíncrona (seção 6). |
+
+Notas de leitura do catálogo:
+
+- **Intervalo vs cron:** rotinas de "vigília" contínua (reconciliação, dispatcher, limpeza de log) usam intervalo curto; rotinas de manutenção diária de dados (retenção e compactação de conversas) usam cron noturno em UTC para rodar fora do horário de pico.
+- **Retenção antes de compactação:** a retenção roda 02:00 BRT e a compactação 03:00 BRT. A ordem é intencional: a retenção remove primeiro as conversas vencidas, e a compactação só trabalha sobre o que sobrou e teve atividade recente.
+- Todos os nomes de recurso persistente usados por essas rotinas são segregados por `ENVIRONMENT`, conforme a regra global da plataforma.
+
 ## 8. Comunicação HIL confirmada
 
 ### 8.1. Registro do pedido HIL

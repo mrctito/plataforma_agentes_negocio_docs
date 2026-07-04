@@ -99,8 +99,8 @@ Estas quatro formam o fluxo oficial de quase todo trabalho não-trivial.
   - **Hierarquia de verdade absoluta:** código executável > teste > log > roteiro > doc. Ensaio verde
     **não** prova linha real.
   - **Validação ponta a ponta por tarefa:** cada T1..Tn é conferida individualmente.
-  - **Pode acionar o laboratório:** chama `validar-log` e `validar-observabilidade` como evidência
-    subordinada (não terceiriza a decisão).
+  - **Audita a observabilidade diretamente:** confere a escrita local do log e a cobertura diagnóstica
+    do fluxo, conforme `log-instructions.md` (a decisão é sempre dele).
   - **Se reprova, gera inventário de não-conformidades e devolve ao PCP (`planejar`)** para um novo
     roteiro focado.
 - **Defeito que evita:** **falso-verde** chegando ao cliente; legado não removido; observabilidade
@@ -116,7 +116,7 @@ Estas quatro formam o fluxo oficial de quase todo trabalho não-trivial.
 
 ## 3.2 O laboratório de metrologia e qualidade — observabilidade
 
-Cinco estações que garantem que o sistema seja **diagnosticável**. Giram em torno do `correlation_id`
+Três estações que garantem que o sistema seja **diagnosticável**. Giram em torno do `correlation_id`
 (número de série) e dos logs canônicos (registro de processo).
 
 ### 🔎 `analisar-log` — METROLOGIA (leitura dos instrumentos)
@@ -128,26 +128,6 @@ por sobreposição temporal, não por configuração nominal ("a UI disse 5 work
 juntos de verdade").
 - **Evita:** leitura de instrumento fraca, conclusão por "parece". **Valor:** debug offline com evidência
   reprodutível.
-
-### 📐 `validar-log` — CALIBRAÇÃO DO REGISTRO (audita a escrita do log)
-
-Audita se os logs de um escopo seguem a especificação (logger oficial, `correlation_id` preservado,
-`event_name` correto, builders canônicos). Regra de ouro: **falha fechada anti-amostragem** — audita
-**100%** do escopo, não para por "já vi o padrão". Caça `logger.error` dentro de `except` e `event_name`
-ausente.
-- **Evita:** registros "bonitos" que violam a especificação e quebram a análise forense. **Valor:**
-  instrumentação correta por construção.
-
-### 📊 `validar-observabilidade` — AUDITORIA DE COBERTURA DE SENSORES
-
-Vai além: valida se **todo o fluxo** está instrumentado — parâmetros, decisões, ifs, chamadas externas,
-início/fim de processos e jobs, telemetria. A pergunta que responde: *"um operador consegue reconstruir o
-que aconteceu, como e por quê, sem abrir o código?"* Também com falha fechada.
-- **Evita:** cobertura parcial com "pontos cegos" no processo. **Valor:** debug offline **completo**.
-
-> 🛠️ A divisão `validar-log` × `validar-observabilidade` é cirúrgica: um valida **se o registro foi
-> escrito certo** (especificação), o outro valida **se há registro suficiente** (cobertura). Dois
-> defeitos diferentes, duas estações.
 
 ### 🔧 `corrigir-erros-com-log` — ENGENHARIA DE FALHAS (análise de causa raiz / RCA)
 
@@ -249,8 +229,6 @@ desconhecimento do que existe, instruções contraditórias, promessa comercial 
 | implementar | Fabricação | Põe peça nova ativa no caminho oficial |
 | validar-entrega | Controle de qualidade | Aprova ou rejeita o lote com base em evidência real |
 | analisar-log | Metrologia | Lê o registro por correlation_id, sem corrigir |
-| validar-log | Calibração do registro | Audita se o log foi escrito segundo a especificação |
-| validar-observabilidade | Auditoria de sensores | Audita se há registro suficiente para reconstruir o fluxo |
 | corrigir-erros-com-log | Engenharia de falhas (RCA) | Corrige a causa raiz usando o registro como verdade |
 | testar-cli-log-analyzer | Calibração do instrumento | Valida a ferramenta de análise de logs |
 | gerenciar-postgresql | Manutenção (banco) | Opera o PostgreSQL real, auditável |
