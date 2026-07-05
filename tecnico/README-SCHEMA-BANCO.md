@@ -2196,6 +2196,7 @@ Em linguagem simples: pense nesse schema como uma prateleira oficial de integrac
 - `execution_mode`: modo de execução associado.
 - `descricao`: descrição funcional do vínculo.
 - `metadata_json`: metadados adicionais em `jsonb`.
+- `agent_instructions_md`: instruções persistentes de DeepAgent (equivalente ao AGENTS.md) da conta **pessoal**, em texto Markdown; coluna dedicada `text` nullable. Alimenta o `MemoryMiddleware` nativo do DeepAgent via `/memories/agents.md` (escopo `user`). Ver a seção `### agent_skills` para o contexto completo da feature e o gate de DDL manual.
 - `created_at`: criação do vínculo.
 - `updated_at`: última atualização do vínculo.
 - Índices e restrições:
@@ -2209,6 +2210,60 @@ Em linguagem simples: pense nesse schema como uma prateleira oficial de integrac
 - esta tabela resolve o contexto pessoal, quando o usuário opera fora de uma organização.
 - a conta pessoal deve ter no máximo um YAML ativo.
 - se não houver YAML pessoal configurado, o sistema deve falhar de forma clara, sem fallback automático para tenant.
+
+### tenant_user_yaml
+
+- Finalidade prática: guardar o YAML do usuário **dentro de uma organização** (contexto organizacional). É a contraparte de `user_account_yaml`, mas o vínculo é usuário↔tenant, não a conta pessoal isolada. Resolvida por `UserYamlRepository.resolve_tenant_yaml_path` (JOIN com `tenant_users` por `email + tenant_id`).
+- Chave primária: `tenant_user_yaml_id`.
+- Colunas:
+- `tenant_user_yaml_id`: identificador UUID do vínculo YAML organizacional.
+- `tenant_user_id`: vínculo do usuário com a organização (membership em `tenant_users`).
+- `tenant_id`: organização dona do YAML.
+- `yaml_path`: caminho do YAML organizacional.
+- `status`: estado do vínculo, com default `active`.
+- `is_default`: indica o YAML organizacional padrão do usuário naquela organização.
+- `descricao`: descrição funcional do vínculo.
+- `execution_mode`: modo de execução associado.
+- `metadata_json`: metadados adicionais em `jsonb`.
+- `agent_instructions_md`: instruções persistentes de DeepAgent (equivalente ao AGENTS.md) **organizacionais** (escopo `org`), em texto Markdown; coluna dedicada `text` nullable. Alimenta o `MemoryMiddleware` nativo do DeepAgent via `/memories/agents.md`. Ver a seção `### agent_skills` para o contexto completo da feature e o gate de DDL manual.
+- `created_at`: criação do vínculo.
+- `updated_at`: última atualização do vínculo.
+- Índices e restrições:
+- PK em `tenant_user_yaml_id`.
+- unicidade lógica por vínculo usuário↔tenant↔yaml_path (o YAML organizacional pertence ao vínculo, não à conta pessoal direta).
+
+#### Como usar tenant_user_yaml no contexto organizacional
+
+- esta tabela resolve o contexto organizacional; o YAML pertence ao vínculo usuário↔tenant, não à conta pessoal.
+- a leitura é sempre escopada por `tenant_id` (segregação obrigatória; nunca cross-tenant).
+- se a coluna `agent_instructions_md` não existir no schema físico, a leitura dedicada dessa coluna **falha explícito** (`AgentInstructionsSchemaMissingError`) — nunca cria schema nem degrada para vazio. A resolução do `yaml_path` em si permanece intacta (não depende da coluna nova).
+
+### agent_skills
+
+- Finalidade prática: guardar, **por tenant**, o conteúdo das *skills* de DeepAgent (arquivos `SKILL.md` no formato Agent Skills). A plataforma roda em containers sem filesystem persistente, então as skills residem no banco, não em disco. Em runtime, o conteúdo é materializado no `PostgresStore` do DeepAgent sob `/skills/<skill_name>/SKILL.md` e lido pelo `SkillsMiddleware` nativo (escopo `org`).
+- Chave primária: `agent_skill_id`.
+- Colunas:
+- `agent_skill_id`: identificador UUID da skill.
+- `tenant_id`: organização dona da skill (segregação obrigatória).
+- `skill_name`: nome da skill == nome do diretório em `/skills/<skill_name>/`; formato Agent Skills (1–64 caracteres, minúsculas alfanuméricas e hífens simples, sem hífen inicial/final nem duplo). Validado por `CHECK`.
+- `skill_md`: conteúdo do `SKILL.md` (com frontmatter `name`/`description`), em texto.
+- `skill_version`: versão da skill (default `'1'`); usada para materialização idempotente (só reescreve o store quando muda).
+- `assets_json`: ativos adicionais da skill em `jsonb` (opcional).
+- `status`: estado da skill, default `active`, `CHECK` limitando a `active`/`inactive`.
+- `environment`: valor normalizado de `ENVIRONMENT` (ex.: `development`/`homologacao`/`producao`), segregador obrigatório por ambiente.
+- `created_at`: criação da skill.
+- `updated_at`: última atualização da skill.
+- Índices e restrições:
+- PK em `agent_skill_id`.
+- Unique `uq_agent_skills_tenant_name_env` em `(tenant_id, skill_name, environment)` — unicidade lógica da skill por tenant e ambiente.
+- Índice `ix_agent_skills_tenant_env_status` em `(tenant_id, environment, status)`.
+- Check `ck_agent_skills_status` (`active`/`inactive`) e `ck_agent_skills_skill_name_format` (formato Agent Skills).
+
+#### Gate de DDL manual e feature AGENTS.md/Skills por tenant (DeepAgent)
+
+- **DDL sempre manual (`CLAUDE.md §5`).** A tabela `agent_skills` e as colunas `agent_instructions_md` (em `user_account_yaml` e `tenant_user_yaml`) são criadas **à mão**, fora do runtime, em janela controlada de deploy. Os scripts-artefato ficam em `docs/.interno/.planos/deepagents-skills-memory-interpreter/ddl/` (`agent_skills.sql`, `agent_instructions_md.sql`). Nenhum processo (API/worker/scheduler/request/boot) dispara esse DDL; o runtime assume o schema existente e **falha explícito** se faltar.
+- **DSN de domínio.** Essas estruturas vivem no banco de domínio `DATABASE_PROMETEU_GENERIC_RAG_DSN` (mesmo de `user_account_yaml`/`tenant_user_yaml`), acessadas por `AgentSkillsPostgresRepository` e `UserYamlRepository` sobre `ClientDirectoryBase`.
+- **Onde o conteúdo é usado.** `agent_instructions_md` → `/memories/agents.md` (via `MemoryMiddleware`, sempre injetado no system prompt); `agent_skills` → `/skills/<skill_name>/SKILL.md` (via `SkillsMiddleware`, carregado sob demanda). Ambos usam o `PostgresStore` do DeepAgent (`backend.type: postgres`), com namespace segregado por `ENVIRONMENT` + tenant.
 
 ### Leitura prática de tenant_users no modelo final
 

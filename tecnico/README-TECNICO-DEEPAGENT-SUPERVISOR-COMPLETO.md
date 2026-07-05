@@ -138,8 +138,9 @@ Regras confirmadas:
 - skills top-level sem middlewares.skills.enabled são rejeitadas;
 - middlewares.memory.enabled exige memory top-level com ao menos um caminho absoluto;
 - memory top-level só é aceito quando middlewares.memory.enabled=true;
-- backend.enabled=true aceita apenas type state ou store;
+- backend.enabled=true aceita apenas type state, store ou postgres;
 - backend.type=store exige backend.redis.url;
+- backend.type=postgres exige o bloco postgres com dsn_env ou dsn; redis e postgres no mesmo backend são conflito e falham explícito;
 - backend.scope aceita apenas user, agent ou org;
 - scope org exige user_session.tenant_id;
 - backend.policy aceita apenas read_only ou read_write;
@@ -251,7 +252,8 @@ Isso transforma o shell em ferramenta governada, não em escape hatch livre.
 Guardrail operacional confirmado no runtime atual:
 
 - shell.enabled=true não pode ser combinado com human_in_the_loop.enabled=true no mesmo supervisor;
-- quando essa combinação aparece, o runtime falha fechado com ValueError antes de montar os middlewares.
+- quando essa combinação aparece, o runtime falha fechado com ValueError antes de montar os middlewares;
+- shell.enabled=true não pode usar execution_policy.type=host em ambiente multi-tenant (a plataforma é multi-tenant por natureza): o validador semântico reprova com o código `DEEPAGENT_SHELL_HOST_MULTITENANT_PROIBIDO`, permitindo apenas `docker` ou `codex_sandbox` (execução isolada). Como o default de execution_policy é `host`, shell habilitado sem `execution_policy.type` explícito também é reprovado.
 
 ## 7.8. Summarization e compactação de contexto
 
@@ -298,28 +300,77 @@ Além da compactação automática/sob demanda dentro de um turno, a plataforma 
 
 Quando middlewares.memory.enabled=true, o supervisor exige `memory` top-level com caminhos absolutos e repassa essa lista ao parâmetro `memory` da factory oficial `create_deep_agent`. Isso representa memória operacional carregada no runtime. O contrato governado não usa mais `middlewares.memory.sources` no YAML.
 
-## 7.10. backend top-level em Redis
+## 7.10. backend top-level (Redis ou Postgres durável)
 
-O bloco `backend` aciona persistência durável via DeepAgentRedisStore e StoreBackend quando `backend.type=store`.
+O bloco `backend` aciona persistência durável do store do DeepAgent. Ele decide **onde** ficam os arquivos virtuais que os middlewares nativos leem/gravam — `/memories/` (memória) e `/skills/` (skills). Há dois backends duráveis: `store` (Redis) e `postgres` (Postgres, via `PostgresStore` do LangGraph).
 
 Contrato confirmado:
 
 - enabled
-- type = state | store
+- type = state | store | postgres
 - scope = user | agent | org
 - policy = read_only | read_write
-- redis.url obrigatório quando type=store
-- redis.key_prefix opcional com default deepagent_store
-- redis.ttl_seconds opcional > 0
+- **quando type=store (Redis):** redis.url obrigatório; redis.key_prefix opcional com default `deepagent_store`; redis.ttl_seconds opcional > 0.
+- **quando type=postgres:** bloco `postgres` obrigatório com `postgres.dsn_env` (nome da variável de ambiente com o DSN) **ou** `postgres.dsn` (DSN inline); `postgres.namespace_prefix` opcional. **Sem TTL** — Postgres é durável, não expira.
+- `redis` e `postgres` no mesmo `backend` é conflito e falha explícito no validador.
 
 Detalhes relevantes do store:
 
-- usa BaseStore do LangGraph;
-- aplica retry externo central em operações Redis;
-- exige que backend.redis.url coincida com REDIS_PROMETEU_GENERIC_RAG_URL enquanto usar o Redis global;
-- recusa cliente Redis assíncrono nesse store síncrono;
+- usa BaseStore do LangGraph (Redis: `DeepAgentRedisStore`; Postgres: `PostgresStore` via provider canônico `get_shared_postgres_store`, cacheado por `ENVIRONMENT+DSN`);
+- aplica retry externo central em operações de I/O;
 - bloqueia escrita quando policy=read_only;
-- organiza namespace por user, agent ou org.
+- organiza namespace por user, agent ou org;
+- **segregação por ambiente:** no Redis o `ENVIRONMENT` vem do `key_prefix`; no Postgres **não** há camada de key_prefix, então o `ENVIRONMENT` e o tenant são embutidos no **namespace** do store (segregação obrigatória, nunca cross-tenant).
+
+### 7.10.1. Postgres: skills e AGENTS.md por tenant
+
+Com `type=postgres`, o conteúdo de `/skills/` e `/memories/agents.md` vem do banco de domínio, por tenant:
+
+- **skills** → tabela `agent_skills` (por `tenant_id` + `environment`). Cada linha guarda um `SKILL.md`; o runtime materializa em `/skills/<skill_name>/SKILL.md` e o `SkillsMiddleware` nativo carrega sob demanda. Requer `middlewares.skills.enabled=true` + a lista `skills` top-level.
+- **AGENTS.md** → coluna `agent_instructions_md` (em `tenant_user_yaml` para escopo `org`; em `user_account_yaml` para escopo `user`). O runtime materializa em `/memories/agents.md` e o `MemoryMiddleware` nativo injeta sempre no system prompt. Requer `middlewares.memory.enabled=true` + `memory` top-level apontando `/memories/agents.md`.
+- **DDL sempre manual (`CLAUDE.md §5`):** a tabela `agent_skills` e a coluna `agent_instructions_md` são criadas à mão (scripts em `docs/.interno/.planos/deepagents-skills-memory-interpreter/ddl/`). O runtime assume o schema existente e **falha explícito** se faltar — nunca cria schema. Detalhes de schema em `docs/tecnico/README-SCHEMA-BANCO.md` (seções `agent_skills`, `tenant_user_yaml`, `user_account_yaml`).
+
+### 7.10.2. Exemplo completo (Postgres + skills + AGENTS.md read-only + interpreter)
+
+Recorte de um supervisor DeepAgent com backend Postgres durável, skills por tenant, AGENTS.md organizacional injetado, permissões read-only na memória e interpreter (default-on) explicitado:
+
+```yaml
+multi_agents:
+  supervisor:
+    middlewares:
+      skills:
+        enabled: true            # habilita o SkillsMiddleware nativo
+      memory:
+        enabled: true            # habilita o MemoryMiddleware nativo
+      interpreter:
+        enabled: true            # default-on; use enabled: false para DESLIGAR
+        tool_name: eval
+        timeout: 5.0
+        memory_limit: 67108864
+    backend:
+      enabled: true
+      type: postgres             # store durável em Postgres (não Redis)
+      scope: org                 # skills e AGENTS.md organizacionais (por tenant)
+      policy: read_only          # curadoria da plataforma; agente não reescreve
+      postgres:
+        dsn_env: DATABASE_PROMETEU_GENERIC_RAG_DSN
+        namespace_prefix: deepagent_store   # opcional
+    memory:
+      - /memories/agents.md      # AGENTS.md do tenant (coluna agent_instructions_md)
+    skills:
+      - analise-de-vendas        # nomes == agent_skills.skill_name do tenant
+      - relatorio-financeiro
+    permissions:
+      - operations: [write]      # read-only na memória: nega escrita do agente
+        paths: ["/memories/**"]
+        mode: deny
+```
+
+Notas do exemplo:
+
+- `policy: read_only` + a permission `deny write` em `/memories/**` garantem que as instruções curadas pelo tenant não sejam sobrescritas pelo agente; a escrita durável é feita pela plataforma (materialização), não pelo agente.
+- `scope: org` exige `user_session.tenant_id` resolvido no boundary; ausência **falha explícito** (fail-closed).
+- para desligar o interpreter, basta `middlewares.interpreter.enabled: false` — o default global permanece ligado.
 
 ## 7.11. Structured output
 

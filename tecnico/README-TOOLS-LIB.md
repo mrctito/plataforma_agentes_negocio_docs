@@ -382,6 +382,22 @@ Este documento resume classes, helpers, services, factories e modulos compartilh
 - Sugestao de melhoria: expor exemplos por padrao de uso, como pool singleton, pool lazy, bootstrap async em boundary sync e engine read-only.
 - Prioridade: Alta
 
+### get_shared_postgres_store (provider canonico de PostgresStore)
+
+- Descricao: provider compartilhavel que devolve um `PostgresStore` (LangGraph) cacheado por `ENVIRONMENT+DSN`, com pool reusando `get_pool`/`DatabaseConnectionManager.build_psycopg_pool` e `store.setup()` centralizado 1x por processo sob lock. Desacopla consumidores (RAG memory e DeepAgent backend) de qualquer cliente Postgres novo.
+- Tags: banco-de-dados, store, postgres, langgraph, cache
+- Tipo: helper
+- Arquivo: [src/core/store/postgres_store_provider.py](../src/core/store/postgres_store_provider.py)
+- Linguagem: Python
+- Responsabilidade principal: expor `get_shared_postgres_store(*, dsn, source_name, yaml_config, logger, correlation_id, pool_tenant_id, connection_kwargs=None)` e o helper `encode_namespace_label` (codifica o `.` proibido em rotulo de namespace), garantindo um unico `PostgresStore` por `DSN+ENVIRONMENT` e um unico `store.setup()` por processo.
+- Dependencias principais: `langgraph.store.postgres.PostgresStore`, [src/core/resource_pool.py](../src/core/resource_pool.py) (`get_pool`), [src/core/database_connection_manager.py](../src/core/database_connection_manager.py) (`build_psycopg_pool`).
+- Acoplamento forte com dominio?: Nao. Infraestrutura transversal de store persistente.
+- Uso atual observado: Sim. Consumido por [src/qa_layer/memory/postgres_store_backend.py](../src/qa_layer/memory/postgres_store_backend.py) (memory Q&A do RAG) e por [src/agentic_layer/supervisor/deep_agent_supervisor.py](../src/agentic_layer/supervisor/deep_agent_supervisor.py) (`backend.type: postgres` do DeepAgent, materializacao de `/skills/` e `/memories/`).
+- Seguro reutilizar como esta?: Sim. E o ponto canonico para obter um `PostgresStore`; nao criar cliente/cache/pool paralelo.
+- Riscos ou limitacoes: `store.setup()` roda DDL de framework (tabelas `store`/`store_migrations`) — excecao autorizada ao gate de DDL manual (`CLAUDE.md §5`), idempotente por `store_migrations`. O provider __nao__ cria DDL de dominio. A segregacao por `ENVIRONMENT`+tenant fica no __namespace__ (o `PostgresStore` nao tem camada de key_prefix como o Redis) — o caller deve embutir ENV+tenant no namespace factory.
+- Sugestao de melhoria: manter exemplos de namespace factory por escopo (`user`/`org`) para novos consumidores.
+- Prioridade: Alta
+
 ### async_utils: run_sync e PersistentAsyncLoopRunner
 
 - Descricao: utilitarios canonicos para interoperar codigo sincronico e assincrono sem inventar bridges locais. `run_sync` resolve a chamada pontual; `PersistentAsyncLoopRunner` mantem um loop dedicado vivo quando a bridge precisa durar mais que uma chamada, como checkpointers async oficiais usados por um boundary sincronico.
