@@ -136,7 +136,7 @@ O resolvedor define uma base interna para PDF com blocos de:
 - chunking;
 - cleaning;
 - tables;
-- OCR por página e document-level;
+- OCR document-level e configuração residual do antigo OCR por página;
 - preprocessing;
 - references;
 - page classification;
@@ -152,7 +152,7 @@ Esses defaults existem para o runtime nascer com um contrato mínimo coerente. E
 O código falha explicitamente quando encontra contratos antigos ou proibidos em pontos críticos. Exemplos confirmados:
 
 - `processing.parsing.base.options` foi removido; o core exige `processing.parsing.engine` (esquema `{type, config}`, UMA engine determinística, sem fila/fallback).
-- `processing.ocr.engine` não é aceito; o core exige `processing.ocr.base.options`.
+- `processing.ocr.engine` não é aceito; `processing.ocr.base.options` ainda é validado no bootstrap, mas sua antiga fila de OCR por página não é executada no caminho atual.
 - `processing.tables.fallback` não é aceito; o contrato é `processing.tables.base.options`.
 - `processing.ocr.document_preprocessing.fallback_enabled` não é aceito; a fila document-level não expõe fallback por engine.
 
@@ -206,7 +206,7 @@ O bootstrap é centralizado por `PdfRuntimeCoordinator.initialize_runtime`. A or
 2. configura logging auxiliar de pdfminer;
 3. resolve todas as seções do runtime por `resolve_pdf_runtime_snapshot`;
 4. inicializa parâmetros de chunking;
-5. inicializa OCR por página e OCR document-level;
+5. lê a configuração residual de OCR por página e constrói o OCR document-level;
 6. inicializa runtime de tabelas;
 7. inicializa filtros de qualidade e classificação;
 8. inicializa metadata, imagens e anexos;
@@ -266,6 +266,75 @@ Antes de rodar, o serviço verifica se o runtime está pronto. Se a infraestrutu
 ### 6.5. Implicação prática
 
 Esse estágio tenta resolver um problema anterior ao parsing. Ele pergunta: vale a pena melhorar o PDF antes de escolher a engine que vai extrair o conteúdo?
+
+### 6.6. As flags de OCR não formam uma hierarquia
+
+No runtime atual, não existe uma chave-mãe que precise estar ligada para liberar as demais. Há dois controles executáveis independentes e uma chave residual:
+
+| Chave | Efeito executável atual | Relação com as demais |
+|---|---|---|
+| `processing.parsing.engine.config.ocr` | Liga o OCR interno da engine de parsing escolhida. Com `pipeline: pymupdf4llm`, vira `use_ocr=True`; a própria biblioteca decide página a página quando precisa de OCR. | Independente do bloco `processing.ocr`. |
+| `processing.ocr.document_preprocessing.enabled` | Liga a análise heurística e, quando necessário, regrava o PDF inteiro com OCRmyPDF antes do parsing. | Independente de `processing.ocr.enabled` e executado antes da engine. |
+| `processing.ocr.enabled` | Hoje não liga nem desliga uma etapa de OCR. O valor é lido em `_ocr_enabled` e aparece em metadata de bootstrap, mas não governa o OCR documental, o OCR interno da engine nem o OCR complementar. | Resíduo do antigo `PdfOcrService`, removido do caminho executável. Não deve ser tratado como chave-mãe. |
+
+Consequência direta: **não é necessário ligar as três flags**. Ligar ou desligar `processing.ocr.enabled` não altera o comportamento de OCR comprovado no runtime atual.
+
+### 6.7. Combinações reais para `pymupdf4llm`
+
+Esta é a matriz que deve orientar a operação. Ela considera apenas as duas flags que efetivamente executam OCR.
+
+| OCRmyPDF antes do parsing | OCR interno do `pymupdf4llm` | Comportamento |
+|---|---|---|
+| desligado | desligado | Nenhuma camada de OCR textual atua. PDF digital é lido normalmente; PDF só-scan termina sem texto. O resultado final depende de `skip_scanned_pdf`. |
+| desligado | ligado | O `pymupdf4llm` faz OCR seletivo nas páginas que julgar necessárias. É o caminho mais simples, mas o wrapper atual não repassa `ocr_language`; portanto, a engine usa o default da biblioteca, hoje `eng`. |
+| ligado | desligado | OCRmyPDF analisa e, quando necessário, adiciona uma camada textual ao documento; depois o parser apenas lê essa camada. Evita uma segunda estratégia de OCR, mas fica sem recuperação caso o pré-processamento esteja indisponível ou a heurística não o acione. |
+| ligado | ligado | Defesa em profundidade. OCRmyPDF tenta preparar o documento primeiro; depois o `pymupdf4llm` mantém OCR seletivo como segunda proteção. Como `force_ocr` não é usado, o parser normalmente pula páginas que já receberam texto, evitando re-OCR generalizado. |
+
+### 6.8. Recomendação para o DNIT
+
+Para o acervo DNIT em produção, que mistura PDF digital e scan em português, a configuração robusta é:
+
+```yaml
+processing:
+  parsing:
+    engine:
+      type: pipeline
+      config:
+        pipeline: pymupdf4llm
+        ocr: true
+        skip_scanned_pdf: false
+  ocr:
+    # Chave residual: não é o master switch do OCR no runtime atual.
+    enabled: true
+    document_preprocessing:
+      enabled: true
+      skip_text: true
+      force_ocr: false
+      redo_ocr: false
+```
+
+O ganho de manter as duas camadas executáveis ligadas é tolerância a falha: OCRmyPDF usa os idiomas configurados em `processing.ocr.languages`, enquanto o `pymupdf4llm` pode recuperar páginas que ainda chegarem sem texto. O custo é maior complexidade operacional e duas dependências de OCR.
+
+Se a prioridade for reduzir custo e aceitar menor resiliência, use **uma** camada:
+
+- para scans em português, prefira `document_preprocessing.enabled: true` e `engine.config.ocr: false`;
+- para um caminho simples e predominantemente digital, use `document_preprocessing.enabled: false` e `engine.config.ocr: true`;
+- para excluir scans, desligue ambas e use `skip_scanned_pdf: true`.
+
+### 6.9. O papel de `skip_scanned_pdf`
+
+`skip_scanned_pdf` não faz OCR. Ele decide o que acontece **depois** que a engine termina sem texto:
+
+- `true`: o PDF só-scan é pulado de forma limpa e produz zero chunks;
+- `false`: a ausência de texto é tratada como falha estrita do documento.
+
+Para a intenção "PDFs escaneados precisam ser processados", use `skip_scanned_pdf: false`. Isso impede falso sucesso por descarte, mas também faz a ingestão falhar quando todas as camadas de OCR estiverem indisponíveis ou não recuperarem texto.
+
+### 6.10. Dívida de configuração confirmada
+
+A separação entre OCR documental e OCR interno da engine é intencional. A confusão vem de uma dívida real: `processing.ocr.enabled` e `processing.ocr.base.options` pertenciam ao antigo OCR por página (`PdfOcrService`), removido do bundle e deletado. O bootstrap ainda lê esse bloco e registra parte dele, mas a fila não executa OCR por página no caminho atual.
+
+O OCR complementar posterior também não usa essa fila. Ele é selecionado quando o texto fica vazio ou quando `processing.chunking.ocr_on_empty_pages` está ativo, e cria o processador a partir de `pdf.multimodal.ocr`. Portanto, a documentação e a operação não devem chamar `processing.ocr.enabled` de controle do OCR complementar.
 
 ## 7. Pipeline de extração
 
@@ -1242,28 +1311,28 @@ ingestion:
 
 O timeout do subprocesso de parsing é configurável via `pdf_config_resolver.py`. O valor default é `180.0s`. Para sobrescrever, confirme a chave exata no resolver — o caminho é resolvido internamente pelo runtime de configuração PDF.
 
-### 29.4. Chaves que governam o OCR de páginas
+### 29.4. Chaves que governam as camadas executáveis de OCR
 
 ```yaml
+          parsing:
+            engine:
+              type: pipeline
+              config:
+                pipeline: pymupdf4llm
+                ocr: true           # OCR seletivo interno da engine
+                skip_scanned_pdf: false
           ocr:
-            enabled: false          # liga ou desliga o OCR de páginas inteiras
+            enabled: true           # residual; não é chave-mãe no runtime atual
             document_preprocessing:
-              enabled: false        # OCR documental (reescreve o PDF inteiro antes do parse)
+              enabled: true         # OCR documental seletivo antes do parsing
               base:
                 options:
                   - engine: "ocrmypdf"
                     mode: "default"
-            base:
-              options:             # fila de OCR por página
-                - engine: "rapidocr"
-                  mode: "default"
-                - engine: "tesseract"
-                  mode: "auto"
-                - engine: "gemini_flash_page_ocr"
-                  mode: "auto"
-            fallback_enabled: true
             languages: ["por", "eng"]
 ```
+
+Não use `processing.ocr.enabled` para inferir se o OCR está ligado. A decisão deve ser lida nas duas chaves executáveis: `processing.parsing.engine.config.ocr` e `processing.ocr.document_preprocessing.enabled`. A matriz completa e a recomendação operacional estão nas seções 6.6 a 6.10.
 
 ### 29.5. Chaves que governam a extração de tabelas
 
@@ -1401,8 +1470,10 @@ Em palavras simples: o embedding de texto que alimenta o Qdrant é configurado e
 | O que controla | Caminho YAML principal | Tipo de engine |
 |---|---|---|
 | Parsing de texto do PDF (engine ÚNICA) | `ingestion.content_profiles.type_specific.pdf.processing.parsing.engine` (`{type, config}`) | `type: pipeline` → `config.pipeline`: docling, pymupdf4llm, unstructured · ou `type: custom` |
-| OCR de páginas | `ingestion.content_profiles.type_specific.pdf.processing.ocr` | rapidocr, tesseract, gemini_flash_page_ocr, unstructured |
+| OCR interno da engine de parsing | `ingestion.content_profiles.type_specific.pdf.processing.parsing.engine.config.ocr` | definido pela engine escolhida; em `pymupdf4llm`, OCR seletivo da própria biblioteca |
 | OCR documental (reescreve o PDF) | `ingestion.content_profiles.type_specific.pdf.processing.ocr.document_preprocessing` | ocrmypdf |
+| OCR complementar posterior | `ingestion.content_profiles.type_specific.pdf.processing.chunking.ocr_on_empty_pages` + `ingestion.content_profiles.type_specific.pdf.multimodal.ocr` | fila de OCR por imagem do bloco multimodal |
+| Configuração residual, sem gate executável de OCR | `ingestion.content_profiles.type_specific.pdf.processing.ocr.enabled` e `processing.ocr.base.options` | antigo `PdfOcrService`, removido |
 | Extração de tabelas | `ingestion.content_profiles.type_specific.pdf.processing.tables` | unstructured, pdfplumber, ocr_layout, gmft |
 | Extração de imagens do PDF | `ingestion.content_profiles.type_specific.pdf.multimodal.image_extraction` | pymupdf, unstructured |
 | Descrição visual de imagens (LLM de visão) | `ingestion.content_profiles.type_specific.pdf.multimodal.image_description` | openai, azure_openai, gemini, local |

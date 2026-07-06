@@ -16,7 +16,8 @@ Entradas confirmadas:
 
 - texto processado da etapa anterior
 - documento PDF com origem visual resolvivel
-- flag _ocr_on_empty_pages
+- flag interna `_ocr_on_empty_pages`, resolvida de `processing.chunking.ocr_on_empty_pages`
+- bloco efetivo `ingestion.content_profiles.type_specific.pdf.multimodal.ocr`, usado pela factory que cria o processador de OCR por imagem
 
 Saidas confirmadas:
 
@@ -39,11 +40,24 @@ O fluxo observado em PdfRichProcessingApplicationService.run e no processor PDF 
 
 O detalhe mais importante esta em _merge_basic_ocr_content. O codigo nao sobrescreve o texto base. Ele evita duplicacao quando o OCR ja esta contido no texto e, quando ha material novo, apenas anexa esse material.
 
+### 4.1. O que nao controla esta etapa
+
+`processing.ocr.enabled` nao governa o OCR complementar no runtime atual. Essa chave pertence ao antigo OCR por pagina, cujo `PdfOcrService` foi removido. O OCR complementar chama `create_ocr_processor(yaml_config)`, e essa factory resolve `ingestion.content_profiles.type_specific.pdf.multimodal.ocr` para PDFs.
+
+Isso produz duas gates diferentes:
+
+1. `_should_run_basic_ocr` decide se vale tentar: texto vazio sempre tenta; texto existente só tenta quando `processing.chunking.ocr_on_empty_pages: true`;
+2. `ingestion.content_profiles.type_specific.pdf.multimodal.ocr.enabled` decide se existe um processador OCR ativo. Se estiver `false`, a factory devolve um processador desabilitado e nenhum texto novo é produzido.
+
+Portanto, ligar `processing.ocr.enabled` não liga esta etapa, e desligá-lo não a desliga.
+
 ## 5. Decisoes tecnicas importantes
 
 ### 5.1. OCR basico so entra quando ha motivo claro
 
 O metodo que decide o OCR complementar devolve True quando o processed_content esta vazio ou quando a politica de OCR em paginas vazias permite complementar mesmo havendo texto parcial. Isso reduz OCR desnecessario em PDFs que ja sairam bons da extracao.
+
+Selecionar a tentativa não garante OCR executado. A execução ainda depende de `ingestion.content_profiles.type_specific.pdf.multimodal.ocr.enabled` e de uma engine disponível na fila `ingestion.content_profiles.type_specific.pdf.multimodal.ocr.base.options`.
 
 ### 5.2. Sem origem visual valida, a etapa nao inventa caminho alternativo
 
