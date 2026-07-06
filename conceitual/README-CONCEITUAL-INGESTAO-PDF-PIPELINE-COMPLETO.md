@@ -329,7 +329,7 @@ Em linguagem simples: a API organiza o pedido e entrega o trabalho para o worker
 
 O job pai é o coordenador do lote. Ele decide se a ingestão segue como lote simples ou se vale quebrar o trabalho em documentos individuais.
 
-Quando o fan-out documental é elegível, esse job inventaria os documentos, grava o plano no estado durável e publica envelopes filhos para a fila documental. Isso quer dizer que o job pai prepara a execução, mas não é ele quem faz o parsing final de cada PDF.
+Quando o fan-out documental é elegível, esse job inventaria os documentos, grava o plano no estado durável e distribui cada documento como uma unidade de trabalho independente. Mesmo sem fan-out, um único job já processa os documentos em paralelo abrindo vários *runners* em subprocessos. Nos dois casos, o job pai prepara e coordena a execução, mas não é ele quem faz o parsing final de cada PDF.
 
 ### 7.3. O que o job filho faz
 
@@ -664,23 +664,28 @@ Esse encadeamento é o que impede o sistema de tratar todo PDF como se fosse igu
 
 - `src/api/routers/rag_runtime_ingestion_compat.py`
   - Motivo da leitura: entender a preparação do pedido antes da fila.
-  - Símbolo relevante: `PreparedAsyncIngestionExecutionService.__call__`.
+  - Símbolo relevante: `ingest_content`.
   - Comportamento confirmado: compõe YAML, resolve paralelismo, agenda o job pai e devolve contrato HTTP de acompanhamento.
 
 - `src/api/services/ingestion_http_prepared_async_service.py`
   - Motivo da leitura: confirmar o agendamento do job pai preparado.
   - Símbolo relevante: `schedule_prepared_ingestion_worker_job`.
-  - Comportamento confirmado: registra run pai, valida telemetria durável e publica o envelope `prepared_yaml`.
+  - Comportamento confirmado: cria a linha do job na fila única (`SimpleAsyncPdfJobStore`, `job_type=ingestion_pdf`), abre o run de negócio vetorial compartilhado e envia ao dispatcher um sinal curto de wakeup via RabbitMQ.
 
-- `src/api/services/async_job_dramatiq.py`
-  - Motivo da leitura: entender como o worker separa pai e filho.
-  - Símbolo relevante: `DramatiqAsyncJobWorkerRuntime.start`.
-  - Comportamento confirmado: sobe consumidores separados para filas pai e filha com contrato versionado.
+- `src/api/services/simple_async_pdf_dispatcher_rabbitmq.py`
+  - Motivo da leitura: entender o transporte assíncrono real da ingestão PDF.
+  - Símbolo relevante: `RabbitMqSimpleAsyncPdfDispatcherWakeupPublisher` e `SimpleAsyncPdfDispatcherRabbitMqRuntime`.
+  - Comportamento confirmado: a API só publica um sinal curto (wakeup) no RabbitMQ; o runtime do dispatcher, dentro do worker, consome esse sinal e aciona a linha de job já gravada na fila única.
+
+- `src/api/services/simple_async_pdf_job_runtime.py`
+  - Motivo da leitura: entender como o job vira processamento paralelo real.
+  - Símbolo relevante: `dispatch_pending_simple_async_pdf_jobs` e `execute_simple_async_pdf_job_process`.
+  - Comportamento confirmado: o dispatcher executa a linha alvo, sobe um processo de job líder do process-group e cria vários *runners* em subprocesso; o paralelismo por documento nasce desses runners, não de filas pai/filha separadas.
 
 - `src/api/services/worker_process_runtime.py`
   - Motivo da leitura: confirmar o runtime oficial do worker.
   - Símbolo relevante: `build_worker_process_runtime` e `WorkerProcessRuntime.start`.
-  - Comportamento confirmado: exige Dramatiq + RabbitMQ e sobe o runtime unificado do processo worker.
+  - Comportamento confirmado: exige backend e consumer RabbitMQ (`rabbitmq_polling`), valida o schema do ledger do Job Core e sobe o runtime unificado do worker, que compõe o dispatcher da fila simples de PDF e o runtime genérico de jobs.
 
 - `app/runners/worker_runner.py`
   - Motivo da leitura: entender o bootstrap do processo worker.
@@ -702,10 +707,10 @@ Esse encadeamento é o que impede o sistema de tratar todo PDF como se fosse igu
   - Símbolo relevante: `DocumentFanoutChildExecutorService.execute`.
   - Comportamento confirmado: executa um documento por vez, consulta a gate canônica e persiste estado terminal antes do ACK.
 
-- `tests/integration/test_03-01-08_async_job_dramatiq_real_flow.py`
-  - Motivo da leitura: confirmar o fluxo assíncrono com evidência executável.
-  - Símbolo relevante: `test_runtime_real_consumes_parent_and_child_queues`.
-  - Comportamento confirmado: valida consumo real de envelopes pai e filho em filas distintas.
+- `tests/integration/test_03-01-34_simple_async_pdf_job_e2e.py`
+  - Motivo da leitura: confirmar o fluxo assíncrono real da ingestão PDF com evidência executável.
+  - Símbolo relevante: `test_quando_submit_offline_e_executado_entao_cria_job_pending_e_envia_wakeup_sem_processar`, `test_quando_dispatcher_roda_offline_entao_processa_pdfs_reais_e_fecha_job_com_success` e `test_dispatcher_cria_processo_do_job_nao_daemon_e_runners_daemon`.
+  - Comportamento confirmado: o submit grava o job pendente e envia o wakeup sem processar; o dispatcher processa PDFs reais e fecha o job com sucesso; o processo do job é não-daemon e os runners são daemons.
 
 - `src/ingestion_layer/processors/pdf_processor.py`
   - Motivo da leitura: entrypoint real, bootstrap, decisões de OCR básico, multimodalidade, chunking e checkpoint.

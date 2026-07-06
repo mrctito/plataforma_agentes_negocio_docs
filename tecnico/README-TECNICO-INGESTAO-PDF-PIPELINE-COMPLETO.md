@@ -89,7 +89,7 @@ O detalhe importante é que esses envelopes não são equivalentes. O pai transp
 
 ### 2.3. Runtime do worker e topologia física
 
-O processo worker oficial sobe por `app/worker_main.py` e delega para `app/runners/worker_runner.py`. Nesse bootstrap, o runtime exige explicitamente `consumer_runtime=dramatiq` e backend `rabbitmq` antes de iniciar `WorkerProcessRuntime`.
+O processo worker oficial sobe por `app/worker_main.py` e delega para `app/runners/worker_runner.py`. Nesse bootstrap, `build_worker_process_runtime` exige explicitamente `ASYNC_JOB_CONSUMER_RUNTIME=rabbitmq_polling` e `ASYNC_JOB_QUEUE_BACKEND=rabbitmq` (qualquer outro valor levanta `RuntimeError`) e valida o schema do Job Core em modo somente leitura — sem DDL, sem criar nem alterar tabela no startup — antes de iniciar `WorkerProcessRuntime`. O nome `Dramatiq` sobrevive apenas como alias legado (`DramatiqAsyncJobWorkerRuntime = RabbitMqAsyncJobWorkerRuntime`); o consumidor oficial atual é o runtime RabbitMQ com polling.
 
 Dentro de `src/api/services/async_job_dramatiq.py`, o runtime assíncrono registra actors separados para filas de papel diferente. O contrato observado no código é:
 
@@ -849,7 +849,7 @@ vector store recusando chunks ou falha ao persistir documento processado.
 
 Causa provável: o problema está antes do slice PDF, no boundary assíncrono, no enqueue ou no worker pai.
 
-Como confirmar: revisar `task_id`, `correlation_id`, `worker_log_file_name`, publicação do envelope `prepared_yaml` e se o worker pai estava ativo no runtime Dramatiq.
+Como confirmar: revisar `task_id`, `correlation_id`, `worker_log_file_name`, a submissão do job pai e se o worker estava ativo no runtime do worker (`rabbitmq_polling`).
 
 Ação recomendada: confirmar primeiro a publicação do job pai e a inicialização do processo worker. Sem esse passo, não faz sentido depurar OCR, parsing ou chunking.
 
@@ -955,7 +955,7 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
 
 - `src/api/routers/rag_runtime_ingestion_compat.py`
   - Motivo da leitura: boundary HTTP real da ingestão assíncrona.
-  - Símbolo relevante: `PreparedAsyncIngestionExecutionService.__call__`.
+  - Símbolo relevante: `ingest_content` (função de orquestração deste arquivo; a classe `PreparedAsyncIngestionExecutionService`, boundary equivalente usado pelo `ingestion_runs_router`, vive em `ingestion_http_prepared_async_service.py`).
   - Comportamento confirmado: compõe YAML com sessão, resolve paralelismo, agenda o job pai e devolve URLs de acompanhamento.
 
 - `src/api/services/ingestion_http_prepared_async_service.py`
@@ -981,7 +981,7 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
 - `src/api/services/worker_process_runtime.py`
   - Motivo da leitura: runtime unificado do processo worker.
   - Símbolo relevante: `build_worker_process_runtime` e `WorkerProcessRuntime.start`.
-  - Comportamento confirmado: exige Dramatiq + RabbitMQ, sobe control plane e runtime assíncrono e expõe `fan_out_active` no ready log.
+  - Comportamento confirmado: exige `consumer_runtime=rabbitmq_polling` + backend `rabbitmq`, valida o schema do Job Core em modo somente leitura (sem DDL no startup), sobe control plane e runtime assíncrono e expõe `fan_out_active` no ready log.
 
 - `app/runners/worker_runner.py`
   - Motivo da leitura: bootstrap do processo worker.

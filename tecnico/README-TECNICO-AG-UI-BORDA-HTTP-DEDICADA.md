@@ -19,7 +19,7 @@ Todas usam a permissão AGENT_EXECUTE e rate limit da família agent.
 
 POST /ag-ui/runs e o boundary público alvo para terceiros. Ele recebe `AgUiRunRequest`, exige fonte de configuracao explicita por `yaml_config`, `yaml_inline_content` ou `encrypted_data`, deriva o runtime pelo YAML e bloqueia envio de segredos ou selecao paralela por `agent_id`.
 
-Esse bloqueio e estrutural. O backend rejeita chaves internas nao apenas no topo do JSON, mas tambem quando elas aparecem escondidas em `input`, `metadata` ou outros blocos aninhados. Na pratica, `yaml_config`, `yamlPath`, `yamlInlineContent`, `encryptedData`, `tenantId`, `securityKeys` e `toolsLibrary` nao podem viajar de forma disfarçada como se fossem dado funcional comum.
+O bloqueio no topo do JSON e estrutural (`extra="forbid"` em `AgUiRunRequest`): `yaml_config`, `yamlPath`, `yamlInlineContent`, `encryptedData`, `tenantId`, `securityKeys` e `toolsLibrary` so sao aceitos nos nomes de campo que o modelo declara. **Lacuna confirmada nesta rodada:** essa mesma protecao nao existe para as mesmas chaves quando escondidas dentro de `input` ou `metadata` — os dois sao `JsonValue`/`dict` livres, sem varredura recursiva (detalhe e evidencia completa na secao 9).
 
 Nao existe mais rota publica por `agent_id`, nem para execucao nem para capabilities. Isso elimina identidades paralelas de URL e mantém discovery e run no mesmo boundary YAML-first.
 
@@ -97,8 +97,8 @@ Os erros mais úteis desta etapa são:
 
 - 404 quando alguem ainda chama uma URL publica inexistente fora do boundary canônico
 - 400 quando o endpoint publico nao recebe `yaml_config`, `yaml_inline_content` nem `encrypted_data`
-- 400 quando o endpoint publico recebe `executionKind` divergente, segredo ou payload invalido
-- 400 quando `input` ou `metadata` tentam carregar campo interno, segredo ou seletor de runtime fora do contrato
+- 400 quando o endpoint publico recebe `executionKind` divergente do execution kind derivado do YAML
+- 400 quando `input` ou `metadata` violam o schema declarado (`extra="forbid"` no topo do payload); campo interno **escondido dentro** de `input`/`metadata` não tem bloqueio comprovado (lacuna, seção 9)
 - 400 quando runtime YAML-backed não tem `yaml_path` cadastrado no tenant ou access key
 - 404 no discovery para executionKind inexistente
 - falha de autenticação ou permissão antes de chegar ao orquestrador
@@ -124,9 +124,15 @@ Para investigar esta etapa:
 - src/api/routers/ag_ui_router.py
   - Motivo: contrato público consolidado.
   - Comportamento confirmado: a OpenAPI publica discovery, run e replay apenas no boundary canônico, sem rotas por `agent_id`.
-- src/api/services/ag_ui_public_run_resolver.py
+- src/api/schemas/ag_ui_models.py
   - Motivo: resolução segura do boundary público.
-  - Comportamento confirmado: bloqueia YAML bruto, executionKind, tenant_id e segredos no payload público.
+  - Comportamento confirmado: `AgUiRunRequest`/`AgUiStrictModel` usam `extra="forbid"` — só bloqueiam campo desconhecido no **topo** do payload. `input` e `metadata` são `JsonValue`/`dict[str, JsonValue]` livres, sem validador que rejeite chave interna aninhada dentro deles.
+- src/api/services/ag_ui_yaml_first_run_preparation_service.py
+  - Motivo: preparação canônica do run YAML-first no boundary público.
+  - Comportamento confirmado: `AgUiYamlFirstRunPreparationService.prepare` exige fonte explícita de configuração, autentica pelo YAML resolvido e falha com 400 quando o `executionKind` informado diverge do execution kind derivado do próprio YAML. Não contém, e não delega a nenhum outro componente, uma varredura recursiva de `input`/`metadata` por `yamlPath`, `tenantId`, `securityKeys` ou `toolsLibrary`.
+
+**Lacuna encontrada nesta rodada de sincronização:** o arquivo `src/api/services/ag_ui_public_run_resolver.py`, citado em versões anteriores desta seção como o responsável por bloquear `yamlPath`, `tenantId`, `securityKeys` e `toolsLibrary` escondidos dentro de `input`/`metadata`, **não existe mais no código** (zero resultado em `find`/`grep` no repositório). Buscando essas mesmas strings em todo `src/`, elas só aparecem em `src/api/schemas/ag_ui_models.py::_FORBIDDEN_FRONTEND_TOOL_SCHEMA_KEYS` (valida o `parametersSchema` de uma `AgUiFrontendToolDescriptor` — usado no **discovery**, não no payload de entrada de `/ag-ui/runs`) e em `src/api/services/ag_ui_frontend_tool_policy.py` (valida apenas o array `tools` do `RunAgentInput`, não `input`/`metadata`). Não encontrado no código: um validador que rejeite `yamlPath`/`tenantId`/`securityKeys`/`toolsLibrary` aninhados dentro de `input` ou `metadata` no `POST /ag-ui/runs` real. Onde deveria estar: um `model_validator` em `AgUiRunRequest` (`src/api/schemas/ag_ui_models.py`) ou uma etapa explícita em `AgUiYamlFirstRunPreparationService.prepare` (`src/api/services/ag_ui_yaml_first_run_preparation_service.py`), espelhando o padrão já usado em `assert_no_free_sql_payload`/`contains_free_sql_key` (`src/api/services/ag_ui_capability_pack.py`) para bloqueio recursivo de SQL livre.
+
 - src/api/routers/ag_ui_router.py
   - Motivo: validação de fonte de configuração.
   - Comportamento confirmado: a rota canônica falha com 400 quando o payload não traz yaml_config, yaml_inline_content ou encrypted_data.

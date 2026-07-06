@@ -120,7 +120,7 @@ Caracteristicas confirmadas.
 3. Falha com 404 para executionKind desconhecido.
 4. Nao expõe SQL cru, DSN ou segredo.
 
-No estado atual, o discovery inclui executionKind deepagent, workflow, retail_demo e erp_backoffice_demo. O supervisor classico `agent` foi desligado no boundary AG-UI publico. O payload agora e versionado e explicita `contractVersion`, `eventContractVersion`, `supportsInterrupt`, `supportsHil`, `supportsResume`, `resumeSchema`, `domain`, `requiredPermissions`, `examples`, `uiSpecs` estruturado e `uiSpecNames` como ponte de compatibilidade. Os dominios governados agora saem de um registry comum de capability packs, o que evita hardcode duplicado no discovery e no runtime.
+No estado atual, o discovery inclui executionKind deepagent, workflow e capability_pack (este ultimo devolvendo, hoje, as capabilities dos capability packs registrados `retail_demo` e `erp_backoffice_demo`, filtraveis tambem por `capabilityPackId`). O supervisor classico `agent` foi desligado no boundary AG-UI publico. O payload agora e versionado e explicita `contractVersion`, `eventContractVersion`, `supportsInterrupt`, `supportsHil`, `supportsResume`, `resumeSchema`, `domain`, `requiredPermissions`, `examples`, `uiSpecs` estruturado e `uiSpecNames` como ponte de compatibilidade. Os dominios governados agora saem de um registry comum de capability packs, o que evita hardcode duplicado no discovery e no runtime.
 
 Este endpoint continua sendo o catalogo de negocio Plataforma de Agentes de IA. Ele responde a pergunta "o que este tenant pode pedir ao produto". Ele nao tenta espelhar sozinho o shape oficial `AgentCapabilities` do SDK AG-UI.
 
@@ -201,9 +201,9 @@ Campos relevantes confirmados.
 10. encrypted_data.
 11. resume.
 
-No boundary Plataforma de Agentes de IA, o corpo precisa trazer uma fonte de configuracao explicita e um `input` compativel com o runtime derivado. Campos internos como `securityKeys`, `toolsLibrary`, DSN, SQL livre ou qualquer seletor paralelo de runtime sao bloqueados.
+No boundary Plataforma de Agentes de IA, o corpo precisa trazer uma fonte de configuracao explicita e um `input` compativel com o runtime derivado. `AgUiRunRequest` usa `extra="forbid"` no topo do JSON, entao um campo desconhecido nesse nivel (ex.: um `securityKeys` ou `toolsLibrary` soltos na raiz) e rejeitado.
 
-O bloqueio nao vale apenas para o topo do JSON. O backend tambem rejeita chaves internas quando aparecem escondidas dentro de `input`, `metadata` ou blocos aninhados. Isso impede que uma integracao externa tente transportar YAML, tenant ou segredo por um campo aparentemente generico.
+**Lacuna encontrada nesta rodada de sincronizacao:** esse bloqueio **nao** foi comprovado para chaves escondidas dentro de `input` ou `metadata` — os dois campos sao tipados como `JsonValue`/`dict[str, JsonValue]` livres em `src/api/schemas/ag_ui_models.py`, sem `model_validator` que varra recursivamente por `yamlPath`, `tenantId`, `securityKeys`, `toolsLibrary`, DSN ou SQL livre aninhados. O unico bloqueio recursivo confirmado no boundary publico e o de SQL livre dentro do capability pack (`assert_no_free_sql_payload`/`contains_free_sql_key`, `src/api/services/ag_ui_capability_pack.py`), que roda dentro do adapter `capability_pack`, nao no `AgUiRunRequest` generico usado por todo `POST /ag-ui/runs`. Detalhe e onde deveria estar a checagem faltante: [README-TECNICO-AG-UI-BORDA-HTTP-DEDICADA.md, secao 9](README-TECNICO-AG-UI-BORDA-HTTP-DEDICADA.md).
 
 ### 3.1. Exemplo minimo de AgUiRunRequest em backend confiavel
 
@@ -434,12 +434,13 @@ Esse fluxo mostra a separacao central da implementacao. O router monta contexto.
 
 ## 6. Registry e orchestrator
 
-O registry fica em src/api/services/ag_ui_adapter_registry.py. Ele existe para evitar fallback implicito ou wiring hardcoded espalhado. O default registra quatro executionKinds.
+O registry fica em src/api/services/ag_ui_adapter_registry.py. Ele existe para evitar fallback implicito ou wiring hardcoded espalhado. O default registra tres executionKinds.
 
 1. deepagent.
 2. workflow.
-3. retail_demo.
-4. erp_backoffice_demo.
+3. capability_pack.
+
+`retail_demo` e `erp_backoffice_demo` nao aparecem nessa lista como executionKind proprio: sao `capability_pack_id` de um segundo registry interno (`AgUiCapabilityPackRegistry`, em src/api/services/ag_ui_capability_pack.py), plugado como o unico adapter registrado para o executionKind `capability_pack` (`AgUiCapabilityPackRegistryAdapter`). Esse adapter le `capabilityPackId` de `context.metadata` para escolher o pack.
 
 Se um executionKind nao estiver registrado, o orchestrator termina com erro estruturado. O core nao inventa adapter.
 
@@ -584,24 +585,23 @@ Os testes de contrato e Playwright confirmam que a implementacao nao vive apenas
 
 ### 11.1. Hub de varejo demo
 
-O hub AG-UI de varejo lista quatro telas.
+O hub AG-UI de varejo (`ui-admin-plataforma-ag-ui-varejo-demo.html`) lista tres telas.
 
 1. Cockpit de vendas.
 2. Checkout radar.
 3. Catalogo central.
-4. Dashboard dinamico.
 
-Os testes tambem confirmam que essas paginas usam o endpoint `/ag-ui/runs`, o bundle browser oficial versionado, o layout mestre da plataforma e o shell administrativo, sem acoplamento ao webchat legado.
+Nao ha mais um quarto card de dashboard dinamico no hub: o card foi removido junto com a materializacao visual do capability pack (secao 7.3). Os testes tambem confirmam que essas paginas usam o endpoint `/ag-ui/runs`, o bundle browser oficial versionado, o layout mestre da plataforma e o shell administrativo, sem acoplamento ao webchat legado.
 
 ### 11.2. Controller compartilhado das paginas
 
-AgUiRetailDemoPageController concentra padroes comuns das paginas fixas.
+AgUiGovernedDemoPageController (classe JS em `ag-ui-retail-demo-page.js`) concentra padroes comuns das paginas fixas.
 
 1. Resolve API key do contexto padrao.
 2. Exige user_email no contexto.
 3. Exige YAML inline ou payload criptografado no contexto.
 4. Monta threadId, runId, metadata e input padronizados.
-5. Usa executionKind = retail_demo.
+5. Usa `capabilityPackId` (default `retail_demo`) em `metadata`; o payload enviado a `/ag-ui/runs` nao inclui `executionKind` — quem resolve o executionKind `capability_pack` e o backend, a partir do YAML enviado.
 6. Atualiza a area principal a partir de STATE_SNAPSHOT.
 
 Isso mostra que o frontend das demos ja foi desenhado como padrao de integracao, nao como paginas totalmente independentes.
@@ -680,7 +680,7 @@ O ponto importante aqui e arquitetural: esse caminho nao cria um segundo motor d
 
 ## 14. Contratos de discovery e uso por terceiros
 
-Do ponto de vista de integracao, o discovery e a principal porta de entrada para explicar o que a UI pode pedir. Em retail_demo, o discovery devolve cinco capabilities e seus parametros sem vazar SQL ou DSN. Em erp_backoffice_demo, ele devolve os contratos governados de `fechar_caixa` e `conferir_turno_caixa` sem expor `CALL` nem segredo. Em deepagent e workflow, o discovery continua expondo a capability `execute`, so que agora com metadata suficiente para terceiros entenderem o contrato sem adivinhar comportamento interno.
+Do ponto de vista de integracao, o discovery e a principal porta de entrada para explicar o que a UI pode pedir. Em retail_demo, o discovery devolve quatro capabilities (sales_summary, checkout_funnel, catalog_opportunities, customer_segments) e seus parametros sem vazar SQL ou DSN. Em erp_backoffice_demo, ele devolve os contratos governados de `fechar_caixa` e `conferir_turno_caixa` sem expor `CALL` nem segredo. Em deepagent e workflow, o discovery continua expondo a capability `execute`, so que agora com metadata suficiente para terceiros entenderem o contrato sem adivinhar comportamento interno.
 
 Os campos novos mais importantes para integracao sao estes.
 
@@ -705,7 +705,7 @@ O pacote interno `packages/ag-ui-runtime` agora funciona como wrapper fino de pl
 5. `app/ui/static/js/shared/ag-ui-safe-content.js` centraliza bloqueio de HTML, script, SQL livre, segredos e correlation_id para specs de UI.
 6. A entrada publica reexporta tipos oficiais de `@ag-ui/core`, quando eles sao uteis para consumidores.
 7. APIs antigas de parser manual ficam removidas no pacote. Em termos simples: o runtime da Plataforma de Agentes de IA nao deve voltar a interpretar o protocolo por conta propria quando o SDK oficial ja faz esse trabalho.
-8. A API minima documentada cobre cliente oficial, helpers Plataforma de Agentes de IA, Component Catalog, store, sidecar, renderer de dashboard, validador e contrato HIL.
+8. A API minima documentada cobre cliente oficial, helpers Plataforma de Agentes de IA, Component Catalog, store, sidecar, renderer A2UI (`createA2uiSurfaceRenderer`), validador e contrato HIL. Nao ha mais renderer nem validador de dashboard nesse pacote — o `DashboardSpec` e os módulos que o geravam foram removidos do código (secao 9).
 9. O exemplo oficial minimo do runtime interno fica em `examples/ag-ui-runtime-minimal.html`.
 10. O template oficial para integradores externos fica em `templates/ag-ui-official-third-party` e mostra backend-for-frontend, frontend vanilla com `@ag-ui/client`, `RunAgentInput`, frontend tool allowlisted e replay.
 11. O pacote ainda permanece `private: true`, o que significa que a API esta organizada e protegida, mas ainda nao foi aberta como pacote externo publicado.

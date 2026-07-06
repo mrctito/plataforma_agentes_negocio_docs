@@ -110,20 +110,35 @@ contratos são dataclasses Python puras, nenhuma dependência de settings globai
 src/log_analyzer/
 ├── __init__.py                  ← API pública do módulo
 ├── __main__.py                  ← CLI via python -m src.log_analyzer
+├── cli_contract.py              ← contrato JSON raiz/subcomandos para descoberta por agente
 ├── service.py                   ← LogAnalyzerService (análise profunda)
 ├── query_service.py             ← LogQueryService (consulta rápida)
+├── filter_service.py            ← LogFilterService (subcomando filter — filtro objetivo)
 ├── contracts.py                 ← Todos os contratos, enums e dataclasses
 ├── errors.py                    ← Hierarquia de exceções de domínio
+├── schema_registry.py           ← catálogo conhecido de campos/eventos (schema fail-close)
+├── source_field_contract.py     ← campos canônicos consumidos e aliases proibidos
 ├── analysis/
 │   ├── engine.py                ← ABCs: AbstractLogEngine, AbstractAnalysisEngine,
 │   │                               AbstractOperationalQueryEngine, AnalysisDialect, AnalysisPlugin
-│   ├── plugins.py               ← 4 plugins padrão do pipeline V1.0
-│   ├── query_engine.py          ← FastQueryEngine + 5 handlers
+│   ├── plugins.py               ← 6 plugins padrão do pipeline V1.0 (DEFAULT_PLUGINS)
+│   ├── query_engine.py          ← FastQueryEngine + 9 handlers
+│   ├── filter_engine.py         ← engine do subcomando filter
+│   ├── integrity.py             ← detecção de foreign_correlation_id (campo problems)
 │   ├── pandas_engine.py         ← PandasAnalysisEngine + PandasAnalysisDialect
-│   └── registry.py              ← AnalysisRegistry
-└── io/
-    ├── locator.py               ← LogFileLocator
-    └── loader.py                ← LogRecordLoader (iterador JSONL)
+│   ├── registry.py              ← AnalysisRegistry
+│   └── insights/                ← handlers de insight de ingestão e RAG
+│       ├── handlers_ingestion.py       ← IngestionPerformanceQueryHandler
+│       ├── handlers_rag_diagnosis.py   ← RagDiagnosisQueryHandler
+│       ├── extractors_performance.py, base.py, intervals.py, stats.py
+├── io/
+│   ├── locator.py               ← LogFileLocator
+│   └── loader.py                ← LogRecordLoader (iterador JSONL)
+├── parsing/field_extractor.py   ← extração canônica de campos do registro
+├── report/serializer.py         ← serialização JSON-safe dos resultados
+├── utils/time_utils.py          ← helpers de timestamp
+└── validation/                  ← verdade manual e snapshot para validar a CLI
+    ├── manual_truth.py, snapshot.py, cli_runtime.py, contracts.py
 ```
 
 ---
@@ -135,7 +150,7 @@ src/log_analyzer/
 Pipeline completo de execução para `analyze_individual`:
 
 ```
-FastLogQueryRequest
+IndividualAnalysisRequest
     │
     ├── LogFileLocator.locate()       → resolve (arquivo primário, família completa)
     │                                   Estratégia: manifest → CanonicalLogReader
@@ -143,12 +158,14 @@ FastLogQueryRequest
     │                                   Limite: max_records (default 50.000)
     ├── PandasAnalysisEngine.load()   → constrói DataFrame
     │
-    ├── AnalysisRegistry.plugins()    → instancia os 4 plugins
+    ├── AnalysisRegistry.plugins()    → instancia os 6 plugins (DEFAULT_PLUGINS)
     │
-    ├── Plugin 1: ErrorWarningPlugin  → dict com error_count, warning_count, top_errors
-    ├── Plugin 2: PerformancePlugin   → dict com duration_stats, slow_operations
-    ├── Plugin 3: EventFlowPlugin     → dict com unique_events, top_events
-    └── Plugin 4: ComponentActivityPlugin → dict com active_components, component_activity
+    ├── Plugin 1: ErrorWarningPlugin      → dict com error_count, warning_count, top_errors
+    ├── Plugin 2: PerformancePlugin       → dict com duration_stats, slow_operations
+    ├── Plugin 3: SlowestSegmentsPlugin   → dict com maiores gaps entre eventos consecutivos
+    ├── Plugin 4: StageTimingPlugin       → dict com tempo entre etapas (stage) do pipeline
+    ├── Plugin 5: EventFlowPlugin         → dict com unique_events, top_events
+    └── Plugin 6: ComponentActivityPlugin → dict com active_components, component_activity
                                        │
                                        ▼
                                  AnalysisResult
@@ -200,15 +217,23 @@ FastLogQueryRequest
             ├── StuckQueryHandler        → is_stuck, has_start_without_end
             ├── TimeoutRetryQueryHandler → has_timeout, has_retry
             ├── ComponentQueryHandler    → component_failed
-            └── ParallelismQueryHandler  → had_real_parallelism,
-                                           max_real_concurrency,
-                                           parallelism_evidence,
-                                           had_fanout_without_parallelism,
-                                           parallelism_blocker_reason
+            ├── ParallelismQueryHandler  → had_real_parallelism,
+            │                              max_real_concurrency,
+            │                              parallelism_evidence,
+            │                              had_fanout_without_parallelism,
+            │                              parallelism_blocker_reason
+            ├── IngestionPdfProgressQueryHandler   → ingestion_pdf_progress
+            ├── IngestionPerformanceQueryHandler   → ingestion_performance
+            └── RagDiagnosisQueryHandler           → rag_diagnosis
                                            │
                                            ▼
                                      FastLogQueryResult
 ```
+
+Os dois últimos handlers vivem em `analysis/insights/` (`handlers_ingestion.py` e
+`handlers_rag_diagnosis.py`) e são importados tardiamente pelo `FastQueryEngine` para
+evitar ciclo de import. `rag_diagnosis` auto-detecta se a execução foi agentic (DeepAgent)
+ou Q&A/retrieval clássico e responde com o `QueryCode` correspondente.
 
 A consulta rápida **nunca levanta exceção**. Falhas são encapsuladas em
 `FastLogQueryResult(success=False, error=...)`.
@@ -227,7 +252,7 @@ o log inteiro para garantir a resposta correta.
 
 ---
 
-## 5. Catálogo de QuestionType — 22 tipos em 6 grupos
+## 5. Catálogo de QuestionType — 25 tipos em 8 grupos
 
 ```
 Grupo: erros
@@ -263,6 +288,13 @@ Grupo: paralelismo_real
     parallelism_evidence            → list[dict]: quais evidências estruturadas provam a sobreposição?
     had_fanout_without_parallelism  → bool: houve fanout configurado sem paralelismo real?
     parallelism_blocker_reason      → str: qual blocker formal explica a ausência de paralelismo?
+
+Grupo: ingestao
+    ingestion_pdf_progress          → dict: progresso por PDF (concluídos, abortados, em andamento)
+    ingestion_performance           → dict: latência real, paralelismo, balanceamento e throughput da ingestão
+
+Grupo: diagnostico_rag
+    rag_diagnosis                   → dict: diagnóstico do RAG (auto-detecta agentic DeepAgent vs Q&A/retrieval clássico)
 ```
 
 Obtendo o catálogo programaticamente:
@@ -273,7 +305,7 @@ all_types = sorted(QuestionType.all_types())
 
 ---
 
-## 6. Catálogo de QueryCode — 20 códigos de resposta estáveis
+## 6. Catálogo de QueryCode — 25 códigos de resposta estáveis
 
 Os códigos são strings constantes retornados em `FastLogQueryResult.code`. São estáveis
 entre versões — podem ser comparados programaticamente.
@@ -294,6 +326,11 @@ QueryCode.RETRY_FOUND            # retry detectado
 QueryCode.COMPONENT_FAILED       # componente com falha detectada
 QueryCode.PARALLELISM_FOUND      # paralelismo real comprovado por janela temporal
 QueryCode.FANOUT_WITHOUT_PARALLELISM  # fanout observado sem sobreposição temporal real
+QueryCode.INGESTION_PROGRESS          # resposta de progresso de ingestão por PDF
+QueryCode.INGESTION_PERFORMANCE       # resposta de performance de ingestão
+QueryCode.RAG_DIAGNOSIS_AGENTIC       # execução RAG detectada como agentic (DeepAgent)
+QueryCode.RAG_DIAGNOSIS_CLASSIC       # execução RAG detectada como Q&A/retrieval clássico
+QueryCode.RAG_DIAGNOSIS_UNKNOWN       # tipo de execução RAG não determinável
 QueryCode.UNSUPPORTED_QUESTION_TYPE   # tipo de pergunta não suportado
 QueryCode.MISSING_CORRELATION_ID      # correlation_id ausente
 QueryCode.LOG_NOT_FOUND               # arquivo de log não encontrado
@@ -316,7 +353,7 @@ class FastLogQueryRequest:
     phase: str | None         # Opcional. Filtra por campo "stage".
     max_records: int | None   # Omitido = lê todo o log disponível.
     max_evidence: int         # Default: 3. Máximo de itens de evidência no resultado.
-    timeout_ms: float         # Default: 3000. Timeout da consulta em milissegundos.
+    timeout_ms: float         # Default: 9000. Timeout da consulta em milissegundos.
     since: datetime | None    # Opcional. Reconsulta incremental a partir desta data/hora.
     include_evidence: bool    # Default: True. Inclui registros de evidência no resultado.
 ```
@@ -489,6 +526,9 @@ Engine de consulta rápida que despacha por `question_type` para o handler regis
 | `TimeoutRetryQueryHandler` | has_timeout, has_retry                                                                                                       |
 | `ComponentQueryHandler`    | component_failed                                                                                                             |
 | `ParallelismQueryHandler`  | had_real_parallelism, max_real_concurrency, parallelism_evidence, had_fanout_without_parallelism, parallelism_blocker_reason |
+| `IngestionPdfProgressQueryHandler` | ingestion_pdf_progress                                                                                              |
+| `IngestionPerformanceQueryHandler` (`analysis/insights/handlers_ingestion.py`) | ingestion_performance                                                          |
+| `RagDiagnosisQueryHandler` (`analysis/insights/handlers_rag_diagnosis.py`) | rag_diagnosis                                                                      |
 
 Cada handler recebe o `Iterator[dict]` do loader — controla a iteração e pode parar
 antecipadamente a qualquer momento com `break`.
@@ -561,8 +601,8 @@ exceções para o chamador — capturam e retornam como resultado estruturado co
 python -m src.log_analyzer [SUBCOMANDO] [OPÇÕES]
 
 Subcomandos:
-  analyze      análise profunda (Pandas, 4 plugins)
-  stats        resumo estatístico de múltiplos logs
+  analyze      análise profunda (Pandas, 6 plugins)
+  stats        resumo estatístico de múltiplos logs (análise agregada)
   query        consulta rápida por question_type
   filter       filtro objetivo de registros reais
   list-types   lista o catálogo de tipos de pergunta
@@ -653,10 +693,21 @@ Ideal para agentes de IA que precisam do catálogo sem parsear texto de `--help`
 ```
 --correlation-id CORRELATION_ID   OBRIGATÓRIO
 --logs-dir LOGS_DIR               Default: ./logs
+--output {json,text}              Default: json
+--no-rotated                      Exclui arquivos rotacionados (padrão inclui)
 --max-records MAX_RECORDS         Default: 50000
---include-rotated                 Inclui arquivos rotacionados (padrão)
---no-rotated                      Exclui arquivos rotacionados
---format {json,pretty}            Default: pretty
+--strict                          Aborta na primeira violação de contrato de schema
+                                  (event_name fora do catálogo ou alias proibido).
+                                  Padrão: tolerante — reporta em schema_contract_findings.
+```
+
+### stats — todas as opções
+
+```
+--logs-dir LOGS_DIR   Default: ./logs
+--output {json,text}  Default: json
+--max-files MAX_FILES Default: 100
+--strict              Aborta na primeira violação de contrato de schema
 ```
 
 ---
@@ -702,9 +753,9 @@ na consulta atual e ajuda a reexecutar a próxima pergunta sem cache interno.
 
 ```python
 if not result.success:
-    print(result.error)      # FastLogQueryResult.error: str
+    print(result.error)          # dict | None com "code", "message", "details"
     # ou
-    print(result.code)       # QueryCode.INTERNAL_ERROR ou RECORD_LIMIT_EXCEEDED
+    print(result.code)           # ex.: QueryCode.QUERY_ERROR, LOG_NOT_FOUND, MISSING_CORRELATION_ID
 ```
 
 Para `AnalysisResult`:
@@ -837,9 +888,9 @@ Após `analyze_individual`, o dict `result.analyses` terá:
 - **Causa:** `max_records` muito baixo, o erro pode estar além dos primeiros N registros
 - **Ação:** aumentar `--max-records` ou `max_records` no request; verificar `metadata.records_scanned`
 
-### Sintoma: `result.success=False` com `code=INTERNAL_ERROR`
+### Sintoma: `result.success=False` com `code=QUERY_ERROR`
 - **Causa:** exceção não esperada dentro da engine ou handler
-- **Como investigar:** `result.error` (FastLogQueryResult) ou `result.error.message + result.error.error_type` (AnalysisResult)
+- **Como investigar:** `result.error` (dict com `code`/`message`/`details` no FastLogQueryResult) ou `result.error.message + result.error.error_type` (AnalysisResult)
 
 ### Sintoma: `answer=False` para `flow_status` mesmo com log existente
 - **Causa:** os campos `event_name` e `status` do log usam vocabulário que não está nos conjuntos `_START_EVENTS`, `_END_EVENTS`, `_SUCCESS_STATUSES` do `FlowStatusQueryHandler`

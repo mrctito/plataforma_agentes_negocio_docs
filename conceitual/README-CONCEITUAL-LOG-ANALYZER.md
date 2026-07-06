@@ -16,8 +16,8 @@ O módulo oferece dois modos de operação com propósitos diferentes:
 
 - **Consulta rápida** (`LogQueryService`): lê o log registro a registro via iterador e
   para assim que a resposta puder ser determinada, sem carregar nada em memória. Responde
-  a 17 tipos de perguntas operacionais como "houve erro?", "qual o status do fluxo?",
-  "o processo está travado?".
+  a 25 tipos de perguntas operacionais como "houve erro?", "qual o status do fluxo?",
+  "o processo está travado?", além de perguntas de ingestão e de diagnóstico de RAG.
 
 Os dois modos compartilham a mesma camada de localização de arquivos e o mesmo contrato
 de rastreabilidade por `correlation_id`, mas são pipelines independentes, com engines

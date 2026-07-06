@@ -2,7 +2,7 @@
 
 ## Atenção antes de ler
 
-Este documento cobre um mecanismo **distinto e separado** do Job Core genérico (RabbitMQ + Dramatiq + Worker + fan-out). Os dois coexistem no produto. Para o Job Core genérico, leia:
+Este documento cobre um mecanismo **distinto e separado** do Job Core genérico (RabbitMQ + Worker dedicado + fan-out). Os dois coexistem no produto. Para o Job Core genérico, leia:
 
 - [README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md](README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md)
 
@@ -12,7 +12,7 @@ Para o pipeline de ingestão PDF (extração, OCR, chunking, embeddings, indexa�
 
 Este documento cobre o mecanismo de fila, wakeups RabbitMQ, dispatcher, Killer, dashboard mínimo e execução do job. Não duplica o pipeline de PDF em si.
 
-**Nota sobre o Job Core genérico:** o mecanismo genérico (Dramatiq + Worker dedicado) está marcado como legado em depreciação futura. O processador simples (spec-101) é a direção de evolução para ingestão assíncrona de PDF.
+**Nota sobre o Job Core genérico:** o mecanismo genérico (Worker dedicado com consumer RabbitMQ de polling; o Dramatiq foi aposentado) está marcado como legado em depreciação futura. O processador simples (spec-101) é a direção de evolução para ingestão assíncrona de PDF.
 
 ---
 
@@ -50,18 +50,19 @@ A fila de alarme é tratada como efêmera: sem dead-letter exchange nem `x-messa
 
 O dispatcher é implementado em `dispatch_pending_simple_async_pdf_jobs` (`simple_async_pdf_job_runtime.py`). Ele é chamado pelo runtime `SimpleAsyncPdfDispatcherRabbitMqRuntime`, que sobe dentro do processo worker oficial via `build_async_job_worker_runtime(...)` e `WorkerProcessRuntime.start()`.
 
+O modelo atual é **sineta-dirigido (signal-directed) e determinístico**: a mensagem de wakeup carrega o `job_id` da linha recém-gravada, o dispatcher recebe esse valor como `target_job_id` e executa **exatamente aquela linha** — uma sineta = um `job_id` = um processo. Não há varredura de fila governada por vagas nem lock de exclusão do dispatcher. A varredura de pendentes (`list_pending_jobs`) só ocorre no caminho de recuperação/teste, quando o wakeup chega sem `job_id`.
+
 Ao acordar:
 
 1. Loga `dispatcher_wakeup_received`.
 2. Chama `_reap_finished_job_processes()` — colhe (join) os processos de job já terminados chamando `multiprocessing.active_children()`. Isso evita processos zumbi acumulando entre rodadas.
-3. Tenta adquirir `pg_try_advisory_lock(hashtext('simple_async_pdf_dispatcher_v1'))` via `store.dispatcher_lock()`. Se não adquire, loga `dispatcher_lock_not_acquired` e retorna. Garante que apenas um dispatcher processe a fila de pendentes por vez.
-4. Reconcilia jobs presos em `processing` sem atividade além da janela configurada.
-5. Conta jobs `processing` → `processing_count`.
-6. Calcula `available_slots = config.max_jobs_parallel - processing_count`.
-7. Lista jobs `pending` limitados a `available_slots` (ORDER BY `created_at ASC`).
-8. Loga `dispatcher_pending_jobs_found`.
-9. Se sem slots: loga `dispatcher_no_slots_available`.
-10. Se sem pendentes: loga `dispatcher_no_jobs_started`.
+3. Reconcilia jobs presos em `processing` sem atividade além de `stale_processing_after_seconds` via `store.reconcile_stale_processing_jobs(...)`. Loga `dispatcher_stale_jobs_checked` **sempre** (mesmo com zero) e `dispatcher_stale_jobs_reconciled` quando alguma linha foi liberada.
+4. Conta jobs `processing` e `pending` — apenas para observabilidade (`dispatcher_pending_jobs_found` carrega `processing_jobs`, `pending_jobs`, `jobs_to_start`); nenhum desses contadores gera bloqueio por vaga.
+5. Resolve os jobs a iniciar: com `target_job_id` (caminho oficial), chama `_resolve_target_pending_job(...)` e executa só aquela linha; sem `target_job_id`, cai na varredura `list_pending_jobs`.
+6. Loga `dispatcher_pending_jobs_found`.
+7. Se não houver job a iniciar: loga `dispatcher_no_jobs_started`.
+
+**Não existem** os eventos `dispatcher_lock_acquired`, `dispatcher_lock_not_acquired` nem `dispatcher_no_slots_available`, e **não há** `pg_try_advisory_lock`/`store.dispatcher_lock()` no código atual. A garantia de que um job não é iniciado duas vezes vem da idempotência de `store.mark_processing` (UPDATE WHERE `status='pending'` RETURNING — ver etapa 5), não de lock de dispatcher.
 
 ### Etapa 4 — Processo do job
 
@@ -86,9 +87,9 @@ O dispatcher loga `dispatcher_process_spawned` se o processo iniciou, ou `dispat
 
 `execute_simple_async_pdf_job_process` (função de nível de módulo em `simple_async_pdf_job_runtime.py`):
 
-1. Cria logger e store com `correlation_id` do job.
-2. Chama `store.mark_processing(job_id)` — UPDATE WHERE `status='pending'` RETURNING. Se retornar `None`, loga `job_process_skipped_non_pending` e retorna (idempotência).
-3. Persiste `runner_pgid = os.getpid()` para o Killer conseguir alcançar a árvore inteira depois.
+1. Chama `os.setpgrp()` — torna o processo do job líder do próprio process-group (`pgid == pid`), para o Killer alcançar a árvore inteira (job + runners) depois.
+2. Cria logger e store com `correlation_id` do job.
+3. Chama `store.mark_processing(job_id=job_id, runner_pgid=os.getpid())` — UPDATE WHERE `status='pending'` RETURNING que já persiste o `runner_pgid` na mesma operação. Se retornar `None`, loga `job_process_skipped_non_pending` e retorna (idempotência: outra sineta/execução já pegou a linha).
 4. Loga `job_process_started` e `job_status_changed_to_processing`.
 5. Chama `_build_job_work_items(...)` — monta a lista de `SimpleAsyncPdfWorkItem`. Se vazia, loga `job_pdf_list_empty` e levanta `RuntimeError`.
 6. Calcula `runner_count = clamp(record.parallelism, 1, max_runners_per_job)`.
@@ -149,7 +150,7 @@ Os eventos `pdf_pipeline_progress` são emitidos pelo callback real ligado ao pr
 `_finalize_job`:
 
 - Loga `job_summary_computed` com `total_pdfs`, `success_count`, `error_count`.
-- `final_status = "success" if error_count == 0 else "error"`.
+- `final_status = "success" if (error_count == 0 and not structural_abort) else "error"` — um `structural_abort` (falha estrutural do lote, ex.: bootstrap do vector store) força `error` mesmo sem PDF individual falho.
 - `final_message = f"Job concluido com {success_count} PDFs com sucesso e {error_count} PDFs com erro"`.
 - Chama `store.finish_job(job_id, status, final_message, error_message)`.
 - Loga `job_finished_success` ou `job_finished_error`.
@@ -166,7 +167,7 @@ DDL/migrações do contrato atual:
 
 | Coluna | Tipo | Obrigatório | Descrição |
 | --- | --- | --- | --- |
-| `job_id` | TEXT | Sim (PK) | Mesmo valor do `task_id` / `correlation_id` do submit |
+| `job_id` | TEXT | Sim (PK) | Mesmo valor do `task_id` do submit (na spec-101 `task_id == job_id`); o `correlation_id` fica em coluna própria, não no `job_id` |
 | `job_type` | TEXT | Sim | `"ingestion_pdf"` |
 | `job_params_json` | JSONB | Sim | Parâmetros do job: `encrypted_data`, `output_format`, `document_parallelism`, `run_id`, `queued_at` |
 | `status` | TEXT | Sim | `pending`, `processing`, `success`, `error`, `cancelling`, `cancelled` |
@@ -181,7 +182,10 @@ DDL/migrações do contrato atual:
 | `error_message` | TEXT | Não | Detalhe do erro se status=error |
 | `tenant_code` | TEXT | Não | Escopo do tenant (NULL em linhas antigas) |
 | `vectorstore_id` | TEXT | Não | Identificador do vector store destino |
+| `yaml_config_name` | TEXT | Não | Basename do YAML que disparou o job (só o nome do arquivo, nunca caminho nem conteúdo); capturado no submit e persistido por `SimpleAsyncPdfJobStore.create_job` |
 | `runner_pgid` | INTEGER | Não | Process-group id do líder do job-runtime, usado pelo Killer |
+
+> **Lacuna de migração.** O código (`simple_async_pdf_job_models.py::SimpleAsyncPdfJobRecord.yaml_config_name` e o `INSERT` de `simple_async_pdf_job_store.py::create_job`) grava a coluna `yaml_config_name`, mas **nenhum arquivo em `scripts/sql/` a adiciona**. Não encontrado no código: o DDL de `yaml_config_name`. Onde deveria estar: uma nova migração `scripts/sql/<data>_add_yaml_config_name_to_simple_async_pdf_jobs.sql` no mesmo padrão das demais. Em produção a coluna já precisa existir (senão todo `create_job` falharia), então o `ADD COLUMN` foi aplicado à mão sem versionar o script.
 
 **Constraints confirmadas no DDL:**
 
@@ -212,11 +216,12 @@ O simple job usa duas filas curtas próprias, além da tabela `job_core.async_jo
 
 As duas filas são publicadas por `RabbitMqJobQueue` e consumidas no **worker oficial**, não na API.
 
-O runtime do worker sobe um runtime composto com três blocos:
+O runtime do worker sobe um `_CompositeAsyncJobWorkerRuntime` com quatro blocos (montado por `build_async_job_worker_runtime` quando `consumer_runtime == "rabbitmq_polling"`):
 
-- runtime RabbitMQ genérico do worker;
-- dispatcher da spec-101;
-- Killer da spec-101.
+- runtime RabbitMQ genérico do worker (`build_async_job_rabbitmq_runtime`);
+- dispatcher da spec-101 (`build_simple_async_pdf_dispatcher_rabbitmq_runtime`);
+- Killer da spec-101 (`build_simple_async_pdf_killer_rabbitmq_runtime`);
+- consumidor de wakeup de exclusão de checkpoint (`build_checkpoint_delete_wakeup_runtime`) — bloco à parte, não faz parte do ciclo de vida do job PDF.
 
 Isso é montado em:
 
@@ -227,12 +232,14 @@ Isso é montado em:
 
 ## 4. Limites de concorrência
 
-Dois parâmetros controlam o paralelismo, passados como `SimpleAsyncPdfDispatcherConfig`:
+`SimpleAsyncPdfDispatcherConfig` tem **dois campos** (`simple_async_pdf_job_runtime.py`):
 
-- `max_jobs_parallel` — número máximo de jobs com status `processing` ao mesmo tempo. O dispatcher não inicia novos jobs se `count_processing_jobs() >= max_jobs_parallel`.
-- `max_runners_per_job` — número máximo de processos runners dentro de um único job. O runner count efetivo é `clamp(record.parallelism, 1, max_runners_per_job)`.
+- `max_runners_per_job` — teto absoluto de processos runners dentro de um único job. O runner count efetivo é `clamp(record.parallelism, 1, max_runners_per_job)` (no código: `max(min(parallelism, max_runners_per_job), 1)`). Vem de `ASYNC_JOB_MAX_RUNNERS_PER_JOB` (default 4).
+- `stale_processing_after_seconds` — janela (default 3000s) acima da qual um job `processing` sem atividade é considerado morto e liberado como `error` pela reconciliação. Fica **acima** do teto de timeout do docling para nunca matar um job vivo em parse longo.
 
-O campo `parallelism` em `job_core.async_jobs` vem do `document_parallelism` passado no submit. O dispatcher usa `max_runners_per_job` como teto absoluto.
+O campo `parallelism` em `job_core.async_jobs` vem do `document_parallelism` passado no submit e alimenta o `clamp` acima.
+
+**`max_jobs_parallel` não limita a spec-101 hoje.** A variável `ASYNC_JOB_MAX_JOBS_PARALLEL` (default 4) é lida por `system_config_manager` e exposta na config dict, mas o dispatcher da spec-101 **não a consome** — o modelo é sineta-dirigido (uma sineta inicia exatamente um job), então não há teto de jobs `processing` simultâneos aplicado aqui. O único parâmetro que o runtime da spec-101 passa ao dispatcher é `max_runners_per_job`.
 
 ---
 
@@ -279,7 +286,7 @@ python -m src.log_analyzer query --correlation-id <correlation_id>
 
 O log com o `correlation_id` do job contém todos os eventos do ciclo de vida, em ordem de emissão real:
 
-`job_submit_requested` → `job_row_created` → `job_dispatch_signal_sent` → `job_submit_finished` → `dispatcher_wakeup_received` → `dispatcher_lock_acquired` → `dispatcher_pending_jobs_found` → `dispatcher_process_spawned` → `job_process_started` → `job_status_changed_to_processing` → `job_pdf_list_started` → `job_pdf_list_finished` → `job_runners_create_started` → `job_runner_started` (×N) → `job_runners_create_finished` → `job_no_more_pdfs_to_dispatch` → `job_runner_result_collection_started` → `job_pdf_dispatched_to_runner` (×PDF) → `pdf_started` → `pdf_text_extraction_started` → `pdf_pipeline_progress` (×progresso) → `pdf_finished_success` ou `pdf_pipeline_failed`+`pdf_finished_error` → `job_runner_became_free` → `job_runner_result_collection_completed` → `job_summary_computed` → `job_finished_success` ou `job_finished_error`.
+`job_submit_requested` → `job_row_created` → `job_dispatch_signal_sent` → `job_submit_finished` → `dispatcher_wakeup_received` → `dispatcher_stale_jobs_checked` → `dispatcher_pending_jobs_found` → `dispatcher_process_spawned` → `job_process_started` → `job_status_changed_to_processing` → `job_pdf_list_started` → `job_pdf_list_finished` → `job_runners_create_started` → `job_runner_started` (×N) → `job_runners_create_finished` → `job_no_more_pdfs_to_dispatch` → `job_runner_result_collection_started` → `job_pdf_dispatched_to_runner` (×PDF) → `pdf_started` → `pdf_text_extraction_started` → `pdf_pipeline_progress` (×progresso) → `pdf_finished_success` ou `pdf_pipeline_failed`+`pdf_finished_error` → `job_runner_became_free` → `job_runner_result_collection_completed` → `job_summary_computed` → `job_finished_success` ou `job_finished_error`.
 
 ### Via banco PostgreSQL
 
@@ -401,7 +408,7 @@ O cancelamento via Killer já existe, mas continua simples:
 | Arquivo | Responsabilidade |
 | --- | --- |
 | `src/api/services/simple_async_pdf_job_runtime.py` | Dispatcher, `_reap_finished_job_processes`, processo do job (não-daemon), runners (daemon), progress callback real, coleta de resultados, finalização |
-| `src/api/services/simple_async_pdf_job_store.py` | Acesso PostgreSQL à tabela `job_core.async_jobs`, advisory lock, retry, pools fork-safe |
+| `src/api/services/simple_async_pdf_job_store.py` | Acesso PostgreSQL à tabela `job_core.async_jobs` (`create_job`, `mark_processing`, `touch_activity`, `finish_job`, `reconcile_stale_processing_jobs`, `mark_cancelling`, `finish_cancelled`), retry via helper central `run_sync_with_external_retry` (`ExternalRetryConfig`), pools fork-safe. Não há advisory lock |
 | `src/api/services/simple_async_pdf_job_models.py` | `SimpleAsyncPdfJobRecord`, `SimpleAsyncPdfJobStatus`, `SimpleAsyncPdfJobValidationError` |
 | `src/api/services/async_job_rabbitmq.py` | `publish_dispatcher_wakeup`, `publish_killer_wakeup`, filas curtas de wakeup |
 | `src/api/services/simple_async_pdf_dispatcher_rabbitmq.py` | Runtime RabbitMQ do dispatcher da spec-101 |
@@ -421,7 +428,7 @@ O cancelamento via Killer já existe, mas continua simples:
 
 Este mecanismo é distinto do Job Core genérico. Para entender o Job Core (legado em depreciação futura):
 
-- [README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md](README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md) — arquitetura genérica, Worker dedicado, Dramatiq, fan-out
+- [README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md](README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md) — arquitetura genérica, Worker dedicado, consumer RabbitMQ de polling, fan-out
 - [README-CONCEITUAL-SISTEMA-JOBS-WORKER-PARALELISMO.md](../conceitual/README-CONCEITUAL-SISTEMA-JOBS-WORKER-PARALELISMO.md) — visão executiva do Job Core
 
 Para o pipeline de ingestão PDF:

@@ -1645,21 +1645,10 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Sugestao de melhoria: manter testes de contrato sobre o formato do estado e eventos aplicados.
 - Prioridade: Alta
 
-### UiSpecValidator
+### UiSpecValidator (removido do código)
 
-- Descricao: validador seguro da `UiSpec` materializada, evitando renderizacao de payload invalido, inseguro ou estruturalmente inconsistente no frontend AG-UI.
-- Tags: ag-ui, validacao, ui-spec
-- Tipo: validator
-- Arquivo: [app/ui/static/js/shared/ag-ui-ui-spec-validator.js](../app/ui/static/js/shared/ag-ui-ui-spec-validator.js)
-- Linguagem: JavaScript
-- Responsabilidade principal: validar o contrato da UI espec before render.
-- Dependencias principais: [app/ui/static/js/shared/ag-ui-safe-content.js](../app/ui/static/js/shared/ag-ui-safe-content.js)
-- Acoplamento forte com dominio?: Medio. Especifico de AG-UI, mas transversal nesse ecossistema.
-- Uso atual observado: Sim. Consumido por [app/ui/static/js/shared/ag-ui-ui-spec-renderer.js](../app/ui/static/js/shared/ag-ui-ui-spec-renderer.js) e reexportado via [packages/ag-ui-runtime/index.js](../packages/ag-ui-runtime/index.js).
-- Seguro reutilizar como esta?: Sim.
-- Riscos ou limitacoes: precisa evoluir junto com o contrato da `UiSpec`.
-- Sugestao de melhoria: manter matriz de exemplos validos e invalidos por versao da especificacao.
-- Prioridade: Alta
+- __Não encontrado no código.__ `app/ui/static/js/shared/ag-ui-ui-spec-validator.js` e `app/ui/static/js/shared/ag-ui-ui-spec-renderer.js` (citados em versão anterior desta entrada) não existem mais no repositório (confirmado por busca), e `packages/ag-ui-runtime/index.js` não reexporta nada com "UiSpec" no nome.
+- O contrato governado `ag_ui.ui_specs` (`multi_agents[].ag_ui.ui_specs` / `workflows[].ag_ui.ui_specs`) continua existindo no **backend** (`AgUiGovernedUiSpecService`, ver [README-TECNICO-AG-UI.md, seção 1A.3](README-TECNICO-AG-UI.md)), descrito lá como "implementado, sem uso exercitado" — sem YAML real que o use e sem validador/renderer frontend dedicado hoje. A visualização generativa que de fato roda no chat embutível é o A2UI (`createA2uiSurfaceRenderer`, entrada abaixo), um conceito distinto e sem sobreposição com `ui_specs`.
 
 ### createA2uiSurfaceRenderer
 
@@ -1703,7 +1692,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Responsabilidade principal: detectar conteudo proibido em specs e catalogos da UI agentica.
 - Dependencias principais: JavaScript padrao
 - Acoplamento forte com dominio?: Baixo dentro do dominio AG-UI; e uma utilidade de seguranca.
-- Uso atual observado: Sim. Usado por [app/ui/static/js/shared/ag-ui-ui-spec-validator.js](../app/ui/static/js/shared/ag-ui-ui-spec-validator.js), [app/ui/static/js/shared/ag-ui-dashboard-validator.js](../app/ui/static/js/shared/ag-ui-dashboard-validator.js) e [app/ui/static/js/shared/ag-ui-component-catalog.js](../app/ui/static/js/shared/ag-ui-component-catalog.js).
+- Uso atual observado: Sim. Usado por [app/ui/static/js/shared/ag-ui-component-catalog.js](../app/ui/static/js/shared/ag-ui-component-catalog.js), [app/ui/static/js/shared/ag-ui-a2ui-surface-renderer.js](../app/ui/static/js/shared/ag-ui-a2ui-surface-renderer.js), [app/ui/static/js/shared/ag-ui-spec-render-bridge.js](../app/ui/static/js/shared/ag-ui-spec-render-bridge.js) e [app/ui/static/js/shared/embeddable-chat-spec-runtime.js](../app/ui/static/js/shared/embeddable-chat-spec-runtime.js). Os arquivos `ag-ui-ui-spec-validator.js` e `ag-ui-dashboard-validator.js`, citados em versão anterior desta entrada, não existem mais no código (confirmado por busca no repositório).
 - Seguro reutilizar como esta?: Sim.
 - Riscos ou limitacoes: listas de proibicao precisam acompanhar a superficie real de risco.
 - Sugestao de melhoria: documentar criterios de bloqueio e permitir fixture suite focada em payload malicioso.

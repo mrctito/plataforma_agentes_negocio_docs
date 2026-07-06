@@ -1,0 +1,11 @@
+flowchart TD
+    CALL["Subagente chama dyn_sql&lt;query_code&gt;"] --> CHECK{"query_code está inline em<br/>local_tools_configuration.sql_dynamic.queries?"}
+    CHECK -->|"sim (caminho deste demo)"| YAMLR["Resolve pela definição do YAML<br/>event: tool.dynamic_sql.yaml_resolved"]
+    CHECK -->|"não"| REG["Fallback: integrations.sql_query_registry<br/>por tenant_id do YAML"]
+    REG -->|"não encontrado"| FAIL["Falha na inicialização:<br/>derruba o supervisor inteiro"]
+    YAMLR --> BIND["Faz bind dos parâmetros tipados<br/>(@p1, @p2... nunca SQL livre)"]
+    REG -->|"encontrado + publish_to_agents=true"| BIND
+    BIND --> LOG1["Log: deepagent_supervisor.tool.start<br/>(correlation_id, shape do argumento)"]
+    LOG1 --> EXEC["Executa no banco<br/>(SELECT agregado ou INSERT/UPDATE idempotente)"]
+    EXEC --> LOG2["Log: deepagent_supervisor.tool.end<br/>(duração, shape do retorno)"]
+    LOG2 --> RET["Retorna ao subagente"]

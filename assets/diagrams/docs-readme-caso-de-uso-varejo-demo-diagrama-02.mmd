@@ -1,0 +1,30 @@
+sequenceDiagram
+    actor U as Usuário (webchat)
+    participant Sup as Supervisor de Operações
+    participant Sub as subagente_ajuste_preco
+    participant SQL as Tool dyn_sql (op_ajuste_*)
+    participant DB as PostgreSQL (pdv.*)
+    actor Ap as Aprovador humano
+
+    U->>Sup: "Ajuste o preço do produto 42 para R$ 89,90"
+    Sup->>Sub: delega (rota por description exclusiva)
+    Sub->>SQL: dyn_sql<op_produto_preco_atual>
+    SQL->>DB: SELECT preco, preco_oferta, estoque
+    DB-->>Sub: preco_anterior = 74,90
+    Sub->>SQL: dyn_sql<op_ajuste_registrar>
+    SQL->>DB: INSERT pdv.op_ajustes_preco (aplicado=false)
+    DB-->>Sub: ajuste_id
+    Sub->>SQL: dyn_sql<op_ajuste_aplicar> (tool em interrupt_on)
+    Note over Sub,SQL: Nome resolvido "dyn_sql_op_ajuste_aplicar"<br/>bate com interrupt_on → LangGraph pausa (interrupt)
+    SQL-->>U: resposta parcial: hil = { aguardando aprovação }
+    U->>Ap: encaminha decisão (mesma sessão de chat)
+    Ap->>Sup: POST /agent/continue (decisão: approve | reject)
+    alt aprovado
+        Sup->>SQL: retoma dyn_sql<op_ajuste_aplicar>
+        SQL->>DB: UPDATE pdv.produtos SET preco=89.90 (mesma transação)
+        DB->>DB: UPDATE pdv.op_ajustes_preco SET aplicado=true
+        DB-->>Sup: preco_aplicado
+        Sup-->>U: confirmação: preço atualizado (+20,0%)
+    else rejeitado
+        Sup-->>U: ajuste não aplicado - preço permanece 74,90
+    end

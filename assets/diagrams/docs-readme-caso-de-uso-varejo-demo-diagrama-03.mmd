@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph Boot["No boot / bootstrap do supervisor"]
+        DB1[("agent_skills<br/>(tenant_id, skill_name, environment)")]
+        MAT["Materialização no PostgresStore<br/>/skills/&lt;skill_name&gt;/SKILL.md"]
+        DB1 -->|"11 linhas: tenant=engenharia_dnit<br/>environment=development"| MAT
+    end
+    subgraph Prompt["Sempre no prompt (catálogo enxuto)"]
+        CAT["name + description<br/>de cada uma das skills declaradas"]
+    end
+    MAT --> CAT
+    subgraph Runtime["Durante a conversa"]
+        Q["Pergunta do usuário"]
+        DEC{"Alguma description<br/>bate com o pedido?"}
+        LOAD["SkillsMiddleware carrega<br/>o SKILL.md completo sob demanda"]
+        NOLOAD["Segue sem carregar<br/>skill nenhuma"]
+    end
+    Q --> DEC
+    CAT --> DEC
+    DEC -->|"sim"| LOAD
+    DEC -->|"não"| NOLOAD
+    LOAD --> EXE["Agente segue o procedimento<br/>passo a passo da skill"]

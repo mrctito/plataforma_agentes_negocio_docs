@@ -2,13 +2,15 @@
 
 ## 1. O que esta etapa faz
 
-Esta etapa prova AG-UI como superficie de negocio concreta. Ela transforma capabilities governadas de varejo e PDV em consultas aprovadas ou materializacao segura de dashboard, e devolve tudo isso como eventos de experiencia AG-UI.
+Esta etapa prova AG-UI como superficie de negocio concreta. Ela transforma capabilities governadas de varejo e PDV em consultas aprovadas, e devolve tudo isso como eventos de experiencia AG-UI.
 
 Em linguagem simples: e a parte que mostra AG-UI deixando de ser so protocolo e virando produto utilizavel.
 
+> Este dominio ja teve um caminho alternativo de materializacao de dashboard dinamico (capability `dashboard_dynamic`, com um `DashboardMaterializationService` dedicado). Esse mecanismo foi **removido do codigo** — hoje as quatro capabilities do pack seguem sempre o mesmo caminho uniforme de query governada (secao 5.3).
+
 ## 2. Onde ela entra no fluxo
 
-No codigo lido, esse dominio aparece no RetailDemoAgUiAdapter, no catalogo fechado de queries PDV e no caminho alternativo de dashboard dinamico. Ele e acionado pelo endpoint publico oficial `POST /ag-ui/runs`, usando YAML governado e `metadata.capabilityPackId=retail_demo` para selecionar o acelerador.
+No codigo lido, esse dominio aparece no `RetailDemoAgUiAdapter` e no catalogo fechado de queries PDV (`RetailDemoQueryCatalog`). Ele e acionado pelo endpoint publico oficial `POST /ag-ui/runs`, usando YAML governado e `metadata.capabilityPackId=retail_demo` para selecionar o acelerador.
 
 Em linguagem simples: a tela nao envia DSN, SQL ou segredo. Ela envia um pedido oficial AG-UI para a borda canônica, e o backend decide como executar esse dominio governado.
 
@@ -17,16 +19,15 @@ Em linguagem simples: a tela nao envia DSN, SQL ou segredo. Ela envia um pedido 
 Entradas confirmadas:
 
 - `AgUiRunRequest` canônico no endpoint `/ag-ui/runs`
-- capability de negocio dentro de `input`
-- parameters escalares quando a capability e baseada em query
-- dashboardSpec quando a capability e dashboard_dynamic
+- capability de negocio dentro de `input` (sales_summary, checkout_funnel, catalog_opportunities ou customer_segments)
+- parameters escalares da query aprovada pela capability
 - `metadata.capabilityPackId` quando a tela fixa o pack governado
 - configuracao de ambiente DATABASE_VAREJO_DSN e DATABASE_VAREJO_SCHEMA
 
 Saidas confirmadas:
 
 - eventos de passo, tool call, snapshot de estado e mensagem textual
-- resultado da query aprovada ou do dashboard materializado
+- resultado bruto da query aprovada, sem materializacao visual propria
 - bloqueio explicito quando o payload tenta sair do contrato governado
 
 ## 4. Como o codigo implementa a etapa
@@ -35,16 +36,14 @@ O fluxo real segue esta ordem.
 
 1. a UI chama `POST /ag-ui/runs` com `AgUiRunRequest` canônico;
 2. o boundary resolve o dominio governado pelo YAML e pelo `capabilityPackId`, sem URL paralela por `agent_id`;
-3. o adapter detecta se o payload pede materializacao de dashboard;
-4. se for dashboard_dynamic, delega ao DashboardMaterializationService e encerra o fluxo;
-5. se nao for, transforma o input em intent de varejo;
-6. bloqueia SQL livre em qualquer parte do payload;
-7. resolve DSN e schema a partir do ambiente;
-8. monta um RetailDemoQueryCatalog fechado e validado como read-only;
-9. escolhe a query aprovada pela capability;
-10. valida parametros exatos e escalares;
-11. cria dyn_sql pela factory canonica com secret_key governada;
-12. executa a query e devolve eventos AG-UI com tool call, snapshot e mensagem final.
+3. o adapter transforma o input em intent de varejo;
+4. bloqueia SQL livre em qualquer parte do payload;
+5. resolve DSN e schema a partir do ambiente;
+6. monta um RetailDemoQueryCatalog fechado e validado como read-only;
+7. escolhe a query aprovada pela capability;
+8. valida parametros exatos e escalares;
+9. cria dyn_sql pela factory canonica com secret_key governada;
+10. executa a query e devolve eventos AG-UI com tool call, snapshot e mensagem final.
 
 O detalhe mais importante e que o usuario final nunca recebe SQL livre nem DSN. A UI conversa com capabilities de negocio, enquanto o backend faz o binding seguro com dyn_sql.
 
@@ -117,7 +116,7 @@ O valor desta etapa e permitir conversa com dados de negocio sem abrir mao de go
 
 - src/api/services/ag_ui_retail_demo_adapter.py
   - Simbolo relevante: RetailDemoAgUiAdapter.execute
-  - Comportamento confirmado: bifurcacao entre dashboard dynamic e queries aprovadas de varejo.
+  - Comportamento confirmado: as quatro capabilities seguem o mesmo caminho uniforme de query aprovada de varejo; zero ocorrencia de `dashboard`/`DashboardSpec` no arquivo. `src/api/services/ag_ui_dashboard_materialization.py` (o `DashboardMaterializationService` que existia neste fluxo) nao existe mais no codigo.
 - src/api/services/ag_ui_retail_demo_adapter.py
   - Simbolo relevante: RetailDemoQueryCatalog
   - Comportamento confirmado: catalogo fechado de capabilities PDV e queries read-only.

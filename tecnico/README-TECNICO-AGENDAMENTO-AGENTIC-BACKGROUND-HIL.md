@@ -206,7 +206,9 @@ O RuntimeBootstrap sobe o maintenance scheduler apenas quando:
 
 1. a política de startup permite scheduler;
 2. o processo é líder, quando liderança Redis está habilitada;
-3. o universal scheduler dispatcher está ativado por configuração.
+3. pelo menos uma rotina de manutenção está habilitada por configuração (o catálogo está em 7.3.2).
+
+O dispatcher universal em si só entra no maintenance scheduler quando o próprio flag está ligado e UNIVERSAL_SCHEDULER_DSN está presente. Sem o DSN, o bootstrap registra a inibição e agenda apenas as demais rotinas habilitadas.
 
 Se background_execution_dispatcher_enabled estiver ligado, o bootstrap apenas emite warning de que o dispatcher legado é ignorado.
 
@@ -404,7 +406,7 @@ O slice AG-UI lido confirma emissao de interrupcoes, renderizacao de painel e co
 - SCHEDULER_LEADER_LOCK_RENEW_SECONDS controla a renovação.
 - UNIVERSAL_SCHEDULER_DISPATCHER_ENABLED liga o dispatcher canônico.
 - UNIVERSAL_SCHEDULER_DISPATCHER_INTERVAL_SECONDS define a cadência da rodada.
-- UNIVERSAL_SCHEDULER_DISPATCHER_LIMIT define o volume por rodada.
+- UNIVERSAL_SCHEDULER_DISPATCHER_LIMIT_PER_RUN define o volume por rodada.
 - UNIVERSAL_SCHEDULER_DISPATCHER_CLAIM_TTL_SECONDS define a janela de claim.
 - UNIVERSAL_SCHEDULER_DSN é obrigatório para o dispatcher universal.
 

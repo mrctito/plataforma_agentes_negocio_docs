@@ -55,7 +55,7 @@ POST /ag-ui/runs exige uma fonte de configuracao explicita no corpo. O backend r
 
 Em linguagem simples: primeiro existe uma configuracao governada. Depois a aplicacao externa chama o boundary canônico com essa fonte de configuracao. O browser nao deve decidir runtime por URL.
 
-O bloqueio tambem vale para campos aninhados. Se alguem tentar esconder `yaml_config`, `yamlPath`, `encryptedData`, `tenantId`, `securityKeys` ou `toolsLibrary` dentro de `input` ou `metadata`, o backend rejeita o request.
+O modelo estrito (`extra="forbid"`) bloqueia campo desconhecido no topo do payload. **Lacuna encontrada nesta rodada de sincronizacao:** nao foi encontrado no codigo um validador que rejeite `yamlPath`, `tenantId`, `securityKeys` ou `toolsLibrary` quando escondidos dentro de `input` ou `metadata` (esses dois campos sao `JsonValue`/`dict` livres em `AgUiRunRequest`, sem varredura recursiva). Onde deveria estar: `src/api/schemas/ag_ui_models.py` (model_validator) ou `src/api/services/ag_ui_yaml_first_run_preparation_service.py`, no mesmo padrao do bloqueio recursivo de SQL livre ja usado em `assert_no_free_sql_payload`/`contains_free_sql_key` (`src/api/services/ag_ui_capability_pack.py`). Detalhe tecnico em [README-TECNICO-AG-UI-BORDA-HTTP-DEDICADA.md, secao 9](../tecnico/README-TECNICO-AG-UI-BORDA-HTTP-DEDICADA.md).
 
 O boundary publico nao oferece mais caminho alternativo por `agent_id`. Isso remove duplicidade de contrato e elimina a chance de o cliente tratar a URL como seletor de runtime.
 

@@ -2,11 +2,11 @@
 
 ## Atenção antes de ler
 
-Este documento descreve um mecanismo distinto do **Job Core genérico** (RabbitMQ + Dramatiq + worker + fan-out por documento). Os dois mecanismos coexistem no produto. Se a sua dúvida for sobre o Job Core genérico, leia primeiro:
+Este documento descreve um mecanismo distinto do **Job Core genérico** (RabbitMQ + worker dedicado + fan-out por documento). Os dois mecanismos coexistem no produto. Se a sua dúvida for sobre o Job Core genérico, leia primeiro:
 
 - [README-CONCEITUAL-SISTEMA-JOBS-WORKER-PARALELISMO.md](README-CONCEITUAL-SISTEMA-JOBS-WORKER-PARALELISMO.md)
 
-**Nota de posicionamento estratégico:** o Job Core genérico (Dramatiq + Worker dedicado) está marcado como legado em depreciação futura. O processador simples (spec-101) é a direção de evolução para ingestão assíncrona de PDF na plataforma.
+**Nota de posicionamento estratégico:** o Job Core genérico (Worker dedicado com consumer RabbitMQ de polling; o Dramatiq foi aposentado) está marcado como legado em depreciação futura. O processador simples (spec-101) é a direção de evolução para ingestão assíncrona de PDF na plataforma.
 
 ---
 
@@ -34,7 +34,7 @@ A vantagem do balcão spec-101 é que ele é mais direto para trabalhos de inges
 
 ## 3. Problema que ele resolve
 
-O Job Core genérico usa Dramatiq e um Worker separado como processo de consumo permanente. Esse Worker tem overhead de inicialização e gerenciamento de threads. Para o cenário de ingestão de PDFs simples, precisava de um caminho mais leve que:
+O Job Core genérico usa um Worker separado como processo de consumo permanente (hoje um consumer RabbitMQ de polling; o Dramatiq foi aposentado). Esse Worker tem overhead de inicialização e gerenciamento de threads. Para o cenário de ingestão de PDFs simples, precisava de um caminho mais leve que:
 
 - aceitasse o pedido imediatamente e devolvesse um `job_id` para acompanhamento;
 - gravasse o estado de forma durável (PostgreSQL) sem depender da memória volátil;
@@ -53,9 +53,9 @@ O fluxo do spec-101 hoje pode ser entendido em nove etapas.
 
 **Etapa 2 — Alarme para o dispatcher.** Junto com a criação da linha, a API publica uma mensagem curta na fila `ingestion_dispatcher_wakeup`. Essa mensagem não carrega o trabalho: ela apenas acorda o dispatcher com `correlation_id` e `job_id`.
 
-**Etapa 3 — Worker acorda o dispatcher da spec-101.** O processo worker oficial mantém um loop dedicado para essa fila. Ao receber o wakeup, ele consulta o banco, conta quantos jobs estão ativos, reconcilia jobs presos sem atividade há tempo demais e decide se há slot para iniciar o próximo job.
+**Etapa 3 — Worker acorda o dispatcher da spec-101.** O processo worker oficial mantém um loop dedicado para essa fila. O modelo é sineta-dirigido: a mensagem de wakeup carrega o próprio `job_id`, e o dispatcher, ao acordar, reconcilia jobs presos sem atividade há tempo demais e vai executar **exatamente aquele job** apontado pela sineta. Ele conta jobs ativos e pendentes apenas para registro no log, não para decidir vaga — uma sineta corresponde a um job.
 
-**Etapa 4 — Criação do processo do job.** Para cada job que couber nos slots disponíveis, o dispatcher cria um processo separado (`multiprocessing.Process` com `daemon=False`). O processo não pode ser daemon porque ele precisa criar subprocessos runners.
+**Etapa 4 — Criação do processo do job.** Para o job apontado pela sineta, o dispatcher cria um processo separado (`multiprocessing.Process` com `daemon=False`). O processo não pode ser daemon porque ele precisa criar subprocessos runners. A garantia de não iniciar o mesmo job duas vezes vem da marcação idempotente do job como `processing` (não de um lock de dispatcher nem de contagem de vagas).
 
 **Etapa 5 — Execução dentro do processo do job.** O processo marca o job como `processing`, persiste o `runner_pgid` do líder para eventual cancelamento e resolve a lista de PDFs que o job deve processar.
 
@@ -74,11 +74,11 @@ O fluxo do spec-101 hoje pode ser entendido em nove etapas.
 | Aspecto | Job Core genérico | spec-101 |
 | --- | --- | --- |
 | Transporte principal | RabbitMQ com envelopes versionados | Tabela PostgreSQL como fila + RabbitMQ como alarme |
-| Consumidor | Worker dedicado (processo permanente com Dramatiq) | Worker oficial com dispatcher próprio da spec-101 + processo temporário por job |
+| Consumidor | Worker dedicado (processo permanente, consumer RabbitMQ de polling) | Worker oficial com dispatcher próprio da spec-101 + processo temporário por job |
 | Paralelismo | Fan-out documental via jobs filhos no Worker | Pool de runners em memória dentro do processo do job |
 | Ledger de lifecycle | `PostgresJobRunStore` (tabelas dedicadas do Job Core) | `job_core.async_jobs` (tabela única simples) |
 | Rastreamento de PDF individual | Job filho com `worker_execution_correlation_id` próprio | Resultado em memória, log com `correlation_id` do job |
-| Uso de Dramatiq | Sim, como runtime do Worker | Não |
+| Runtime de consumo | Threads de polling RabbitMQ (`pika`) no Worker dedicado | Dispatcher próprio + processo e subprocessos por job |
 | Status do job | Ciclo completo do Job Core (`PENDING`, `RUNNING`, etc.) | Ciclo simples: `pending → processing → success/error`, com trilha de cancelamento `cancelling → cancelled` |
 | Status atual | Legado em depreciação futura | Direção de evolução da plataforma |
 
@@ -116,7 +116,7 @@ Cada runner cria seu próprio pool de conexão com o PostgreSQL após o fork, se
 
 ### Reconciliação básica de jobs presos
 
-Se um processo de job terminar de forma inesperada, o mecanismo atual já possui uma reconciliação básica no próprio store. Quando o dispatcher acorda, ele pode marcar como `error` um job que ficou em `processing` sem atividade por tempo demais. Isso libera slots travados sem depender de intervenção manual imediata.
+Se um processo de job terminar de forma inesperada, o mecanismo atual já possui uma reconciliação básica no próprio store. Quando o dispatcher acorda, ele marca como `error` um job que ficou em `processing` sem atividade por tempo demais. Isso fecha jobs mortos presos em `processing` e mantém o estado da fila verdadeiro, sem depender de intervenção manual imediata.
 
 O que essa reconciliação **não** faz:
 

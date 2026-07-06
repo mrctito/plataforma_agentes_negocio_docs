@@ -35,9 +35,11 @@ O middleware todo_list não é detalhe cosmético. Ele dá ao runtime uma lista 
 
 O runtime suporta filesystem e shell persistente, mas não como liberdade total. O contrato exige permissions explícitas, operações limitadas a read e write, caminhos absolutos sem navegação suspeita e políticas declarativas de shell. Isso dá poder operacional sem abrir mão de restrição e rastreabilidade.
 
-### 3.4. Ele mantém memória durável
+### 3.4. Ele mantém memória durável — inclusive skills e AGENTS.md por cliente
 
-O contrato atual separa duas coisas. `memory` top-level lista caminhos absolutos de memória operacional carregada no runtime. `backend` top-level habilita persistência durável em Redis com escopos user, agent e org, além de política read_only ou read_write. Na prática, isso transforma o agente em algo capaz de reter contexto de trabalho ao longo do tempo sem misturar memória de prompt com store persistente.
+O contrato atual separa duas coisas. `memory` top-level lista caminhos absolutos de memória operacional carregada no runtime. `backend` top-level habilita persistência durável com escopos user, agent e org, além de política read_only ou read_write. Existem dois destinos duráveis: Redis (mais simples, pode ter TTL) e Postgres (sem expiração, pensado para conteúdo que precisa durar por tempo indeterminado).
+
+É no backend Postgres que entram duas capacidades novas: **skills por tenant** (procedimentos e conhecimento especializado, guardados numa tabela dedicada e carregados sob demanda pelo agente) e **AGENTS.md por tenant** (as instruções fixas do cliente — o "leia-me da casa" — guardadas numa coluna dedicada e injetadas sempre no início de cada execução). Na prática, isso transforma o agente em algo capaz de reter contexto de trabalho, procedimentos e regras do cliente ao longo do tempo, sem misturar memória de prompt com store persistente e sem depender de um cache que expira.
 
 ### 3.5. Ele combina autonomia com aprovação humana
 
@@ -51,13 +53,17 @@ O supervisor consegue trabalhar com subagentes síncronos, que entram no runtime
 
 Poucos pontos do código deixam isso tão claro quanto o runtime agentic em background e o subagente automático de background execution. O DeepAgent não depende do ciclo HTTP curto para existir. Ele pode ser disparado, pausado, retomado, auditado e acompanhado como execução durável.
 
+### 3.8. Ele consegue calcular e transformar dados sozinho, com segurança
+
+Todo DeepAgent nasce com um pequeno "interpretador de código" ligado por padrão. Não é acesso livre ao servidor: é um ambiente isolado, sem acesso a arquivo, rede ou comandos do sistema, pensado só para o agente fazer contas, transformar texto ou montar uma estrutura de dados no meio do raciocínio, sem precisar de uma tool específica para cada cálculo. Se a execução travar ou consumir memória demais, o ambiente é interrompido e o agente segue em frente — sem risco de derrubar o processo que atende os outros clientes. Quem administra o agente pode desligar essa capacidade por YAML quando não fizer sentido para o caso de uso.
+
 ## 4. Por que ele é especialmente forte para processos em background
 
 Se o objetivo é rodar agentes em segundo plano, o DeepAgent Supervisor se aproxima do perfil ideal por cinco razões combinadas.
 
 ### 4.1. O estado não morre no fim da requisição
 
-Como há thread_id, checkpointer, store e memória Redis, o trabalho pode continuar depois. Isso é decisivo em fluxos que demoram minutos, horas ou até ciclos periódicos inteiros.
+Como há thread_id, checkpointer e store durável (Redis ou Postgres), o trabalho pode continuar depois. Isso é decisivo em fluxos que demoram minutos, horas ou até ciclos periódicos inteiros.
 
 ### 4.2. O runtime já fala a linguagem de agendamento e retomada
 
@@ -91,6 +97,7 @@ O contrato do DeepAgent inclui uma pilha declarativa de middlewares governados.
 - pii
 - todo_list
 - skills
+- interpreter
 
 Além disso, o runtime registra middlewares oficiais e middlewares do produto para seleção de tool, limites, retry, edição de contexto, pós-processamento e tratamento de erro.
 
@@ -108,9 +115,9 @@ Ao mesmo tempo, o contrato moderno não aceita shell persistente e HIL no mesmo 
 
 O DeepAgent pode memorizar contexto por usuário, por agente ou por organização. Em um ERP, isso abre espaço para agentes que aprendem histórico operacional do time, do processo ou do cliente sem confundir escopos.
 
-## 5.5. Skills top-level e por subagente
+## 5.5. Skills top-level e por subagente, guardadas por cliente
 
-O runtime suporta skills como fontes de conhecimento e comportamento, tanto no supervisor principal quanto em subagentes. Isso ajuda a especializar agentes sem duplicar prompt gigante e sem transformar o YAML em texto sem estrutura.
+O runtime suporta skills como fontes de conhecimento e comportamento, tanto no supervisor principal quanto em subagentes. Uma skill é um procedimento documentado (um "manual de como fazer X") que o agente só abre quando precisa — assim o prompt principal não fica inchado com instrução que só serve para casos específicos. Quando o backend durável é Postgres, essas skills ficam guardadas numa tabela por cliente (tenant), o que permite que cada cliente tenha seu próprio conjunto de procedimentos, sem misturar o de um cliente com o de outro. Isso ajuda a especializar agentes sem duplicar prompt gigante e sem transformar o YAML em texto sem estrutura.
 
 ## 5.6. Structured output
 
@@ -143,7 +150,9 @@ Quando alguém pergunta “o que esse agente realmente consegue fazer?”, a res
 - Manter lista de tarefas interna via todo_list.
 - Ler e gravar arquivos quando filesystem e permissions permitem.
 - Abrir shell persistente com política governada.
-- Persistir memória em Redis por user, agent ou org.
+- Persistir memória em Redis (com expiração) ou em Postgres (sem expiração) por user, agent ou org.
+- Carregar skills e instruções AGENTS.md por tenant a partir do banco, quando o backend é Postgres.
+- Calcular e transformar dados com um interpretador de código isolado, ligado por padrão.
 - Pedir aprovação humana em tools específicas.
 - Escalar HIL para canais assíncronos com email e WhatsApp.
 - Agendar e acompanhar processos em background via subagente especializado.
@@ -279,7 +288,8 @@ Ele recebe um objetivo, usa ferramentas, organiza tarefas, chama especialistas, 
 - Ele é poderoso porque é governado. Tirar a governança destrói o valor do desenho.
 - Filesystem sem permissions explícitas não é aceito.
 - HIL sem interrupt_on e sem checkpointer também não é aceito.
-- backend.type=store não aceita backend arbitrário; o contrato atual exige Redis via backend.redis.
+- backend.type aceita apenas state, store (Redis) ou postgres — não é um valor livre; store e postgres não podem ser combinados no mesmo backend.
+- skills e AGENTS.md por tenant só ficam duráveis com backend.type=postgres; sem esse backend, ambos exigem configuração explícita e não "aparecem sozinhos".
 - background_execution_subagent não funciona se o middleware de subagentes estiver desligado.
 - async approval não significa “qualquer pessoa pode aprovar”; há contrato de canais, aprovadores e decisão permitida.
 - O runtime é forte para processos longos, mas depende de tools reais do tenant para executar casos de negócio concretos.
@@ -330,3 +340,70 @@ Ele recebe um objetivo, usa ferramentas, organiza tarefas, chama especialistas, 
   - Motivo da leitura: boundary HTTP oficial.
   - Símbolos relevantes: /agent/execute, /agent/continue, /agent/hil/decisions.
   - Comportamento confirmado: execução deepagent, continuação por thread_id e resolução segura de HIL assíncrono.
+
+- src/core/store/postgres_store_provider.py, src/agentic_layer/supervisor/skill_repository.py, src/agentic_layer/supervisor/agent_skills_repository.py, src/agentic_layer/supervisor/agent_instructions_repository.py, src/security/user_yaml_repository.py
+  - Motivo da leitura: como skills e AGENTS.md por tenant ficam duráveis em Postgres.
+  - Comportamento confirmado: provider compartilhado de `PostgresStore` (sem cliente Postgres novo); port + adapter dedicados para ler skills (`agent_skills`) e instruções AGENTS.md (`agent_instructions_md`) sempre filtrando por tenant/ambiente; ausência de schema falha explícito, nunca degrada silenciosamente.
+
+- src/agentic_layer/supervisor/agent_middlewares.py
+  - Motivo da leitura: observabilidade do interpreter.
+  - Símbolo relevante: InterpreterExecutionLoggingMiddleware.
+  - Comportamento confirmado: classifica sucesso, timeout, estouro de memória e erro do interpretador de código e registra isso no log oficial, algo que a biblioteca de origem não fazia por padrão.
+
+## 16. FAQ conceitual
+
+Perguntas que costumam aparecer quando alguém — técnico ou não — está entendendo pela primeira vez o que o DeepAgent Supervisor realmente é e por que ele importa.
+
+**1. DeepAgent é só um nome chique para "chatbot com mais ferramentas"?**
+Não. É um modo de execução próprio da plataforma, com contrato declarativo, validação e runtime dedicados. A diferença central é que ele executa trabalho — usa ferramentas, mantém lista de tarefas, grava memória, pausa para aprovação e continua depois — em vez de só responder uma pergunta e terminar.
+
+**2. Qual é a dor real que ele resolve?**
+A escolha ruim clássica entre "agente simples que conversa bem mas não sustenta processo longo" e "agente com autonomia demais e sem controle". O DeepAgent entrega autonomia alta com governança alta: ele pode operar arquivos, shell, memória e aprovação humana, mas só dentro do que foi declarado explicitamente.
+
+**3. O que são "skills" nesse contexto, em termos simples?**
+São manuais de procedimento que o agente só abre quando precisa — por exemplo, "como calcular imposto X" ou "como investigar divergência de estoque Y". Isso evita que o agente carregue instrução gigante o tempo todo; ele consulta o manual certo na hora certa.
+
+**4. Por que "skills por tenant" é relevante para o negócio?**
+Porque cada cliente pode ter seus próprios procedimentos, sem misturar com os de outro cliente. Isso viabiliza personalização por conta sem precisar de um agente inteiro dedicado a cada cliente.
+
+**5. O que é o "AGENTS.md" e por que o cliente deveria se importar com isso?**
+É o conjunto de instruções fixas do cliente — as regras da casa que o agente deve sempre seguir (política interna, terminologia própria, restrições operacionais). Diferente das skills, essas instruções são lidas em toda execução, não só quando o agente decide consultar.
+
+**6. Essas instruções e skills somem se o servidor reiniciar?**
+Não, quando o backend durável é Postgres: skills e AGENTS.md ficam guardados no banco, por cliente, e não dependem de memória temporária do processo. Existe também uma opção mais simples (Redis), que pode ter prazo de expiração — mais adequada para memória de curto prazo, não para regra permanente do cliente.
+
+**7. O que é o "interpretador de código" que o agente tem por padrão?**
+É uma capacidade de fazer cálculo, transformar texto ou montar estrutura de dados no meio do raciocínio, sem precisar de uma ferramenta específica para cada operação. Roda num ambiente isolado — sem acesso a arquivo, rede ou comando do sistema — então mesmo se travar ou tentar consumir muita memória, isso não afeta os outros clientes que compartilham a mesma plataforma.
+
+**8. Isso significa que o agente pode rodar qualquer script no servidor?**
+Não. É o oposto: existe até um bloqueio explícito para impedir que o "modo shell" (que executa comando de verdade) rode direto no servidor compartilhado quando há mais de um cliente na mesma plataforma — o que é sempre o caso aqui. Só são permitidas formas isoladas de execução.
+
+**9. Por que HIL (aprovação humana) é importante num agente que já é autônomo?**
+Porque autonomia total sem ponto de checagem é arriscada em decisão financeira, contratual ou regulatória. O HIL permite que o agente pare exatamente nas ações sensíveis, peça aprovação — por texto, e-mail ou WhatsApp — e só prossiga com decisão humana registrada.
+
+**10. O que acontece se ninguém aprovar a tempo?**
+O contrato de aprovação assíncrona define prazo de expiração e o que fazer quando ele estoura (expirar o pedido ou falhar a execução) — não fica esperando para sempre sem critério.
+
+**11. Por que isso é tão adequado para processos de ERP?**
+Porque ERP é feito de processo longo, exceção, aprovação e necessidade de rastreabilidade — exatamente o que um chatbot simples não sustenta. O DeepAgent foi desenhado para durar além de uma resposta única: ele pausa, retoma, lembra contexto e produz saída estruturada para integrar com o resto do sistema.
+
+**12. O agente "aprende" sozinho com o tempo?**
+Não no sentido de treinar um modelo novo. O que ele acumula é contexto operacional durável — memória por usuário/agente/organização, procedimentos (skills) e regras fixas (AGENTS.md) — tudo curado e revisável, não uma caixa-preta que muda sozinha.
+
+**13. Isso funciona sem supervisão nenhuma da equipe técnica do cliente?**
+Não é esse o modelo. O poder do DeepAgent vem justamente de ser governado: filesystem, shell, skills, memória e aprovação humana entram por contrato explícito. Tirar essa governança tira o diferencial — o produto não é "IA sem controle", é "autonomia com controle".
+
+**14. Qual é o discurso comercial correto para esse recurso?**
+Não é "o agente faz tudo sozinho". É "o agente executa processos duráveis com autonomia governada e pontos formais de intervenção humana" — que é uma promessa mais forte e mais defensável do que autonomia irrestrita.
+
+**15. Um caso de uso real ajuda a entender melhor. Tem exemplo?**
+Sim — ver §8 (fechamento financeiro com aprovação assíncrona, auditoria de compras com memória organizacional, reconciliação de estoque com múltiplas fontes). Todos assumem que o tenant publica as tools de domínio adequadas; o que é nativo da plataforma é a arquitetura agentic, não o processo de negócio específico.
+
+**16. Preciso saber YAML para entender esse recurso?**
+Não para a visão de negócio. Para configurar de fato (habilitar skills, backend, memória, interpreter), a referência técnica com exemplo real e explicado campo a campo está em `README-TECNICO-DEEPAGENT-SUPERVISOR-COMPLETO.md` (§7.10.2).
+
+**17. Esse recurso substitui a necessidade de um time humano acompanhando o processo?**
+Não substitui — reduz a necessidade de acompanhamento manual constante e concentra a atenção humana nos pontos que realmente exigem julgamento (as pausas de aprovação), em vez de cada passo do processo.
+
+**18. O que muda estrategicamente para a plataforma ao ter skills e AGENTS.md duráveis por tenant?**
+Cada cliente passa a poder curar o próprio conjunto de procedimentos e regras sem depender de mudança de código ou de YAML por especialista técnico a cada ajuste fino de conteúdo — o conteúdo evolui no banco, o contrato de execução no YAML permanece estável.

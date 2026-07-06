@@ -2,7 +2,7 @@
 
 ## 1. Escopo técnico deste manual
 
-Este manual documenta o funcionamento técnico real do DeepAgent Supervisor no código atual. O foco aqui é o ciclo YAML para AST, parser, validator, resolução do supervisor ativo, bootstrap do runtime, toolset, filesystem, shell, todo_list, memória Redis, HIL, aprovação assíncrona, subagentes, background execution, contratos HTTP de continuação e observabilidade.
+Este manual documenta o funcionamento técnico real do DeepAgent Supervisor no código atual. O foco aqui é o ciclo YAML para AST, parser, validator, resolução do supervisor ativo, bootstrap do runtime, toolset, filesystem, shell, todo_list, memória durável (Redis ou Postgres), skills e AGENTS.md por tenant, interpreter, HIL, aprovação assíncrona, subagentes, background execution, contratos HTTP de continuação e observabilidade.
 
 O objetivo não é listar arquivos. O objetivo é explicar como a feature realmente funciona, quais recursos avançados ela expõe, quais restrições o contrato impõe e por que esse desenho é especialmente adequado para agentes que executam processos duráveis em background.
 
@@ -160,7 +160,7 @@ O DeepAgentSupervisor.initialize segue um fluxo rígido.
 2. Inicializa ToolsFactory e MemoryFactory compartilhadas.
 3. Resolve a factory governada do runtime DeepAgent.
 4. Compõe a pilha extra de middlewares do produto.
-5. Constrói backend e store persistente do DeepAgent quando backend top-level está habilitado.
+5. Constrói backend e store persistente do DeepAgent quando backend top-level está habilitado; com backend.type=postgres, também materializa as skills do tenant em `/skills/` e as instruções AGENTS.md em `/memories/agents.md` (§7.10.1).
 6. Resolve o checkpointer.
 7. Cria o agente final.
 
@@ -383,8 +383,18 @@ O DeepAgent suporta interrupt_on em nível de supervisor e subagente. As decisõ
 - approve
 - edit
 - reject
+- respond
 
 Quando human_in_the_loop.enabled=true, o runtime injeta HumanInTheLoopMiddleware. Se interrupt_on não estiver configurado, isso falha cedo.
+
+### 7.12.1. interrupt_on em tools parametrizadas (nome resolvido vs. nome de referência)
+
+O validador semântico confere cada chave de `interrupt_on` contra o catálogo efetivo de tools do escopo (`tools` do agente/supervisor, `tools_library` e MCP local). Para famílias de tools **parametrizadas** (ex.: `dyn_sql<q>`), existe uma diferença deliberada entre duas formas:
+
+- a **forma de referência**, declarada em `agent.tools` (ex.: `dyn_sql<q>`);
+- o **nome resolvido em runtime**, o único que o HIL realmente enxerga quando a tool dispara (ex.: `dyn_sql_q`).
+
+Sem tratamento, um `interrupt_on` correto (com o nome resolvido) seria reprovado por só existir a forma de referência no conjunto de tools declaradas. Por isso o validador expande o conjunto disponível com o nome resolvido de cada tool parametrizada antes de checar `interrupt_on` — reusando `ToolsSemanticValidator.resolve_parametrized_tool_name` como fonte única das famílias parametrizadas, sem duplicar essa lógica no validador do DeepAgent. Efeito prático: `interrupt_on: {dyn_sql_q: {...}}` é aceito mesmo quando o YAML só declara `dyn_sql<q>` em `tools`.
 
 Quando shell.enabled=true no mesmo supervisor, isso também falha cedo. O produto trata shell persistente com HIL no mesmo escopo como combinação não suportada e não tenta degradar silenciosamente.
 
@@ -486,11 +496,15 @@ Middlewares oficiais confirmados:
 
 Middlewares de plataforma confirmados:
 
+- ModelCallLoggingMiddleware
 - ToolLoggingMiddleware
 - ResponsePostProcessingMiddleware
 - ErrorHandlingMiddleware
+- InterpreterExecutionLoggingMiddleware (só quando `interpreter.enabled=true`)
 
 A observabilidade de chamada/retorno de tool usa o hook oficial que o runtime LangChain realmente invoca (`wrap_tool_call`/`awrap_tool_call`), emitido pelo `ToolLoggingMiddleware`. Ele registra os eventos canônicos `deepagent_supervisor.tool.start/.end/.error` (com `correlation_id`, duração e SHAPE — contagem e nomes dos argumentos, tipo/tamanho do retorno, nunca o conteúdo) e alimenta a telemetria de uso. Esse mesmo middleware roda tanto no runtime top-level do supervisor quanto por subagente.
+
+O `InterpreterExecutionLoggingMiddleware` usa o mesmo hook (`wrap_tool_call`/`awrap_tool_call`) e observa **só** a tool cujo nome é igual a `interpreter.tool_name` (default `eval`); qualquer outra tool passa direto, sem overhead. Ele existe porque a lib `langchain_quickjs` **não levanta exceção** em timeout/estouro de memória/erro de JS — ela codifica o desfecho dentro do próprio conteúdo da `ToolMessage` (`<error type="Timeout">`, `<error type="OutOfMemory">`, `<error type="...">`). Sem esse observador, a falha do interpreter é invisível no log oficial (a tool "deu certo" do ponto de vista do `ToolLoggingMiddleware` genérico). Ver detalhes dos eventos em §9.4.
 
 Na prática, isso significa que o runtime combina disciplina de execução do framework com telemetria, auditoria e pós-processamento específicos do produto.
 
@@ -532,6 +546,23 @@ O supervisor registra eventos de lifecycle como:
 - runtime.run.error
 
 E ainda registra telemetria de tool, resposta pós-processada, middleware error, resume e known_subagents via DeepAgentRuntimeTelemetry.
+
+### 9.4.1. Eventos canônicos de backend, skills, memory e interpreter
+
+Além do lifecycle geral, os componentes durável (backend Postgres/Redis), skills e AGENTS.md por tenant, e o interpreter emitem eventos próprios, todos via `build_supervisor_log_context` (builder oficial do slice) e com `correlation_id` resolvido **em tempo de chamada** (nunca congelado no objeto cacheado — `_resolve_active_correlation_id`/`get_graph_correlation_id`). Nenhum desses eventos substitui o `logging` nativo da lib; eles complementam, tornando por `correlation_id` o que antes só existia no log genérico do Python.
+
+| event_name | Quando dispara | Campos-chave (shape, nunca conteúdo) |
+| --- | --- | --- |
+| `deepagent_supervisor.backend_store.configured` | Ao montar o backend do supervisor (Redis ou Postgres) | `store_type`, `store_scope`, `store_policy`, `store_key_prefix` (Redis) ou `store_namespace_prefix`/`store_dsn_source` (Postgres) |
+| `deepagent_supervisor.skills.materialized` | Ao final da materialização de skills do tenant em `/skills/` (só quando há `backend.type=postgres` e skills configuradas) | `skills_total`, `skills_materialized`, `skills_unchanged`, `skills_failed`, `skill_names` |
+| `deepagent_supervisor.skills.load_failed` | Por skill malformada (frontmatter inválido ou `name` != diretório) — a skill é pulada, não derruba o agente | `skill_name`, `skill_failure_reason` (`invalid_skill_md` ou `name_directory_mismatch`) |
+| `deepagent_supervisor.memory.injected` | Ao materializar as instruções AGENTS.md do tenant em `/memories/agents.md` (só quando o supervisor declara essa memória) | `memory_path`, `memory_scope`, `memory_source_table` (`tenant_user_yaml`/`user_account_yaml`/`None`), `memory_instructions_present`, `memory_instructions_bytes`, `memory_injection_action` (`materialized`/`unchanged`/`removed`/`absent`) |
+| `deepagent_supervisor.interpreter.executed` | Execução do `eval` (QuickJS) terminou sem erro/timeout/OOM | `interpreter_outcome=success`, `interpreter_code_chars`, `interpreter_result_chars`, `duration_ms` |
+| `deepagent_supervisor.interpreter.timeout` | Execução estourou `interpreter.timeout` | `interpreter_outcome=timeout`, `interpreter_error_type=Timeout` |
+| `deepagent_supervisor.interpreter.oom` | Execução estourou `interpreter.memory_limit` | `interpreter_outcome=oom`, `interpreter_error_type=OutOfMemory` |
+| `deepagent_supervisor.interpreter.error` | Erro de JS dentro do código (`ReferenceError`, etc.) ou exceção de infraestrutura na própria tool | `interpreter_outcome=error`, `interpreter_error_type` classificado |
+
+Disciplina de dado sensível: nenhum desses eventos loga o código executado, o conteúdo do SKILL.md/AGENTS.md ou a mensagem de erro do JS — apenas contagem, nomes de skill, tamanho em bytes/chars e a decisão tomada.
 
 ## 10. Entrada, execução e continuação
 
@@ -584,7 +615,7 @@ Do ponto de vista técnico, a combinação abaixo é rara e poderosa.
 - thread_id durável
 - correlation_id propagado
 - checkpointer obrigatório quando HIL existe
-- store durável em Redis
+- store durável em Redis ou Postgres, com skills e AGENTS.md por tenant no caso Postgres
 - possibilidade de async approval
 - subagente automático de background execution
 - structured output
@@ -649,7 +680,11 @@ Principais falhas que o runtime trata explicitamente:
 - background_execution_subagent ligado com subagents desligado gera ValueError;
 - HIL habilitado sem interrupt_on gera ValueError;
 - async_approval.enabled sem HIL gera ValueError;
-- permissions ausentes quando filesystem está habilitado geram ValueError.
+- permissions ausentes quando filesystem está habilitado geram ValueError;
+- backend.type=postgres sem bloco postgres, ou sem dsn/dsn_env, gera erro de validação (DEEPAGENT_POSTGRES_INVALIDO/DEEPAGENT_POSTGRES_DSN_AUSENTE);
+- backend.redis e backend.postgres juntos no mesmo backend gera erro de validação (DEEPAGENT_BACKEND_REDIS_POSTGRES_CONFLITO);
+- shell.enabled=true com execution_policy.type=host (explícito ou por default) gera erro de validação (DEEPAGENT_SHELL_HOST_MULTITENANT_PROIBIDO);
+- tabela agent_skills ou coluna agent_instructions_md ausentes no schema geram AgentSkillsSchemaMissingError/AgentInstructionsSchemaMissingError em vez de degradar para vazio.
 
 Em resumo: o DeepAgent do projeto favorece falha fechada para configuração inconsistente.
 
@@ -695,6 +730,26 @@ Onde investigar:
 - DeepAgentRedisStore
 - logs de deepagent store configurado
 
+### 15.4.1. Skills ou AGENTS.md não aparecem com backend Postgres
+
+Causa provável: DDL manual (`agent_skills` ou coluna `agent_instructions_md`) ainda não aplicado no banco; `dsn_env`/`dsn` não resolve; skill malformada (frontmatter inválido ou `name` diferente do diretório); `scope: org` sem `user_session.tenant_id` (fail-closed).
+
+Onde investigar:
+
+- logs `deepagent_supervisor.skills.materialized` / `.skills.load_failed` / `.memory.injected` (§9.4.1)
+- `AgentSkillsSchemaMissingError` / `AgentInstructionsSchemaMissingError` no traceback (schema ausente)
+- `backend.postgres.dsn_env` e a variável de ambiente correspondente
+- `docs/tecnico/README-SCHEMA-BANCO.md` para confirmar se o DDL manual já foi aplicado
+
+### 15.4.2. Interpreter (eval) falha ou trava sem aparecer no log
+
+Causa provável: código excedeu `interpreter.timeout` ou `interpreter.memory_limit`; erro de JS dentro do código executado.
+
+Onde investigar:
+
+- logs `deepagent_supervisor.interpreter.timeout` / `.oom` / `.error` (§9.4.1) — a lib QuickJS não levanta exceção nesses casos, então só esses eventos canônicos tornam a falha visível
+- `interpreter.timeout` / `interpreter.memory_limit` no YAML do supervisor
+
 ### 15.5. Job background não continua após aprovação
 
 Causa provável: pedido HIL não foi resolvido corretamente, token inválido, aprovador incorreto ou problema na continuação.
@@ -731,8 +786,8 @@ O que o torna forte não é “ter muita feature”. O que o torna forte é que 
 
 - src/config/agentic_assembly/validators/deepagent_semantic_validator.py
   - Motivo da leitura: coerência operacional do contrato.
-  - Símbolos relevantes: validações de permissions, HIL, skills, memory, backend e async approval.
-  - Comportamento confirmado: fail-fast para configurações incoerentes.
+  - Símbolos relevantes: validações de permissions, HIL, skills, memory, backend (`_validate_backend_config`), guarda de shell host (`_validate_shell_execution_policy`) e resolução de nome de tool parametrizada em interrupt_on (`_augment_with_resolved_parametrized_names`).
+  - Comportamento confirmado: fail-fast para configurações incoerentes; `backend.type=postgres` exige `dsn`/`dsn_env` e é incompatível com `redis`; `shell.enabled=true` reprova `execution_policy.type=host` em qualquer cenário (inclusive default implícito); `interrupt_on` aceita o nome de runtime resolvido de tools parametrizadas, não só a forma de referência declarada em `tools`.
 
 - src/config/agentic_assembly/schema_service.py
   - Motivo da leitura: catálogo de middlewares e recursos publicados do DeepAgent.
@@ -763,3 +818,172 @@ O que o torna forte não é “ter muita feature”. O que o torna forte é que 
   - Motivo da leitura: persistência durável de memória do DeepAgent.
   - Símbolo relevante: DeepAgentRedisStore.
   - Comportamento confirmado: BaseStore em Redis com retry, TTL, escopo e policy de escrita.
+
+- src/core/store/postgres_store_provider.py
+  - Motivo da leitura: provider compartilhável de `PostgresStore` reusado pelo backend `postgres` do DeepAgent e pela memória RAG.
+  - Símbolos relevantes: get_shared_postgres_store, encode_namespace_label.
+  - Comportamento confirmado: cache de 1 `PostgresStore` por `DSN+ENVIRONMENT`, `store.setup()` (DDL de framework do LangGraph) executado 1×/processo sob lock, sem cliente Postgres novo por consumidor.
+
+- src/agentic_layer/supervisor/skill_repository.py
+  - Motivo da leitura: port hexagonal de leitura de skills por tenant.
+  - Símbolos relevantes: SkillRepository (Protocol), SkillRecord, AgentSkillsSchemaMissingError.
+  - Comportamento confirmado: contrato `list_skills(tenant_id, correlation_id)`; ausência da tabela `agent_skills` deve falhar explícito, nunca degradar para lista vazia.
+
+- src/agentic_layer/supervisor/agent_skills_repository.py
+  - Motivo da leitura: adapter Postgres do port acima.
+  - Símbolo relevante: AgentSkillsPostgresRepository (herda ClientDirectoryBase).
+  - Comportamento confirmado: query filtra por `tenant_id` + `environment` + `status='active'` via `run_observed_query`; erro de schema ausente (`UndefinedTable`/`UndefinedColumn`) vira `AgentSkillsSchemaMissingError`.
+
+- src/agentic_layer/supervisor/agent_instructions_repository.py
+  - Motivo da leitura: port hexagonal de leitura das instruções AGENTS.md por tenant/usuário.
+  - Símbolos relevantes: AgentInstructionsRepository (Protocol), AgentInstructionsRecord, AgentInstructionsSchemaMissingError.
+  - Comportamento confirmado: `resolve_org_agent_instructions` (escopo `org`) e `resolve_user_agent_instructions` (escopo `user`); instrução ausente/vazia devolve `None` (não é erro); coluna ausente falha explícito.
+
+- src/security/user_yaml_repository.py
+  - Motivo da leitura: adapter real do port acima — mesmo acessor único de `tenant_user_yaml`/`user_account_yaml` usado para resolver o `yaml_path` do tenant.
+  - Símbolos relevantes: UserYamlRepository.resolve_org_agent_instructions, UserYamlRepository.resolve_user_agent_instructions.
+  - Comportamento confirmado: lê a coluna `agent_instructions_md` pelo mesmo padrão de `resolve_tenant_yaml_path`/`resolve_user_yaml_path`, sem criar acessor paralelo às tabelas YAML×tenant.
+
+- src/agentic_layer/supervisor/agent_middlewares.py
+  - Motivo da leitura: middlewares de observabilidade do produto que rodam dentro do grafo do DeepAgent.
+  - Símbolos relevantes: InterpreterExecutionLoggingMiddleware, ModelCallLoggingMiddleware, ToolLoggingMiddleware, `_resolve_active_correlation_id`.
+  - Comportamento confirmado: `InterpreterExecutionLoggingMiddleware` usa `wrap_tool_call`/`awrap_tool_call` para classificar o desfecho do `eval` (sucesso/timeout/OOM/erro) a partir do conteúdo da `ToolMessage` (a lib QuickJS não levanta exceção nesses casos); correlação sempre resolvida em tempo de chamada, nunca congelada no middleware cacheado.
+
+## 18. Exemplo completo: consumindo o DeepAgent pela API (JavaScript)
+
+O DeepAgent é acionado pelo mesmo boundary HTTP de todo agente da plataforma: `POST /agent/execute`, com `mode: "deepagent"` para fixar o runtime (ver §10.1 e `src/api/routers/agent_router.py:134-204`). O exemplo abaixo é end-to-end: executa, trata uma pausa HIL (se o supervisor tiver `interrupt_on`) e retoma via `POST /agent/continue`.
+
+```javascript
+const BASE_URL = "https://SEU-HOST/agent";
+
+async function executarDeepAgent(task, encryptedData) {
+  const resposta = await fetch(`${BASE_URL}/execute`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${SEU_TOKEN}`,
+    },
+    body: JSON.stringify({
+      task,
+      user_email: "analista@empresa.com",
+      mode: "deepagent",          // fixa o runtime DeepAgent (único valor aceito no contrato público)
+      execution_mode: "direct_sync",
+      format: "text",
+      encrypted_data: encryptedData, // payload cifrado (YAML + chaves) — ver docs de segurança/security_keys
+    }),
+  });
+
+  const corpo = await resposta.json();
+  // X-Correlation-Id também vem no header da resposta (força máxima em erro).
+  console.log("correlation_id:", corpo.correlation_id);
+
+  if (corpo.hil?.pending) {
+    // Supervisor pausou em interrupt_on aguardando decisão humana (§7.12).
+    console.log("Pausado para revisão:", corpo.hil.action_requests);
+    return { pausado: true, resposta: corpo };
+  }
+
+  console.log("Resposta final:", corpo.response);
+  return { pausado: false, resposta: corpo };
+}
+
+async function continuarDeepAgent(corpoAnterior, decisoes) {
+  // decisoes: lista de { type: "approve" | "edit" | "reject" | "respond", edited_action? }
+  // na MESMA ordem dos action_requests recebidos na pausa.
+  const resposta = await fetch(`${BASE_URL}/continue`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${SEU_TOKEN}`,
+    },
+    body: JSON.stringify({
+      user_email: "analista@empresa.com",
+      mode: "deepagent",
+      correlation_id: corpoAnterior.correlation_id, // reaproveita o MESMO correlation_id
+      thread_id: corpoAnterior.thread_id,           // exige o MESMO thread_id da pausa
+      resume: { decisions: decisoes },
+    }),
+  });
+
+  const corpo = await resposta.json();
+  console.log("Resposta após retomada:", corpo.response);
+  return corpo;
+}
+
+// Uso:
+const { pausado, resposta } = await executarDeepAgent("Quanto é 241 * 17?", meuPayloadCifrado);
+if (pausado) {
+  await continuarDeepAgent(resposta, [{ type: "approve" }]);
+}
+```
+
+Pontos que evitam erro comum:
+
+- `mode` só aceita `"deepagent"` no contrato público; `"agent"` é legado e o boundary rejeita explicitamente (`agent_router.py:192-204`).
+- `correlation_id` e `thread_id` da resposta de `/execute` são obrigatórios em `/continue` — sem eles a retomada não sabe qual pausa resolver (`src/api/schemas/agent_hil_models.py:98-125`, classe `AgentContinueRequest`).
+- `resume.decisions` precisa ter a mesma quantidade e ordem dos `action_requests` recebidos em `hil.action_requests`; `type: "edit"` exige `edited_action`.
+- Se a execução não pausar (`hil` vazio/ausente), `corpo.response` já é a resposta final — não há necessidade de chamar `/continue`.
+
+## 19. FAQ técnica
+
+Perguntas reais de quem vai configurar ou operar um supervisor DeepAgent pela primeira vez, com resposta direta e nível 101.
+
+**1. O que é o DeepAgent Supervisor, em uma frase?**
+É um modo de execução próprio (`execution.type: deepagent`), com AST, validação semântica e runtime dedicados, que monta um agente sobre o pacote oficial `deepagents` (LangChain/LangGraph) com middlewares governados por YAML — não é um supervisor genérico com nome diferente.
+
+**2. Como eu ligo ou desligo um middleware específico?**
+Pelo bloco `middlewares.<nome>.enabled` no supervisor (ex.: `middlewares.skills.enabled: true`). Cada middleware tem um default próprio (ver a tabela em §4.1); a chave só precisa aparecer no YAML quando você quer um valor diferente do default.
+
+**3. Liguei `middlewares.skills.enabled: true` mas nada aconteceu. Por quê?**
+Faltou a lista `skills` top-level (ex.: `skills: ["minha-skill"]`) **e** um `backend` que resolva `/skills/` (Redis ou Postgres). O toggle sozinho não basta — o validador semântico exige os dois juntos (§5.2) e, sem backend, não há de onde ler o conteúdo.
+
+**4. Com `backend.type: postgres`, onde ficam guardadas as skills?**
+Na tabela `agent_skills` (banco de domínio, `DATABASE_PROMETEU_GENERIC_RAG_DSN`), filtrada por `tenant_id` + `environment`. O supervisor lê essa tabela e materializa cada linha em `/skills/<skill_name>/SKILL.md` no `PostgresStore`, que é onde o `SkillsMiddleware` nativo realmente lê (§7.10.1).
+
+**5. E se eu não configurar nenhum `backend`?**
+Skills e memory continuam declaráveis no YAML, mas sem backend não há `/skills/` nem `/memories/` para rotear — o runtime levanta erro explícito em vez de degradar silenciosamente (§14).
+
+**6. Qual a diferença prática entre `backend.type: store` e `backend.type: postgres`?**
+`store` é Redis, com `ttl_seconds` opcional (pode expirar). `postgres` é durável (sem TTL) e é o único caminho hoje para skills/AGENTS.md por tenant persistirem indefinidamente. Os dois usam o mesmo `CompositeBackend`/roteamento; só muda o `BaseStore` por baixo (§7.10).
+
+**7. Preciso rodar alguma migração de banco para usar `backend.type: postgres`?**
+A tabela `agent_skills` e a coluna `agent_instructions_md` são criadas por script DDL manual (nunca em runtime — `CLAUDE.md §5`). Sem esse DDL aplicado, o runtime falha explícito ao tentar ler skills/AGENTS.md do Postgres, em vez de criar o schema sozinho.
+
+**8. Como o AGENTS.md do meu tenant chega até o agente?**
+Você declara `memory: ["/memories/agents.md"]` + `middlewares.memory.enabled: true` + `backend.type: postgres`. O supervisor lê a coluna `agent_instructions_md` (de `tenant_user_yaml` para escopo `org`, ou `user_account_yaml` para escopo `user`) e materializa em `/memories/agents.md`, que o `MemoryMiddleware` nativo injeta **sempre** no system prompt (§7.10.1).
+
+**9. Minha instrução de AGENTS.md sumiu depois que eu apaguei o texto no cadastro do tenant. É bug?**
+Não. A fonte durável (Postgres) manda: se a instrução for removida na origem, o materializador apaga o conteúdo correspondente do store na próxima montagem, para nunca deixar instrução obsoleta injetada (evento `memory.injected` com `action=removed`, §9.4.1).
+
+**10. O interpreter (tool `eval`) vem sempre ligado?**
+Sim, `interpreter.enabled=true` é o default do contrato (diferente da lib oficial, que é opt-in). Para desligar, declare `middlewares.interpreter.enabled: false` no supervisor.
+
+**11. O interpreter roda Python?**
+Não. É QuickJS (JavaScript/TypeScript) in-process, sem filesystem, rede ou shell por padrão — a opção mais segura para um processo compartilhado entre tenants. Não há pandas/numpy nem qualquer pacote Python disponível.
+
+**12. Como eu descubro se uma skill falhou ao carregar?**
+Pelo log canônico `deepagent_supervisor.skills.load_failed` (campos `skill_name` + `skill_failure_reason`), buscando pelo `correlation_id` da montagem. Uma skill malformada é pulada — não derruba o agente, mas também não aparece magicamente (§9.4.1).
+
+**13. Como eu confirmo que o AGENTS.md foi realmente injetado numa execução?**
+Pelo log `deepagent_supervisor.memory.injected`, que mostra `memory_scope`, `memory_source_table` e a decisão (`materialized`/`unchanged`/`removed`/`absent`) — sem expor o conteúdo da instrução (§9.4.1).
+
+**14. Por que `shell.execution_policy.type: host` é bloqueado?**
+Porque a plataforma é multi-tenant por natureza: `host` executaria comandos no processo compartilhado entre tenants, criando superfície de execução cruzada. O validador reprova com `DEEPAGENT_SHELL_HOST_MULTITENANT_PROIBIDO` e sugere `docker` ou `codex_sandbox`, que isolam a execução (§7.7).
+
+**15. Posso usar HIL (`human_in_the_loop`) junto com shell persistente?**
+Não. O contrato trata essa combinação como incoerente e falha cedo antes de montar os middlewares — o produto não tenta arbitrar entre os dois no meio da execução (§7.7, §7.12).
+
+**16. Quais decisões o `interrupt_on` aceita?**
+`approve`, `edit`, `reject` e `respond`. `edit` exige um `edited_action` explícito na retomada; as demais não.
+
+**17. Configurei `interrupt_on` para uma tool parametrizada (ex.: `dyn_sql<q>`) e o validador reprovou o nome. O que fiz errado?**
+Provavelmente nada — declare o nome **resolvido em runtime** (`dyn_sql_q`), não a forma de referência do YAML (`dyn_sql<q>`). O validador expande automaticamente o catálogo disponível com o nome resolvido de tools parametrizadas antes de checar `interrupt_on` (§7.12.1), então ambas as formas funcionam, mas o nome que efetivamente dispara o HIL em runtime é o resolvido.
+
+**18. Como chamo o DeepAgent pela API sem passar por HIL?**
+Se o supervisor não tiver `interrupt_on`/`human_in_the_loop` habilitado, `POST /agent/execute` já devolve a resposta final em `response`, sem `hil` no corpo. Ver exemplo completo em JavaScript em §18.
+
+**19. O que acontece se eu ligar `filesystem` mas esquecer `permissions`?**
+O runtime falha explícito na inicialização (`ValueError`) — filesystem habilitado sem permissions explícitas não é um estado aceito, mesmo que a intenção fosse "liberar tudo" (§14).
+
+**20. Dá para trocar `backend.type: postgres` por `backend.type: store` (Redis) sem mexer em código?**
+Sim. É só troca de bloco YAML — o restante do contrato (`scope`, `policy`, roteamento `/memories/`/`/skills/`) é o mesmo `CompositeBackend`; só muda o `BaseStore` por baixo. É inclusive o caminho de rollback recomendado se o backend Postgres precisar ser desligado rapidamente (§7.10).

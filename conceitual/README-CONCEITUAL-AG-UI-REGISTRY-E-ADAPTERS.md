@@ -28,14 +28,14 @@ Saidas confirmadas:
 
 O fluxo real segue esta ordem.
 
-1. AgUiAdapterRegistry.default registra deepagent, workflow, retail_demo e erp_backoffice_demo;
+1. AgUiAdapterRegistry.default registra tres execution kinds: deepagent, workflow e capability_pack;
 2. register rejeita execution_kind vazio e registro duplicado;
 3. as_mapping devolve copia por convencao imutavel do catalogo;
 4. AgUiCapabilitiesService.default publica um menu publico por execution_kind;
 5. deepagent usa `LangGraphAgent` oficial sobre `CompiledStateGraph`;
 6. workflow usa `Workflowagent`, expoe `CompiledStateGraph` e tambem delega para `LangGraphAgent`;
 7. workflow preserva resume AG-UI por executor dedicado de continuidade, validando `interruptId` e carregando decisao estruturada (`approve`, `reject`, `cancel` ou `edit` com `edited_payload`) ate o contrato canonico do workflow;
-8. retail_demo e erp_backoffice_demo plugam dominios governados proprios sem depender dos runtimes agentic.
+8. capability_pack e um adapter unico (`AgUiCapabilityPackRegistryAdapter`) que delega, por `capabilityPackId` do metadata, a um segundo registry interno (`AgUiCapabilityPackRegistry`) onde `retail_demo` e `erp_backoffice_demo` plugam dominios governados proprios sem depender dos runtimes agentic.
 
 O detalhe mais importante e que extensibilidade aqui nao significa improviso. Existe catalogo explicito, contrato unico e falha fechada quando um execution_kind nao foi registrado.
 
@@ -43,7 +43,7 @@ O detalhe mais importante e que extensibilidade aqui nao significa improviso. Ex
 
 ### 5.1. Registry explicito evita fallback escondido
 
-O catalogo default registra apenas quatro execution kinds. Se um quinto tipo for necessario, ele precisa ser plugado conscientemente.
+O catalogo default registra apenas tres execution kinds (deepagent, workflow, capability_pack). Se um quarto tipo for necessario, ele precisa ser plugado conscientemente. `retail_demo` e `erp_backoffice_demo` nao contam como execution kind adicional: sao capability_pack_id dentro do executionKind compartilhado `capability_pack`, resolvidos por um segundo registry interno (`AgUiCapabilityPackRegistry`).
 
 ### 5.2. Supervisor classico nao e adapter AG-UI suportado
 
@@ -106,7 +106,7 @@ Onde isso se conecta com o resto deste slice: o supervisor DeepAgent, quando o Y
 
 - src/api/services/ag_ui_adapter_registry.py
   - Simbolo relevante: AgUiAdapterRegistry.default
-  - Comportamento confirmado: registro explicito de deepagent, workflow, retail_demo e erp_backoffice_demo.
+  - Comportamento confirmado: registro explicito de tres execution kinds (deepagent, workflow, capability_pack); retail_demo e erp_backoffice_demo sao capability_pack_id de um segundo registry interno (AgUiCapabilityPackRegistry), nao execution kinds do AgUiAdapterRegistry.
 - src/api/services/ag_ui_adapter_registry.py
   - Simbolo relevante: register
   - Comportamento confirmado: proibicao de execution_kind vazio ou duplicado.

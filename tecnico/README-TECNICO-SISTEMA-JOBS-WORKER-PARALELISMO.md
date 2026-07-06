@@ -1,7 +1,7 @@
 # Manual técnico: Sistema de Jobs, Worker e Paralelismo
 
-> ⚠️ **DEPRECADO — em depreciação ativa.** Este Job Core genérico (RabbitMQ +
-> Dramatiq + worker + fan-out + ledger `job_core.job_runs`) é **legado** e será
+> ⚠️ **DEPRECADO — em depreciação ativa.** Este Job Core genérico (RabbitMQ com
+> consumer polling + worker + fan-out + ledger `job_core.job_runs`) é **legado** e será
 > substituído futuramente por uma evolução do **Processador de Jobs Assíncrono
 > Simples** (spec-101) — ver
 > [README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md](README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md).
@@ -12,7 +12,7 @@
 
 ## 1. O que este documento cobre
 
-Este manual explica o comportamento técnico real do mecanismo de processamento de jobs do repositório. O foco é mostrar, em ordem de execução, como o sistema genérico funciona, como ele é materializado sobre RabbitMQ e Dramatiq, como o worker sobe e consome envelopes, como o core resolve handlers e como a ingestão PDF especializa esse mecanismo com job pai, job filho e fan-out por documento.
+Este manual explica o comportamento técnico real do mecanismo de processamento de jobs do repositório. O foco é mostrar, em ordem de execução, como o sistema genérico funciona, como ele é materializado sobre RabbitMQ com consumer de polling, como o worker sobe e consome envelopes, como o core resolve handlers e como a ingestão PDF especializa esse mecanismo com job pai, job filho e fan-out por documento.
 
 O documento também fecha o ponto que o usuário pediu explicitamente: como especializar o mecanismo para novos tipos de job sem criar fluxo paralelo, sem fallback implícito e sem contaminar o core com regra de domínio.
 
@@ -26,7 +26,7 @@ O que o código mostra não é um bloco só. É uma pilha em camadas.
 2. Store durável do lifecycle.
 3. Registry de handlers por chave composta.
 4. Porta abstrata de fila.
-5. Adapter RabbitMQ e Dramatiq.
+5. Adapter e runtime RabbitMQ (consumer de polling).
 6. Runtime dedicado do processo worker.
 7. Bridge transporte -> core.
 8. Executor canônico de payload do worker.
@@ -126,51 +126,55 @@ Essa camada é importante porque o produtor não deveria montar payload físico 
 
 ### 2.7. Configuração canônica do runtime assíncrono
 
-`system_config_manager.py` é a fonte canônica da configuração do backend assíncrono.
+`src/config/config_api/system_config_manager.py` é a fonte canônica da configuração do backend assíncrono.
 
-O que foi confirmado na leitura anterior e usado nesta documentação:
+O que foi confirmado no código e usado nesta documentação:
 
 - backend aceito: `rabbitmq`;
-- runtime consumidor aceito: `dramatiq`;
+- runtime consumidor aceito: `rabbitmq_polling` (env `ASYNC_JOB_CONSUMER_RUNTIME`); o `system_config_manager` valida e **rejeita** qualquer outro valor. O antigo runtime **Dramatiq foi aposentado**: não há `import dramatiq` em `src/` e `async_job_dramatiq.py` é apenas um shim de compatibilidade que reexporta o adapter RabbitMQ;
 - resolução de AMQP URL;
 - nomes base de filas;
 - timeout e TTL da fila;
 - topologia de threads do worker.
 
-Esse ponto é importante porque não existe caminho oficial paralelo do tipo “se não der Dramatiq, consome inline”. O sistema escolhe o runtime canônico e falha quando ele não está configurado corretamente.
+Esse ponto é importante porque não existe caminho oficial paralelo do tipo “se não der o runtime, consome inline”. O sistema exige `consumer_runtime=rabbitmq_polling` e falha explícito quando ele não está configurado corretamente (validado também em `infrastructure_guardrails.py` e `worker_process_runtime.py`).
 
 ### 2.8. Nomes de fila e versão de contrato
 
-`async_job_dramatiq_queue_names.py` materializa a convenção física de filas. O contrato observado usa versão `v2` e separa explicitamente pelo papel operacional.
+`async_job_rabbitmq_queue_names.py` materializa a convenção física de filas (`AsyncJobRabbitMqQueueNameResolver`). O contrato atual usa versão **`v3`** (`ASYNC_JOB_RABBITMQ_QUEUE_CONTRACT_VERSION = "v3"`), com sufixos `.v3.parent` e `.v3.fanout_children`, e separa explicitamente pelo papel operacional. (`async_job_dramatiq_queue_names.py` ainda existe apenas para imports legados dos builders.)
 
-Filas confirmadas:
+Filas confirmadas (`AsyncJobRabbitMqQueueNames`):
 
-- fila pai de ingestão;
-- fila filha de ingestão para `fanout_children`;
-- fila pai de ETL;
-- fila pai de background execution.
+- fila pai de ingestão (`ingestion_parent`);
+- fila filha de ingestão (`ingestion_fanout_children`);
+- fila pai de ETL (`etl_parent`);
+- fila pai de background execution (`background_execution_parent`).
 
-Isso conversa com outra garantia importante: filho não pode cair na fila pai.
+Isso conversa com outra garantia importante: o roteamento por papel (`_queue_role`, decidido pelo `dispatch_mode`) manda o filho para a fila filha, não para a pai.
 
-### 2.9. Adapter RabbitMQ e Dramatiq
+### 2.9. Adapter e runtime RabbitMQ (sem Dramatiq)
 
-`async_job_dramatiq.py` faz duas coisas principais.
+O adapter físico vive em `async_job_rabbitmq.py`, na classe `RabbitMqJobQueue` (`AsyncJobQueuePort`, `transport_name = "rabbitmq"`). Ele usa `pika` diretamente (sem Dramatiq) e faz duas coisas principais.
 
-- Publica mensagens com contrato versionado.
-- Sobe actors Dramatiq para consumo por fila e papel.
-
-Os actors oficiais sobem com `max_retries=0`. Em linguagem simples, o broker não fica repetindo o trabalho por conta própria. Quando existe retry, ele precisa nascer na camada de domínio, de forma explícita e observável.
+- Publica mensagens com contrato versionado, via `pika.BlockingConnection`.
+- Consome por papel através de um runtime de **polling**, não de actors.
 
 No publish, `_build_transport_payload` injeta:
 
-- `async_job_message_schema_version`;
-- `async_job_queue_contract_version`;
+- `async_job_message_schema_version` (valor atual `1`);
+- `async_job_queue_contract_version` (valor atual `v3`);
 - `async_job_queue_role`;
 - `async_job_kind`.
 
-No consume, `_validate_transport_payload` falha fechado se qualquer desses campos não bater com o actor.
+O consumo é feito por `RabbitMqAsyncJobWorkerRuntime`: uma thread de polling por papel (`_build_role_plan` monta o plano a partir de `ingestion_child_worker_threads`, `etl_worker_threads`, `background_execution_worker_threads`), cada uma chamando `consume_one(...)` em loop e entregando o payload ao `AsyncJobPayloadExecutor`. Observação relevante: o plano de papéis do runtime genérico consome `ingestion_fanout_child`, `etl_parent` e `background_execution_parent` — **não** o `ingestion_parent`, coerente com a migração da ingestão PDF para a spec-101.
 
-Há uma proteção extra importante: se um payload `document_fanout_child` cair na fila pai de ingestão, `_ingestion_actor` registra erro estruturado e levanta `FanoutChildOnParentQueueError`. O adapter não tenta redirecionar. Isso é deliberado e correto.
+Retry e reentrega:
+
+- **o broker não reprocessa sozinho**: não há retry automático de actor. Mensagem expirada por TTL ou rejeitada vai para a dead-letter queue `<fila>.XQ` (declarada via `x-dead-letter-exchange`/`x-dead-letter-routing-key`);
+- o retry do próprio adapter (conexão/canal RabbitMQ) usa o helper central `run_sync_with_external_retry` com `ExternalRetryConfig` (5 tentativas, backoff), classificando erro recuperável vs. não recuperável (`_is_retryable_rabbitmq_error`);
+- retry de negócio continua nascendo na camada de domínio, explícito e observável.
+
+Sobre isolamento pai/filho: **não existe mais** `_ingestion_actor` nem a exceção `FanoutChildOnParentQueueError`. O destino correto é garantido no publish pelo roteamento por papel (`_queue_role`/`_is_document_fanout_child_payload`), e o runtime genérico sequer consome a fila pai de ingestão.
 
 ### 2.10. Runtime dedicado do worker
 
@@ -194,7 +198,7 @@ O runtime unificado também emite `WORKER_RUNTIME_READY` quando o plano de contr
 
 ### 2.11. Bridge transporte -> Job Core
 
-`_build_transport_job_core_executor` registra handlers de bridge para o core. Eles não executam o domínio diretamente. Eles apenas conectam a chave `route_kind + dispatch_mode` ao método certo do `AsyncJobPayloadExecutor`.
+O bridge não é mais uma função `_build_transport_job_core_executor` (essa não existe no código atual). O runtime de polling instancia `AsyncJobPayloadExecutor`, que mantém internamente um `JobHandlerRegistry` e usa `AsyncJobCommandFactory` para normalizar o payload e conectar a chave `route_kind + dispatch_mode` ao método certo do próprio executor.
 
 O que está confirmado:
 
@@ -251,7 +255,7 @@ Essa separação é a base para explicar o paralelismo sem confundir coordenaç�
 1. O produtor decide que a execução sairá do modo inline.
 2. A porta de fila decide como publicar sem acoplar o boundary ao broker.
 3. O adapter decide qual fila física receberá a mensagem.
-4. O actor decide se a mensagem pertence mesmo àquela fila.
+4. O consumidor de polling valida o contrato da mensagem por papel de fila.
 5. O bridge decide qual método do executor de payload será chamado.
 6. O core decide o lifecycle genérico e o handler registrado.
 7. O domínio decide a regra de negócio real.
@@ -259,6 +263,8 @@ Essa separação é a base para explicar o paralelismo sem confundir coordenaç�
 Essa distribuição de responsabilidade é o que torna o mecanismo agnóstico.
 
 ## 4. Especialização para ingestão e PDF
+
+> **Aviso de estado atual.** Esta seção descreve a especialização **legada** de ingestão sobre o mecanismo genérico. A ingestão PDF já migrou para a spec-101; e o plano de papéis do consumidor genérico (`RabbitMqAsyncJobWorkerRuntime._build_role_plan`) **não consome mais a fila pai de ingestão** (só `ingestion_fanout_child`, `etl_parent`, `background_execution_parent`). Os artefatos de código descritos abaixo (`IngestionParentJobHandler`, `DocumentFanoutCoordinator`, etc.) ainda existem no repositório, mas leia esta seção como registro histórico do desenho, não como caminho ativo de ingestão PDF.
 
 ### 4.1. Agendamento do job pai de ingestão
 
@@ -457,7 +463,7 @@ Além dos passos do cenário A, será necessário:
 
 1. Expandir `JobKind` na borda assíncrona.
 2. Adicionar base name e construção de fila no contrato físico.
-3. Adicionar actor dedicado no adapter Dramatiq.
+3. Adicionar papel de consumo dedicado no runtime RabbitMQ (`RabbitMqAsyncJobWorkerRuntime._build_role_plan`).
 4. Validar topologia de worker para o novo papel.
 5. Atualizar a factory de runtime e configuração sistêmica.
 
@@ -468,7 +474,7 @@ Na prática, kind novo não é uma simples variação de handler. É extensão d
 - Não publicar dicionário cru direto no broker sem `QueuedJobEnvelope`.
 - Não bypassar o `JobCoreExecutor` para “ganhar tempo”.
 - Não usar `handler_key` sozinho como identidade.
-- Não reusar a fila errada e torcer para o actor dar conta.
+- Não reusar a fila errada e torcer para o consumidor dar conta.
 - Não esconder retry de negócio dentro do transporte.
 - Não criar resolvedor paralelo quando já existe porta e adapter canônicos.
 
@@ -497,7 +503,7 @@ Escopo exato do mecanismo genérico e agnóstico:
 Em termos de código, esse escopo vive principalmente em:
 
 - `src/core/job_core/*`;
-- `src/api/services/async_job_dramatiq.py`;
+- `src/api/services/async_job_rabbitmq.py`;
 - `src/api/services/async_job_queue_port.py` e factories correlatas;
 - `app/worker_main.py` e `app/runners/worker_runner.py`;
 - partes genéricas de `src/api/services/async_job_worker_payload_executor.py`.
@@ -551,7 +557,7 @@ A especialização para ingestão e PDF faz:
 
 A especialização para ingestão e PDF não faz:
 
-- definir contrato físico de RabbitMQ ou Dramatiq;
+- definir contrato físico de RabbitMQ;
 - alterar o lifecycle canônico do `JobCoreExecutor`;
 - decidir como `job_core.job_runs` funciona;
 - inventar fila nova fora do contrato oficial;
@@ -578,7 +584,7 @@ Texto pronto para usar como regra-base do agente:
 ```text
 Você é um agente de manutenção do sistema de jobs assíncronos. Sua obrigação é preservar a separação entre mecanismo genérico e especialização de domínio.
 
-Considere como mecanismo genérico apenas o que for comum a qualquer job: contrato `JobEnvelope`, ledger `job_core`, roteamento por `route_kind + dispatch_mode`, porta de fila, adapter RabbitMQ/Dramatiq, runtime do worker, bridge transporte -> core, normalização tipada do payload e execução genérica do handler.
+Considere como mecanismo genérico apenas o que for comum a qualquer job: contrato `JobEnvelope`, ledger `job_core`, roteamento por `route_kind + dispatch_mode`, porta de fila, adapter RabbitMQ (consumer de polling), runtime do worker, bridge transporte -> core, normalização tipada do payload e execução genérica do handler.
 
 Considere como especialização de ingestão/PDF apenas o que for específico desse domínio: agendamento do job pai, envelopes de ingestão, reserva operacional da run, decisão entre sequencial e fan-out, coordenação pai-filhos, gates e retries do documento, leases, reconciliação da ingestão e pipeline que realmente processa o PDF.
 
@@ -593,23 +599,23 @@ Antes de editar, identifique qual camada decide o comportamento. Depois altere a
 
 ### 6.1. `backend` e `consumer_runtime`
 
-Controlam qual infraestrutura assíncrona é aceita. O código lido confirma RabbitMQ + Dramatiq como caminho oficial.
+Controlam qual infraestrutura assíncrona é aceita. O código confirma `backend=rabbitmq` e `consumer_runtime=rabbitmq_polling` como o único caminho oficial (Dramatiq foi aposentado como runtime).
 
 ### 6.2. `ingestion_queue`, `etl_queue` e `background_execution_queue`
 
-Controlam os nomes base das filas físicas, sobre as quais o contrato `v2` constrói filas por papel.
+Controlam os nomes base das filas físicas, sobre as quais o contrato `v3` constrói filas por papel.
 
-### 6.3. `dramatiq_worker_threads` e `dramatiq_child_worker_threads`
+### 6.3. Threads do worker por papel
 
-Controlam a capacidade física do worker. Isso afeta throughput e o paralelismo real do fan-out documental.
+A capacidade física do worker vem das threads por papel. A topologia canônica (`src/core/async_job_worker_topology.py`) trabalha com `total_worker_threads`, `child_worker_threads`, `ingestion_parent_worker_threads`, `etl_worker_threads`, `background_execution_worker_threads` e a capacidade restante (`core_worker_threads`). Na prática, o `_build_role_plan` do runtime de polling lê `ingestion_child_worker_threads`, `etl_worker_threads` e `background_execution_worker_threads` para dimensionar as threads de consumo. Isso afeta throughput e o paralelismo real do fan-out documental. (As chaves antigas `dramatiq_worker_threads`/`dramatiq_child_worker_threads` não governam mais o plano de papéis; só sobra `dramatiq_child_worker_threads`, lido dentro de `IngestionService` para capacidade interna do documento.)
 
-### 6.4. `dramatiq_worker_timeout_ms` e `dramatiq_shutdown_timeout_ms`
+### 6.4. `poll_timeout_ms`, `shutdown_timeout_ms`, `consumer_timeout_ms` e `message_ttl_ms`
 
-Controlam o comportamento operacional do runtime consumidor e do shutdown coordenado.
+Controlam o comportamento operacional do runtime de polling e do shutdown coordenado: `poll_timeout_ms` (bloqueio por iteração do consumidor), `shutdown_timeout_ms` (janela de parada coordenada), `consumer_timeout_ms` (`x-consumer-timeout` da fila) e `message_ttl_ms` (`x-message-ttl`, default 7 dias). As chaves antigas `dramatiq_worker_timeout_ms`/`dramatiq_shutdown_timeout_ms` não existem mais.
 
 ### 6.5. TTL de mensagens
 
-O adapter resolve TTL da fila e aplica `max_age` aos actors. Isso muda quanto tempo uma mensagem velha ainda pode circular.
+O adapter resolve o TTL da fila (`x-message-ttl`) e o timeout de consumidor (`x-consumer-timeout`). Isso muda quanto tempo uma mensagem velha ainda pode circular antes de ir para a dead-letter `<fila>.XQ`.
 
 ### 6.6. `document_parallelism`
 
@@ -645,7 +651,7 @@ Além do envelope lógico, a borda assíncrona exige:
 - `run_id` opcional
 - `queued_at` opcional
 
-### 7.3. Contrato do payload transportado por Dramatiq
+### 7.3. Contrato do payload transportado por RabbitMQ
 
 O adapter adiciona e valida:
 
@@ -663,7 +669,7 @@ Cada dispatch mode relevante tem seu comando próprio. Esse é o contrato que o 
 No caminho feliz genérico:
 
 1. a mensagem entra na fila certa;
-2. o actor valida o contrato;
+2. o consumidor de polling valida o contrato;
 3. o core registra run e eventos;
 4. o handler correto executa;
 5. o core persiste o estado terminal.
@@ -686,9 +692,9 @@ No caminho feliz da ingestão com fan-out:
 - handler não registrado no core;
 - mensagem com schema version ou queue role incompatível.
 
-### 9.2. Erros de isolamento de fila confirmados
+### 9.2. Isolamento de fila pai/filho
 
-- `FanoutChildOnParentQueueError` quando filho chega à fila pai.
+O isolamento é garantido no roteamento: o publish decide o papel por `dispatch_mode` (`_queue_role`) e o runtime genérico sequer consome a fila pai de ingestão. Não há mais uma exceção dedicada `FanoutChildOnParentQueueError` (foi removida com a saída do Dramatiq).
 
 ### 9.3. Erros de infraestrutura crítica confirmados
 
@@ -721,8 +727,8 @@ No worker:
 
 No adapter assíncrono:
 
-- erro estruturado quando filho cai na fila pai
-- startup do runtime Dramatiq com `queue_contract_version` e `message_schema_version`
+- eventos de publish (`async_job.rabbitmq.publish.completed` / `.failed`) e de loop do worker (`async_job.rabbitmq.worker_loop.started` / `.waiting`)
+- contrato de transporte com `queue_contract_version` (`v3`) e `message_schema_version` (`1`)
 
 Na ingestão:
 
@@ -735,7 +741,7 @@ Na ingestão:
 
 1. Confirmar se o worker subiu e ficou pronto.
 2. Confirmar se a mensagem foi publicada na fila correta.
-3. Confirmar se o actor aceitou o contrato da mensagem.
+3. Confirmar se o consumidor aceitou o contrato da mensagem.
 4. Confirmar se o core registrou a run.
 5. Confirmar se o handler da chave composta existe.
 6. Confirmar se o domínio entrou em execução.
@@ -796,7 +802,7 @@ Se o trabalho for grande, como uma ingestão com muitos documentos, o sistema cr
 
 ## 17. Limites e pegadinhas
 
-- O core é genérico, mas o runtime assíncrono físico atual não é genérico a qualquer broker; ele está fechado em RabbitMQ + Dramatiq.
+- O core é genérico, mas o runtime assíncrono físico atual não é genérico a qualquer broker; ele está fechado em RabbitMQ com consumer de polling via `pika` (o runtime Dramatiq foi aposentado).
 - `document_parallelism` não força fan-out se a origem não for elegível.
 - O filho pode acordar fora de hora; por isso a gate consulta o estado durável antes de trabalhar.
 - Kind novo pode exigir topologia nova, não apenas handler novo.
@@ -814,7 +820,7 @@ Ação recomendada: verificar registry do core e handlers do executor de payload
 
 Causa provável: publicação com role errada ou contrato físico desatualizado.
 
-Ação recomendada: revisar construção do payload de transporte e nomes de fila `v2`.
+Ação recomendada: revisar construção do payload de transporte e nomes de fila `v3`.
 
 ### 18.3. Sintoma: pai de ingestão fica parado após publicar
 
@@ -834,7 +840,7 @@ Pré-requisitos confirmados no código lido:
 
 - RabbitMQ disponível via AMQP URL configurada;
 - backend assíncrono configurado para `rabbitmq`;
-- runtime consumidor configurado para `dramatiq`;
+- runtime consumidor configurado para `rabbitmq_polling`;
 - banco de telemetria acessível para o ledger durável;
 - processo worker iniciado pelo entrypoint Python `app/worker_main.py`.
 
@@ -845,7 +851,7 @@ O comando exato de operação em container não foi confirmado integralmente nos
 - Entendi as camadas do mecanismo genérico.
 - Entendi o contrato mínimo do Job Core.
 - Entendi por que o registry usa chave composta.
-- Entendi o papel do adapter RabbitMQ + Dramatiq.
+- Entendi o papel do adapter RabbitMQ (consumer de polling).
 - Entendi o bootstrap do worker.
 - Entendi como o payload vira comando tipado.
 - Entendi a diferença entre job pai e job filho de ingestão.
@@ -875,10 +881,10 @@ O comando exato de operação em container não foi confirmado integralmente nos
   - Símbolo relevante: `PostgresJobRunStore`.
   - Comportamento confirmado: ledger PostgreSQL com retry explícito.
 
-- [../src/api/services/async_job_dramatiq.py](../src/api/services/async_job_dramatiq.py)
-  - Motivo da leitura: confirmar actors, filas por papel e bridge.
-  - Símbolos relevantes: `_build_async_job_actors`, `_validate_transport_payload`, `_build_transport_job_core_executor`.
-  - Comportamento confirmado: contrato versionado, fail-closed e ligação explícita ao core.
+- [../src/api/services/async_job_rabbitmq.py](../src/api/services/async_job_rabbitmq.py)
+  - Motivo da leitura: confirmar o adapter físico, o consumo por papel e a ligação ao core.
+  - Símbolos relevantes: `RabbitMqJobQueue`, `_build_transport_payload`, `RabbitMqAsyncJobWorkerRuntime`, `build_async_job_rabbitmq_runtime`.
+  - Comportamento confirmado: publish com contrato versionado (schema `1`, contrato `v3`) via `pika`, consumo por polling por papel e entrega ao `AsyncJobPayloadExecutor`. (`async_job_dramatiq.py` é apenas shim de compatibilidade.)
 
 - [../src/api/services/async_job_worker_payload_executor.py](../src/api/services/async_job_worker_payload_executor.py)
   - Motivo da leitura: confirmar comandos tipados e handlers especializados.
@@ -938,12 +944,12 @@ O comando exato de operação em container não foi confirmado integralmente nos
 - [../tests/integration/test_03-01-08_async_job_dramatiq_real_flow.py](../tests/integration/test_03-01-08_async_job_dramatiq_real_flow.py)
   - Motivo da leitura: confirmar evidência executável do fluxo físico real.
   - Símbolo relevante: `test_quando_runtime_real_executa_matriz_critica_entao_boundary_completo_passa_pelo_job_core_e_executor_canonico`.
-  - Comportamento confirmado: o transporte RabbitMQ/Dramatiq real atravessa bridge, Job Core e executor canônico para a matriz crítica de `route_kind + dispatch_mode`.
-  - Comportamentos confirmados adicionais: o slice também valida exceção real de leaf com falha terminal no core, cancelamento cooperativo do pai antes do domínio, concorrência real entre múltiplos jobs e preservação de linhagem por `worker_execution_correlation_id` em log físico compartilhado por `correlation_id` nesse boundary por actor.
+  - Comportamento confirmado: o transporte RabbitMQ real (o nome do arquivo preserva "dramatiq" por histórico; o runtime exercitado é o de polling) atravessa o executor de payload, o Job Core e o executor canônico para a matriz crítica de `route_kind + dispatch_mode`.
+  - Comportamentos confirmados adicionais: o slice também valida exceção real de leaf com falha terminal no core, cancelamento cooperativo do pai antes do domínio, concorrência real entre múltiplos jobs e preservação de linhagem por `worker_execution_correlation_id` em log físico compartilhado por `correlation_id` nesse boundary por papel de fila.
 
 ## Mecanismo paralelo: Processador de Jobs Assíncrono Simples (spec-101)
 
-O produto tem um segundo mecanismo assíncrono, distinto e separado deste. O Processador de Jobs Assíncrono Simples (spec-101) não usa Dramatiq, não passa pelo Worker dedicado e não usa o ledger do Job Core (`PostgresJobRunStore`). Em vez disso, usa a tabela `job_core.async_jobs` como fila durável, um sinal RabbitMQ de alarme (`ingestion_dispatcher_wakeup`) e processos temporários por job com pool de runners em memória.
+O produto tem um segundo mecanismo assíncrono, distinto e separado deste. O Processador de Jobs Assíncrono Simples (spec-101) não usa o consumidor genérico por papel nem o ledger do Job Core (`PostgresJobRunStore`). Em vez disso, usa a tabela `job_core.async_jobs` como fila durável, um sinal RabbitMQ de alarme (`ingestion_dispatcher_wakeup`) e processos temporários por job com pool de runners em memória, hospedados como blocos extras no mesmo processo worker.
 
 A comparação direta de arquitetura está em `README-TECNICO-PROCESSADOR-JOBS-ASSINCRONO-SIMPLES.md`.
 

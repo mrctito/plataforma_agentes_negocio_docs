@@ -413,6 +413,17 @@ Dois efeitos praticos saem disso.
 
 Além disso, `build_correlation_log_file_fields(...)` em `src/core/logging_system.py` expoe os nomes determinísticos de `log_file_name`, `worker_log_file_name` e `scheduler_log_file_name` usados pelos endpoints.
 
+### 11.1. Resolucao da correlacao em runtime: grafo LangGraph versus boundary HTTP
+
+`src/core/log_origin_metadata.py` expoe dois resolvedores distintos de `correlation_id` para runtime, e usar o errado vaza log de uma execucao para outra.
+
+1. `get_request_correlation_id()`: le o `correlation_id` do contextvar do boundary HTTP (`_REQUEST_CORRELATION_CONTEXT`, setado pelo middleware). Use quando o objeto roda no request/boundary HTTP, fora do grafo.
+2. `get_graph_correlation_id()`: le o `correlation_id` que o LangGraph propaga em `config['configurable']` por toda a execucao do grafo — modelo, subagentes e tools. Use quando o objeto roda **dentro do grafo**. Retorna `None` quando nao ha config de grafo ativo e nunca levanta excecao, para nao quebrar log por ausencia de config.
+
+Por que dois resolvedores: o contextvar do boundary HTTP nao atravessa a thread do no de tool do grafo. Um objeto que roda dentro do grafo (por exemplo uma tool dinamica cacheada) que tentasse ler o contextvar HTTP resolveria o valor errado. Por isso, dentro do grafo, a correlacao correta vem de `get_graph_correlation_id()`.
+
+Regra do objeto cacheado/compartilhado: qualquer objeto reutilizado entre requisicoes (tool, client, adapter, repository, logger, checkpointer, factory, resolver) **nao pode** congelar o `correlation_id` capturado na construcao — esse valor pertence a execucao que construiu o objeto, e reusa-lo em outra requisicao vaza o log. A correlacao da execucao corrente deve ser resolvida **em tempo de chamada** por um desses dois resolvedores; qualquer valor guardado no objeto serve apenas como fallback. Padroes de referencia no codigo: `dynamic_sql_factory._resolve_runtime_correlation` e `agent_middlewares._resolve_active_correlation_id` (dentro do grafo); `ag_ui_event_store` (boundary/request).
+
 ## 12. CloudWatch no processo atual
 
 O wiring confirmado para CloudWatch e este.

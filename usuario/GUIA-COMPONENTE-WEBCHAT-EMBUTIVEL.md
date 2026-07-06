@@ -107,7 +107,7 @@ Utilitários compartilhados de resposta e correlação:
 
 app/ui/static/js/shared/ui-webchat-runtime-utils.js
 
-Runtime de polling assíncrono:
+Runtime de polling assíncrono (histórico — ver nota da seção 16):
 
 app/ui/static/js/shared/ui-webchat-async-runtime.js
 
@@ -163,24 +163,29 @@ Esse desenho evita que cada tela recrie o runtime do chat do seu próprio jeito.
 
 O componente deve reutilizar dependências canônicas já existentes no projeto.
 
-Dependências obrigatórias no browser:
+Dependências obrigatórias no browser (o construtor lança erro explícito se faltar
+qualquer uma — comprovado em `embeddable-chat-runtime.js`, função
+`createGenericEmbeddableChat`):
 
 - window.prometeuLayoutMestreApi
 - window.WebchatRuntimeUtils
-- window.WebchatAsyncRuntime
+
+Isso é intencional.
+
+A v1 não deve mascarar contrato quebrado com fallback escondido.
+
+`window.WebchatAsyncRuntime` **não** é mais checado pelo componente (ver seção 16 —
+desde a decisão "Slice A", o chat é sync-only e não faz mais polling). O parâmetro
+`asyncRuntime` ainda é aceito no construtor só para não quebrar hosts/testes antigos que
+o injetam, mas nunca é usado internamente. A bancada de teste isolada
+(`ui-embeddable-chat-test.js`) ainda faz sua própria checagem fail-closed desse script por
+herança histórica — isso é uma característica da bancada, não do componente.
 
 Arquivos normalmente carregados antes do componente:
 
 <script src="/ui/static/js/shared/layout-mestre-api.js"></script>
 <script src="/ui/static/js/shared/ui-webchat-runtime-utils.js"></script>
-<script src="/ui/static/js/shared/ui-webchat-async-runtime.js"></script>
 <script src="/ui/static/js/shared/embeddable-chat-runtime.js"></script>
-
-Se qualquer dependência obrigatória estiver ausente, o componente deve falhar fechado com erro explícito.
-
-Isso é intencional.
-
-A v1 não deve mascarar contrato quebrado com fallback escondido.
 
 ## 9. Fluxo mental do componente
 
@@ -255,16 +260,35 @@ A criação do componente e o método definirConfiguracao(config) devem aceitar 
 - userEmail: e-mail obrigatório da sessão.
 - apiKey: chave obrigatória enviada no padrão da aplicação.
 - mode: modo de operação.
-- executionMode: modo de execução.
+- executionMode: aceito por compatibilidade, mas **sem efeito real** — o envio é sempre
+  síncrono (ver seção 16).
+- chatRenderer: renderer declarado do chat (`jspuro` | `copilotkit`). Default `jspuro`.
+  Junto com `mode` e `agUiSseTransport`, decide se o transporte AG-UI por SSE é ativado
+  (ver seção 18.1).
+- agUiSseTransport: liga o transporte AG-UI por SSE opt-in (default `false`). Só ativa de
+  fato quando `mode === 'deepagent'` **e** `chatRenderer === 'jspuro'` (ver seção 18.1).
+- scopeRef: bucket lógico da conversa (ex.: `projectId` de um projeto DNIT). Quando
+  informado, viaja no envio como `scope_ref` e o backend grava/lista o turno naquele
+  bucket; vazio = bucket geral.
 - metadataFilters: filtros de metadados, usados principalmente em Q&A/RAG.
 - threadId: identificador de thread, útil em fluxo de workflow.
 - disabled: bloqueia interação do componente.
 - placeholder: texto do campo de pergunta.
 - submitLabel: texto do botão.
-- emptyTitle: título do estado vazio.
-- emptyMessage: texto do estado vazio.
+- emptyTitle / emptyMessage: título e texto do estado vazio quando o componente **ainda
+  não** tem contexto mínimo para enviar.
+- emptyReadyTitle / emptyReadyMessage: título e texto do estado vazio quando o contexto
+  mínimo **já** está presente (`state.ready === true`) mas o usuário ainda não perguntou
+  nada. Default: "Tudo pronto para conversar" / "Contexto carregado. Digite sua primeira
+  pergunta no campo abaixo e clique em Enviar."
 - autoFocus: indica se o campo deve receber foco automaticamente.
 - minHeightPx: altura mínima quando o container ainda não tiver altura útil.
+- logAnalysisUrl: URL da página de análise de log usada pelo link de correlação exibido em
+  cada mensagem com `correlationId` (ver seção 19). Default:
+  `/ui/static/ui-admin-plataforma-analise-logs-central-v3.html`.
+- renderStructured, welcomeCapabilities, welcomeCapabilitiesSpec: controlam a renderização
+  estruturada AG-UI (Capacidades/A2UI) e o onboarding de boas-vindas — detalhados na
+  seção 18.1.
 
 ## 13. Contexto mínimo para envio
 
@@ -329,23 +353,38 @@ O modo `agent` é puro: vai para `POST /agent/execute` sem `mode: "deepagent"` (
 
 Quem decide como cada modo monta payload e chama backend é a fonte única `layout-mestre-api.js` (dispatch do `enviar()`), consumida pelo componente.
 
-## 16. Modos de execução
+## 16. Modos de execução (Slice A: componente é sync-only)
 
-Valores aceitos em executionMode:
+**Mudança de comportamento em relação a versões anteriores deste guia:** o componente
+**não oferece mais** escolha real de modo de execução. Comprovado em
+`embeddable-chat-runtime.js`, função `normalizeExecutionMode` — qualquer valor recebido
+(`auto`, `direct_sync`, `direct_async` ou vazio) é normalizado para `direct_sync`, sempre:
 
-- auto
-- direct_sync
-- direct_async
+```javascript
+function normalizeExecutionMode(_mode) {
+    // Decisão do usuário (Slice A): TODO webchat opera SOMENTE em modo síncrono...
+    return 'direct_sync';
+}
+```
 
-Comportamento esperado:
+Na prática:
 
-- auto: usa o comportamento definido pelo contexto, YAML e backend;
-- direct_sync: força envio síncrono quando o endpoint suportar;
-- direct_async: força caminho assíncrono e acompanhamento por polling quando suportado.
+- o campo `executionMode` e o método `setExecutionMode(mode)` continuam existindo na API
+  (compatibilidade), mas **não mudam** o comportamento de envio;
+- o componente não faz mais polling de status: a resposta final chega na própria resposta
+  HTTP do envio (`result.dados`), sem ramo assíncrono;
+- o backend é chamado com `execution_mode: "direct_sync"` em todo envio, e o caminho
+  síncrono é protegido por um timeout guard no backend (DeepAgent síncrono);
+- `cancelar()` (seção 18.3) só cancela o `fetch` em andamento — não existe mais estado
+  "aguardando polling" para cancelar;
+- `window.WebchatAsyncRuntime` (`ui-webchat-async-runtime.js`, método
+  `waitForTaskCompletion`) deixou de ser usado pelo componente — o arquivo continua
+  existindo e ainda é carregado por algumas páginas (herança histórica), mas nenhuma
+  chamada real acontece a partir do componente embutível.
 
-O padrão da v1 deve ser auto.
-
-direct_sync e direct_async devem ser usados apenas quando a host page tiver motivo explícito para forçar o caminho.
+Se você leu uma versão anterior deste guia com `auto`/`direct_sync`/`direct_async` como
+escolhas reais com comportamento distinto, isso está desatualizado: essa escolha existia
+antes da decisão "Slice A" e não existe mais no caminho do chat embutível.
 
 ## 17. API pública principal
 
@@ -365,9 +404,10 @@ A API pública principal da v1 deve priorizar nomes claros e estáveis.
 - setUserEmail(email)
 - setApiKey(apiKey)
 - setMode(mode)
-- setExecutionMode(mode)
+- setExecutionMode(mode) — aceito por compatibilidade, sem efeito real (ver seção 16)
 - setMetadataFilters(filters)
 - setThreadId(threadId)
+- definirScopeRef(scopeRef) — define o bucket de conversa (alias técnico: setScopeRef)
 - setRenderStructured(enabled) — liga/desliga a renderização AG-UI estruturada (ver seção 18.1)
 - definirCapacidadesBoasVindas(spec, enabled) — painel de capacidades como onboarding no estado vazio (alias técnico: setWelcomeCapabilities)
 
@@ -377,8 +417,9 @@ A API pública principal da v1 deve priorizar nomes claros e estáveis.
 - limparCampo()
 - enviarPergunta(options)
 - perguntar(texto, options) — `options.payloadText` envia texto diferente do exibido (ver seção 18.5)
-- cancelar() — aborta o envio em andamento, sync ou async (ver seção 18.3)
+- cancelar() — aborta o envio síncrono em andamento via AbortController (ver seção 18.3)
 - responderHil(tipoDecisao, edicoes) — decide uma pendência HIL programaticamente (ver seção 18.2)
+- temHilPendente() — indica se há uma pendência HIL bloqueando novos envios (alias técnico: hasPendingHil)
 - restaurarConversa(messages) — re-hidrata uma conversa completa (ver seção 18.4)
 - inserirMensagemExterna(item) — injeta mensagem externa do assistente (ver seção 18.4)
 - limparHistorico()
@@ -400,12 +441,14 @@ Aliases possíveis:
 - setConfig(config)
 - setYamlContent(yaml)
 - setEncryptedPayload(payload)
+- setScopeRef(scopeRef)
 - getMessages()
 - getLastInteraction()
 - getState()
 - focusInput()
 - cancel()
 - respondHil(...)
+- hasPendingHil()
 - restoreConversation(...)
 - insertExternalAssistantMessage(...)
 
@@ -422,6 +465,8 @@ Quando a resposta do backend traz um **spec AG-UI conhecido** (um bloco de dados
 "Spec AG-UI" aqui significa: um objeto que o agente devolve descrevendo *o que mostrar* (ex.: "estes são meus assuntos", "este é o dashboard de vendas"), seguindo um contrato fixo. O componente reconhece o contrato, valida que ele é seguro e o transforma em DOM. AG-UI = *Agent-Generated UI*, interface gerada pelo agente.
 
 > Importante não confundir transporte com detecção: o **CapabilitiesSpec** chega no corpo da resposta normal dos endpoints de chat (`/rag/execute`, `/agent/execute`, ou a resposta síncrona equivalente em modo `deepagent`), sem stream. Já o **A2UI** (item 2 abaixo) chega pelo mesmo runtime de streaming `/ag-ui/runs` descrito no [manual técnico de AG-UI](../tecnico/README-TECNICO-AG-UI.md), consumido de forma **opt-in** por um transporte dedicado dentro do próprio componente — o componente ainda não expõe timeline/sidecar como a Superfície B, só extrai o envelope final e desenha. Nos dois casos, a detecção do spec acontece sobre uma mensagem já normalizada, então o restante desta seção vale igual para ambos.
+>
+> Se em vez deste componente pronto você precisa falar o protocolo AG-UI diretamente — UI própria consumindo `POST /ag-ui/runs` por SSE, ou um cliente React com **CopilotKit** via `POST /ag-ui/copilotkit/runs` — o guia dedicado é [GUIA-AG-UI-SDK-TERCEIROS.md](GUIA-AG-UI-SDK-TERCEIROS.md) (seção 0 explica quando cada caminho faz sentido; seção 2.2 mapeia, recurso a recurso, o que dos recursos do CopilotKit funciona de fato com os DeepAgents desta plataforma).
 
 ### Os dois specs que o componente reconhece
 
@@ -545,11 +590,10 @@ await chat.responderHil('edit', edicoes);      // aprovar com argumentos editado
 
 ## 18.3 Cancelamento de envio
 
-`cancelar()` (alias `cancel()`) aborta a execução em andamento nos dois caminhos:
-
-- **síncrono:** aborta o `fetch` via `AbortController` (o `signal` é repassado pela fonte
-  única);
-- **assíncrono:** interrompe o polling de status.
+`cancelar()` (alias `cancel()`) aborta o envio síncrono em andamento via `AbortController`
+(o `signal` é repassado à fonte única). Desde a decisão "Slice A" (seção 16) o componente
+não faz mais polling de status, então não existe mais um caminho assíncrono separado para
+cancelar.
 
 O componente materializa o estado "cancelado" na conversa (não vira erro genérico), emite
 o evento `send-cancelled` e fica pronto para o próximo envio. Durante um envio, o próprio
@@ -641,10 +685,12 @@ chatComporPayloadText(pergunta) {
 O `_chatContextoSessao` é atualizado pela tela à medida que o usuário abre projetos e
 seleciona arquivos — o componente não conhece esse dado, só chama o hook a cada envio.
 
-**Nota de dívida:** `gesdoc-project-detail.js` ainda usa um runtime paralelo próprio (não o
-componente `PrometeuEmbeddableChatRuntime`), por decisão registrada em §35.1. O padrão
-`buildPayloadText` é o contrato correto para qualquer nova host que precise de bind de
-contexto — o DNIT será migrado para ele quando a dívida for quitada.
+`gesdoc-project-detail.js` (host da tela `ui-dnit-project-detail.html`) monta o componente
+oficial normalmente (`embeddableChatRuntime.createGenericEmbeddableChat`, mesma classe usada
+pela v3) — não existe mais runtime paralelo aqui. O antigo
+`dnit-project-chat-runtime.js` foi removido do repositório; testes de contrato
+(`tests/frontend/ui_gesdoc_project_detail_runtime_contract.test.js`) protegem contra a volta
+dele.
 
 ## 18.6 messageActions: ações da host por mensagem
 
@@ -653,14 +699,16 @@ nas bolhas de mensagem, executados pela host. É como a v3 liga "copiar", "anál
 e "download do log" por mensagem sem tocar no render do componente. Cada ação exige
 `label` (texto do botão) e `onSelect` (função que recebe uma CÓPIA da mensagem — a host
 nunca muta o estado interno); o predicado opcional `quando(mensagem)` filtra em quais
-mensagens o botão aparece:
+mensagens o botão aparece; `title` (opcional) vira o atributo `title` HTML do botão
+(tooltip ao passar o mouse):
 
 ```javascript
 const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
   // ...config...
   messageActions: [
     {
-      label: 'Analisar log',
+      label: '📜',
+      title: 'Analisar log',
       quando: (mensagem) => Boolean(mensagem.correlationId),
       onSelect: (mensagem) => abrirAnaliseDeLog(mensagem.correlationId),
     },
@@ -805,18 +853,40 @@ const chat = EmbeddableChatRuntime.createGenericEmbeddableChat({
 
 **O store pronto do lado HOST: `PrometeuChatSessionStore`**
 
-Para não reimplementar localStorage em cada tela, use o helper compartilhado
+Para não reimplementar o CRUD de sessões em cada tela, use o helper compartilhado
 `window.PrometeuChatSessionStore` (carregue `shared/chat-session-store.js` **antes** do script
-do host):
+do host). Ele expõe **dois backends sob o mesmo contrato de instância**
+(`create({ mode })` — comprovado em `chat-session-store.js`, funções `createStore` e
+`createBackendStore`):
 
-```js
-const store = PrometeuChatSessionStore.create({
-  storageKey: 'webchat_history',      // namespace no localStorage
-  scopeRef: projectId,                 // opcional: isola conversas por escopo (ex.: projeto)
-});
-// listar() / obter(id) / obterMensagensComponente(id) / criar({title,mode})
-// salvarConversa(id, messages, meta) / renomear(id, title) / excluir(id)
-```
+- **`mode: 'local'` (default):** CRUD em `localStorage`, por namespace (`storageKey` +
+  `scopeRef` opcional). Síncrono.
+
+  ```js
+  const store = PrometeuChatSessionStore.create({
+    storageKey: 'webchat_admin_history', // namespace no localStorage
+    scopeRef: projectId,                  // opcional: isola conversas por escopo (ex.: projeto)
+  });
+  // listar() / obter(id) / obterMensagensComponente(id) / criar({title,mode})
+  // salvarConversa(id, messages, meta) / renomear(id, title) / excluir(id)
+  ```
+
+- **`mode: 'backend'`:** CRUD nas tabelas físicas via `GET/PATCH/DELETE /chat/conversations`
+  (`src/api/routers/chat_conversations_router.py`), usando o cliente HTTP oficial
+  `PrometeuAdminApiClient`. Todos os métodos devolvem `Promise` (assíncrono). `userEmail` e
+  `apiKey` aceitam string fixa **ou** função getter (para hosts com valor vivo que muda em
+  runtime); campo crítico vazio no momento da chamada falha fechado. `salvarConversa()` é
+  **no-op** nesse modo — a persistência do turno é feita pelo próprio backend, de forma lazy,
+  no primeiro envio que carregar `conversation_id`.
+
+  ```js
+  const store = PrometeuChatSessionStore.create({
+    mode: 'backend',
+    userEmail: () => this.userEmail || '',
+    apiKey: () => this._resolverApiKeyHost(),
+    scopeRef: projectId, // opcional: filtra a lista por bucket (ex.: projeto DNIT)
+  });
+  ```
 
 Padrão de wiring no host: registrar `onConversationChanged` → `store.salvarConversa(...)`;
 ao escolher uma conversa → `chat.carregarSessao({ sessionId, messages: store.obterMensagensComponente(id) })`;
@@ -824,10 +894,21 @@ ao escolher uma conversa → `chat.carregarSessao({ sessionId, messages: store.o
 **Ordem de init importa:** monte o componente (que cria/segura o store) **antes** de ler o
 histórico — inverter quebra o load.
 
-**Estado de adoção:** ligado em produção na WebChat v3 (`webchat_history`), na admin-plataforma-webchat
-(`webchat_admin_history`) e no detalhe DNIT (`dnit_chat_sessions`, escopado por projeto). A
-persistência em **banco** (multi-dispositivo) fica para depois (backlog) — quando entrar, mantém o
-mesmo contrato com um backend de servidor por trás do store.
+**Estado de adoção (comprovado lendo cada host):**
+
+- **WebChat v3** (`ui-webchat-v3.js`, método `_montarChatEmbutivel`) — `mode: 'backend'`, sem
+  `scopeRef` (bucket geral). As conversas vêm do banco via `/chat/conversations`, não mais de
+  `localStorage`.
+- **Detalhe de projeto DNIT** (`gesdoc-project-detail.js`, método `chatInicializarSessoes`) —
+  `mode: 'backend'`, `scopeRef: projectId` (cada projeto só vê as próprias conversas).
+- **admin-plataforma-webchat** (`ui-admin-plataforma-webchat.js`) — ainda em `mode: 'local'`
+  (localStorage, chave `webchat_admin_history`); não foi migrado para o modo backend.
+
+A persistência em **banco** deixou de ser backlog: já existe e está em produção em dois dos
+três hosts. O endpoint físico é `src/api/routers/chat_conversations_router.py` (`GET`/`PATCH`/
+`DELETE /chat/conversations`); o `POST` de "nova conversa" não existe como chamada de rede —
+é um gesto local do front (gera o id, o backend persiste o turno lazy no primeiro envio com
+`conversation_id`).
 
 ## 23. Diretriz obrigatória: componente testável isoladamente
 
@@ -917,7 +998,6 @@ Se a host não reservar altura útil, o chat não terá onde crescer.
 
 <script src="/ui/static/js/shared/layout-mestre-api.js"></script>
 <script src="/ui/static/js/shared/ui-webchat-runtime-utils.js"></script>
-<script src="/ui/static/js/shared/ui-webchat-async-runtime.js"></script>
 <script src="/ui/static/js/shared/embeddable-chat-runtime.js"></script>
 
 <script>
@@ -927,7 +1007,6 @@ Se a host não reservar altura útil, o chat não terá onde crescer.
     userEmail: 'analista@empresa.com',
     apiKey: 'x-api-key-real',
     mode: 'qa',
-    executionMode: 'auto',
     onChange(state) {
       document.getElementById('chat-summary').textContent = state.statusMessage || '';
     }
@@ -948,7 +1027,6 @@ const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
   userEmail: currentUserEmail,
   apiKey: currentApiKey,
   mode: 'agent',
-  executionMode: 'auto',
   onChange(state) {
     correlation.textContent = state.correlationId || 'aguardando backend';
     payloadViewer.textContent = state.lastResponse
@@ -969,8 +1047,7 @@ const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
   yamlContent: yamlText,
   userEmail: currentUserEmail,
   apiKey: currentApiKey,
-  mode: 'workflow',
-  executionMode: 'auto'
+  mode: 'workflow'
 });
 
 const root = chat.mount(host);
@@ -1188,11 +1265,11 @@ O campo mode existe para isso.
 
 ### Posso forçar síncrono ou assíncrono?
 
-Sim.
+Não mais.
 
-Use executionMode com direct_sync ou direct_async.
-
-Se quiser respeitar o comportamento configurado, use auto.
+Desde a decisão "Slice A" (seção 16), o componente é sempre síncrono. O campo
+`executionMode`/`setExecutionMode` ainda é aceito por compatibilidade, mas não muda o
+comportamento — o valor é sempre normalizado para `direct_sync` internamente.
 
 ### Como pego a última resposta sem ler o DOM?
 
@@ -1264,14 +1341,12 @@ Estado da convergência após a migração da Fase B (2026-06-10):
   e v3: se qualquer um voltar a ter fetch de execução, criptografia ou payload próprio, o
   teste falha (provado por regressão simulada).
 
-Um ponto permanece como pendência explícita e rastreável:
-
-- O runtime de chat do detalhe de projeto DNIT (`app/ui/static/js/shared/dnit-project-chat-runtime.js`)
-  ainda é um segundo runtime com payload próprio. A migração foi **adiada por decisão do
-  usuário** (2026-06-10) e continua planejada para etapa futura — o pré-requisito técnico
-  (componente com HIL, `payloadText`, modo `agent` puro e apiKey por YAML) já está pronto.
-  Não é descuido nem lixo: é dívida transitória declarada (regra canônica
-  `.claude/rules/componente-chat-embutivel.md` §6).
+A antiga pendência de migração do detalhe de projeto DNIT foi **fechada**: o arquivo
+`app/ui/static/js/shared/dnit-project-chat-runtime.js` não existe mais no repositório —
+`gesdoc-project-detail.js` monta o componente oficial (ver seção 18.5A), e testes de
+contrato (`tests/frontend/ui_gesdoc_project_detail_runtime_contract.test.js`,
+`ui_gesdoc_project_detail_layout_contract.test.js`) garantem que o runtime paralelo não
+volta.
 
 ## 35.2 Comunicação com a API: o fluxo HTTP real, ponta a ponta
 
@@ -1300,12 +1375,13 @@ construir uma interface própria (ver [GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](GUIA-
 4. **Leitura do correlation_id** — o componente lê `X-Correlation-Id` (header) ou os
    campos de correlação do corpo, exibe na barra de status e propaga. Nunca cria esse
    identificador localmente.
-5. **Polling assíncrono** — se a resposta for `HTTP 202`, ou síncrona mas com
-   `status_url`/`polling_url`/`stream_url` no corpo (ou `execution_mode = direct_async`),
-   o componente faz polling em `GET /api/v1/status/{task_id}` com o header `X-API-Key`,
-   a cada ~1s, até o status virar terminal (`completed`, `failed`, `cancelled`) ou de
-   pausa (`paused`, `awaiting_human_decision`). O resultado final sai de `result`/`data`
-   do payload de status.
+5. **Sem polling (Slice A)** — o componente sempre manda `execution_mode: "direct_sync"`
+   (seção 16) e lê o resultado final direto de `result.dados` da própria resposta HTTP; não
+   há passo 5 de acompanhamento assíncrono. `layout-mestre-api.js` ainda sabe interpretar um
+   eventual `HTTP 202` (função `_extrairInfoAssincrona`, usada por outros consumidores da
+   fonte única), mas o componente embutível não aciona polling algum a partir disso — o
+   `WebchatAsyncRuntime.waitForTaskCompletion` que fazia esse papel não é mais chamado por
+   ele (ver seção 16).
 
 ![35.2 Comunicação com a API: o fluxo HTTP real, ponta a ponta](../assets/diagrams/docs-guia-componente-webchat-embutivel-diagrama-01.svg)
 

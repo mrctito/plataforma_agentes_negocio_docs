@@ -1,0 +1,22 @@
+flowchart TB
+    U["Usuário (webchat)"] -->|"POST /agent/execute<br/>mode=deepagent"| B["Boundary HTTP<br/>correlation_id + tenant + YAML"]
+    B --> ASM["Assembly agentic<br/>YAML → AST → validação"]
+    ASM --> SEL{"selected_supervisor"}
+    SEL -->|"ag_ui_pdv_vendas_supervisor"| SV["Supervisor de CONSULTA<br/>9 subdomínios · ~37 dyn_sql"]
+    SEL -->|"ag_ui_pdv_operacoes_supervisor"| SO["Supervisor de OPERAÇÕES<br/>5 subagentes de escrita"]
+    SEL -->|"3 supervisores background"| SB["Fechamento diário / Recuperação<br/>checkout / Catálogo e ofertas"]
+    SV --> SUB["Subagentes especialistas<br/>(vendas, catálogo, estoque, clientes...)"]
+    SO --> SUBO["Subagentes de operação<br/>(campanha, reposição, oferta,<br/>ajuste de preço, devolução)"]
+    SUB --> TOOLS["Tools dyn_sql<br/>(SELECT aprovado)"]
+    SUBO --> TOOLSW["Tools dyn_sql<br/>(INSERT/UPDATE idempotente)"]
+    SV -.->|"memory/skills"| MEM[("AGENTS.md +<br/>SKILL.md<br/>PostgresStore")]
+    SO -.->|"memory/skills"| MEM
+    SUBO -->|"tool sensível"| HIL{"interrupt_on?"}
+    HIL -->|"sim: pausa"| APR["Aprovação humana<br/>(webchat ou e-mail)"]
+    APR -->|"decisão"| SUBO
+    TOOLS --> PDV[("PostgreSQL<br/>schema pdv.*<br/>DATABASE_VAREJO_DSN")]
+    TOOLSW --> PDV
+    SV -->|"pedido de gráfico"| A2UI["generate_a2ui<br/>(AG-UI/A2UI)"]
+    A2UI --> U
+    SV --> U
+    SO --> U

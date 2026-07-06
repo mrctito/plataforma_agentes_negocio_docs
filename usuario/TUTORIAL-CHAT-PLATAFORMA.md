@@ -2,13 +2,13 @@
 
 Este é o tutorial guiado de chat da Plataforma de Agentes de IA. Diferente do
 [GUIA-PRIMEIROS-PASSOS.md](GUIA-PRIMEIROS-PASSOS.md), que entrega **uma** resposta com o menor número de passos,
-aqui você vai construir um **chat funcional completo**, reutilizável, cobrindo os 4 modos de conversa, os 3 modos
-de execução (incluindo o assíncrono com polling), tratamento de erro e leitura de `correlation_id`.
+aqui você vai construir um **chat funcional completo**, reutilizável, cobrindo os 4 modos de conversa, o
+tratamento de erro e a leitura de `correlation_id`.
 
 O caminho **recomendado** é embutir o componente oficial da plataforma, o `PrometeuEmbeddableChatRuntime`. Ele já
-resolve handshake criptográfico, cifra do YAML, envio por modo, polling assíncrono e `correlation_id`, sem
-reabrir contrato. Criar um runtime de chat paralelo numa tela é violação de reuso — quando o componente atende,
-embuta o componente; quando faltar algo, a decisão correta é **evoluí-lo**, não criar outro ao lado.
+resolve handshake criptográfico, cifra do YAML, envio por modo e `correlation_id`, sem reabrir contrato. Criar um
+runtime de chat paralelo numa tela é violação de reuso — quando o componente atende, embuta o componente; quando
+faltar algo, a decisão correta é **evoluí-lo**, não criar outro ao lado.
 
 > Pré-requisito: faça o [GUIA-PRIMEIROS-PASSOS.md](GUIA-PRIMEIROS-PASSOS.md) primeiro. Lá você sobe a aplicação
 > (`./run.sh +a`, porta `FASTAPI_PORT`, default 5555), prepara credencial + e-mail + YAML e confirma que a API
@@ -48,14 +48,9 @@ Estes conceitos já foram introduzidos no quickstart; aqui vão ganhar profundid
     `mode: "deepagent"`;
   - `workflow` (grafo determinístico de etapas) -> `POST /workflow/execute`.
   O alias `rag` é aceito e tratado internamente como `qa`.
-- **Modos de execução (`executionMode`)**: definem **quando** a resposta volta.
-  - `auto`: o backend decide entre síncrono e assíncrono conforme o contexto (padrão recomendado);
-  - `direct_sync`: força resposta na mesma chamada HTTP, quando o endpoint suportar;
-  - `direct_async`: força o caminho assíncrono — o backend aceita o pedido e o cliente acompanha por polling.
-- **Polling assíncrono**: em `direct_async` (ou quando o backend responde `HTTP 202`, ou devolve
-  `status_url`/`polling_url`/`stream_url` no corpo), o componente consulta `GET /api/v1/status/{task_id}` a cada
-  ~1s, até o status virar terminal (`completed`, `failed`, `cancelled`) ou de pausa (`paused`,
-  `awaiting_human_decision`). O componente faz isso automaticamente.
+- **`executionMode` (campo vestigial, sem efeito real):** existe na API do componente por
+  compatibilidade, mas o envio é sempre síncrono — o componente não faz mais polling de
+  status. Detalhe e evidência de código na seção 7.
 - **`correlation_id`**: o identificador oficial da execução, lido do header `X-Correlation-Id` ou do corpo. O
   componente apenas captura, exibe e propaga; nunca cria.
 
@@ -67,15 +62,17 @@ dependência. Carregue os scripts compartilhados **antes** do componente, nesta 
 ```html
 <script src="/ui/static/js/shared/layout-mestre-api.js"></script>
 <script src="/ui/static/js/shared/ui-webchat-runtime-utils.js"></script>
-<script src="/ui/static/js/shared/ui-webchat-async-runtime.js"></script>
 <script src="/ui/static/js/shared/embeddable-chat-runtime.js"></script>
 ```
 
-Essas dependências precisam existir no escopo global do browser: `window.prometeuLayoutMestreApi`,
-`window.WebchatRuntimeUtils` e `window.WebchatAsyncRuntime`. Se uma delas faltar, o construtor do componente lança
-erro explícito (por exemplo, "prometeuLayoutMestreApi é obrigatório para o chat embutível."). Isso é intencional:
-a v1 não mascara contrato quebrado com fallback escondido.
+Essas dependências precisam existir no escopo global do browser: `window.prometeuLayoutMestreApi` e
+`window.WebchatRuntimeUtils`. Se uma delas faltar, o construtor do componente lança erro explícito (por exemplo,
+"prometeuLayoutMestreApi é obrigatório para o chat embutível."). Isso é intencional: a v1 não mascara contrato
+quebrado com fallback escondido.
 
+> `window.WebchatAsyncRuntime` (`ui-webchat-async-runtime.js`) não precisa mais ser carregado por esse motivo: o
+> componente não faz polling de status desde a decisão "Slice A" (seção 7) e não checa mais essa dependência.
+>
 > O helper de criptografia (`plataforma-agentes-ia-crypto.js`, que expõe `window.PayloadCrypto`) também precisa
 > estar disponível quando o fluxo usar YAML em texto, pois é ele quem faz o handshake e a cifra. Quando a host já
 > entrega um payload pré-criptografado, esse passo é dispensado.
@@ -92,9 +89,8 @@ altura útil, o chat não tem onde crescer:
 ## 5. Montar o chat: exemplo funcional completo
 
 O exemplo abaixo é um chat completo e funcional usando o componente oficial. Ele cria a instância, monta no
-container, expõe controles para trocar de modo e de modo de execução, e reage aos eventos do componente (resposta,
-erro, mudança de estado). Os nomes de método e de evento são fiéis a
-`app/ui/static/js/shared/embeddable-chat-runtime.js`.
+container, expõe um controle para trocar de modo, e reage aos eventos do componente (resposta, erro, mudança de
+estado). Os nomes de método e de evento são fiéis a `app/ui/static/js/shared/embeddable-chat-runtime.js`.
 
 ```html
 <!-- Controles da host (fora do componente) -->
@@ -104,13 +100,6 @@ erro, mudança de estado). Os nomes de método e de evento são fiéis a
     <option value="agent">agent</option>
     <option value="deepagent">deepagent</option>
     <option value="workflow">workflow</option>
-  </select>
-</label>
-<label>Execução:
-  <select id="seletor-execucao">
-    <option value="auto">auto</option>
-    <option value="direct_sync">direct_sync</option>
-    <option value="direct_async">direct_async</option>
   </select>
 </label>
 
@@ -124,7 +113,6 @@ erro, mudança de estado). Os nomes de método e de evento são fiéis a
 <!-- Dependências canônicas (ordem importa) -->
 <script src="/ui/static/js/shared/layout-mestre-api.js"></script>
 <script src="/ui/static/js/shared/ui-webchat-runtime-utils.js"></script>
-<script src="/ui/static/js/shared/ui-webchat-async-runtime.js"></script>
 <script src="/ui/static/js/shared/embeddable-chat-runtime.js"></script>
 
 <script>
@@ -147,7 +135,6 @@ erro, mudança de estado). Os nomes de método e de evento são fiéis a
     userEmail: contexto.userEmail,
     apiKey: contexto.apiKey,
     mode: 'qa',                 // modo de conversa inicial
-    executionMode: 'auto',      // modo de execução inicial
     // Observação reativa: estado exportado do componente
     onChange(state) {
       barraStatus.textContent = state.statusMessage || '';
@@ -174,11 +161,6 @@ erro, mudança de estado). Os nomes de método e de evento são fiéis a
   // 4) Troca de modo de conversa, sem recriar o componente.
   document.getElementById('seletor-modo').addEventListener('change', (e) => {
     chat.setMode(e.target.value); // 'qa' | 'agent' | 'deepagent' | 'workflow'
-  });
-
-  // 5) Troca de modo de execução.
-  document.getElementById('seletor-execucao').addEventListener('change', (e) => {
-    chat.setExecutionMode(e.target.value); // 'auto' | 'direct_sync' | 'direct_async'
   });
 </script>
 ```
@@ -231,28 +213,30 @@ chat.perguntar('Continuar o atendimento do protocolo anterior.');
 > `deepagent`; o `agent` clássico no corpo é legado e bloqueado. Detalhe em
 > [README-TECNICO-WEBCHAT-MONTAGEM-PAYLOAD.md](../tecnico/README-TECNICO-WEBCHAT-MONTAGEM-PAYLOAD.md).
 
-## 7. Os 3 modos de execução na prática
+## 7. Por que não existem mais "3 modos de execução" (componente é sync-only)
 
-O `executionMode` controla quando a resposta volta. Para o usuário do chat, a experiência é a mesma — o
-componente abstrai o polling. A diferença é operacional:
-
-- **`auto`** (recomendado): o backend decide. Para perguntas curtas de Q&A, costuma responder na hora; para
-  trabalho pesado, pode mover para assíncrono. Use por padrão.
-- **`direct_sync`**: força resposta síncrona. Use quando você precisa garantir a resposta na mesma chamada e sabe
-  que o endpoint suporta o trabalho de forma rápida.
-- **`direct_async`**: força o caminho assíncrono. O backend aceita o pedido (tipicamente `HTTP 202`) e o componente
-  faz polling em `GET /api/v1/status/{task_id}` até o estado terminal. Use para tarefas longas (agentes complexos,
-  workflows demorados).
+Versões anteriores deste tutorial descreviam `auto`/`direct_sync`/`direct_async` como três escolhas reais, com
+polling automático em `direct_async`. Isso mudou: uma decisão do produto ("Slice A") tornou o componente
+**sempre síncrono**. Evidência no código (`embeddable-chat-runtime.js`, função `normalizeExecutionMode`):
 
 ```javascript
-// Forçar assíncrono para uma tarefa longa de agente:
-chat.setMode('deepagent');
-chat.setExecutionMode('direct_async');
-chat.perguntar('Faça a análise completa cruzando os três documentos selecionados.');
+function normalizeExecutionMode(_mode) {
+    // Decisão do usuário (Slice A): TODO webchat opera SOMENTE em modo síncrono...
+    return 'direct_sync';
+}
 ```
 
-O componente trata os estados de pausa (`paused`, `awaiting_human_decision`) durante o polling. O ciclo só
-encerra em estado terminal ou de pausa — você não precisa implementar o loop de polling manualmente.
+Na prática, para quem usa o componente:
+
+- `chat.setExecutionMode(...)` e a opção `executionMode` na configuração continuam aceitos (não quebram sua
+  chamada), mas **não mudam** o comportamento — o valor é sempre normalizado para `direct_sync`;
+- não existe mais polling: a resposta final chega na própria resposta HTTP do envio, sem passos extras;
+- para tarefas longas de agente, o backend continua respondendo síncrono, protegido por um timeout guard interno
+  (não é responsabilidade da host acompanhar progresso).
+
+Se você precisa **mesmo assim** de acompanhamento assíncrono manual (por exemplo, construindo uma interface
+própria fora do componente — seção 11), o mecanismo de polling ainda existe no backend e em
+`layout-mestre-api.js`/`ui-webchat-async-runtime.js`, mas o componente embutível não o aciona mais.
 
 ## 8. Tratamento de erro e `correlation_id`
 
@@ -270,7 +254,6 @@ const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
   userEmail: contexto.userEmail,
   apiKey: contexto.apiKey,
   mode: 'qa',
-  executionMode: 'auto',
   onChange(state) {
     if (state.status === 'error' && state.lastError) {
       // lastError já vem normalizado pelo componente.
@@ -311,7 +294,8 @@ faça pela host consumindo o estado exportado e os eventos.
 ## 10. Checklist de uma host bem feita
 
 - O container tem altura útil (sem altura, o chat não cresce).
-- As 4 dependências canônicas foram carregadas, na ordem certa, antes do componente.
+- As dependências canônicas (`layout-mestre-api.js`, `ui-webchat-runtime-utils.js` e, quando usar YAML em texto,
+  `plataforma-agentes-ia-crypto.js`) foram carregadas, na ordem certa, antes do componente.
 - A host injeta `yamlContent` (ou `encryptedPayload`) + `userEmail`; a chave vai por `apiKey` **ou** já está no
   YAML em `authentication.access_key` (alternativas, basta uma; e-mail sempre obrigatório).
 - A host observa `correlationId`/`lastResponse` quando precisa de rastreabilidade.

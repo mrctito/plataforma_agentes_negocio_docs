@@ -15,6 +15,68 @@ Referencias tecnicas principais:
 5. [README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md](../tecnico/README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md)
 6. [templates/ag-ui-official-third-party](../templates/ag-ui-official-third-party)
 
+## 0. Tres caminhos para colocar um chat conversando com um agente da plataforma
+
+Antes de escolher entre "protocolo AG-UI cru" e "CopilotKit", vale situar as **tres**
+superficies reais que este repositorio oferece para conversar com um agente. Elas nao
+sao concorrentes entre si; servem publicos e restricoes tecnicas diferentes.
+
+**Status de validacao (leia antes de escolher):** os caminhos **1** e **2** (JS puro —
+componente pronto e protocolo AG-UI cru, inclusive graficos/generative UI via A2UI) sao
+**testados e funcionando**, comprovados em uso real de producao (webchat da plataforma,
+demo varejo com graficos no chat via renderer `jspuro`, paginas AG-UI com teste de
+contrato/Playwright — secao 11 do [README-TECNICO-AG-UI.md](../tecnico/README-TECNICO-AG-UI.md)).
+O caminho **3** (CopilotKit) esta **implementado, porem nao testado**: o codigo existe e
+o contrato foi mapeado por leitura, mas nenhuma validacao ponta a ponta foi executada —
+aviso completo na secao 2.1.
+
+1. **Componente pronto `PrometeuEmbeddableChatRuntime` (JS puro, caminho mais rapido).**
+   Use quando sua tela e servida pela propria origem da plataforma (ou pode carregar os
+   scripts estaticos dela) e voce quer um chat funcional em minutos — sem escrever
+   `fetch`, criptografia de YAML nem parsing de evento. Ele resolve handshake, payload,
+   modo de execucao, leitura de `correlation_id` e HIL sozinho. Guia completo:
+   [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md). Esse
+   componente conversa, na maior parte do tempo, com os endpoints classicos de execucao
+   (`/rag/execute`, `/agent/execute`, `/workflow/execute` — documentados no
+   [GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](GUIA-INTEGRADOR-CHAT-PLATAFORMA.md), que e o
+   irmao deste guia para quem quer construir uma UI 100% propria sobre **esses** mesmos
+   endpoints classicos, sem AG-UI). Ele so abre uma conexao AG-UI (`POST /ag-ui/runs`)
+   de forma **opt-in**, quando o YAML declara visualizacao generativa (A2UI) e a host
+   liga o transporte SSE — detalhe em [TUTORIAL-101-GENERATIVE-UI.md](TUTORIAL-101-GENERATIVE-UI.md).
+   **Status: testado e funcionando** (uso real de producao).
+
+2. **Protocolo AG-UI cru — `POST /ag-ui/runs` + SSE (JS puro "na unha").** Use quando
+   voce quer uma UI 100% propria (React, Vue, mobile, outro backend) falando
+   diretamente o protocolo aberto AG-UI, com replay, HIL e discovery de capabilities.
+   **Este e o assunto central deste guia** — secoes 1 a 4 abaixo, com o exemplo real de
+   consumo de stream na secao 3.5.1. **Status: testado e funcionando** (o endpoint
+   `/ag-ui/runs` e o renderer `jspuro` de A2UI sao os mesmos que sustentam o webchat e a
+   demo varejo em producao; ja o exemplo especifico do template third-party tem cobertura
+   por teste de contrato automatizado — `tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py`
+   — sem registro de execucao manual por um integrador externo real).
+
+3. **Cliente CopilotKit (React) — `POST /ag-ui/copilotkit/runs`.** Use quando voce ja
+   tem (ou vai construir) um app React usando o SDK CopilotKit e quer que ele converse
+   com os DeepAgents/Workflows da plataforma sem reimplementar o protocolo do zero.
+   Coberto nas secoes 2.1 (contrato da requisicao) e 2.2 (o que dos recursos do
+   CopilotKit realmente funciona com os DeepAgents desta plataforma). **Status:
+   implementado, porem NAO testado** ⚠️ — use com verificacao propria e reporte
+   problemas; detalhe na nota de maturidade no inicio da secao 2.1.
+
+Os caminhos 2 e 3 falam o **mesmo** protocolo AG-UI e o **mesmo** boundary de execucao
+(`AgUiRunOrchestrator`) — a diferenca e so o formato do envelope HTTP que cada cliente
+ja fala nativamente (`AgUiRunRequest` proprio da plataforma vs. `RunAgentInput` puro do
+CopilotKit, traduzido por um servico de compatibilidade). O caminho 1 e uma familia
+tecnica diferente (endpoints classicos de execucao), com um atalho opcional para dentro
+do mundo AG-UI quando o caso de uso pede generative UI.
+
+Se a sua duvida for "quero so um chat funcionando na minha tela o mais rapido possivel,
+e minha tela roda dentro da propria plataforma (ou pode carregar os scripts dela)",
+pare aqui e va para o
+[GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md). O
+restante deste guia e para quem precisa falar o protocolo AG-UI diretamente — com UI
+propria (secoes 1-4) ou com CopilotKit (secoes 2.1-2.2).
+
 ## 1. O que e AG-UI na plataforma
 
 AG-UI e o contrato que permite que uma tela acompanhe uma execucao de IA como um processo observavel.
@@ -134,7 +196,7 @@ Exemplo de corpo (montado pelo backend confiavel do parceiro, **nunca** no brows
 ### Como a plataforma trata o payload (e por que e seguro)
 
 1. O sub-objeto `forwardedProps.platform` e **lido e removido** antes de a conversa seguir para o agente. A `yamlConfig`/`encryptedData` entra pela porta confiavel `AgUiRunRequest.yaml_config`/`encrypted_data` (a mesma do `/ag-ui/runs`), **nunca** vaza para dentro do `forwardedProps` que o agente recebe.
-2. O restante do `RunAgentInput` (a conversa: `messages`, `state`, `tools` e os demais `forwardedProps` do parceiro) e propagado integralmente ao `LangGraphAgent` oficial. E por isso que **frontend tools, shared state e HITL nativos do CopilotKit funcionam** — a plataforma nao recorta a conversa.
+2. O restante do `RunAgentInput` (a conversa: `messages`, `state`, `tools` e os demais `forwardedProps` do parceiro) e propagado integralmente ao `LangGraphAgent` oficial, sem recorte — confirmado lendo `AgUiLangGraphExecutionAdapter._build_run_input` (`src/api/services/ag_ui_langgraph_agent_factory.py`): quando `context.protocol_input` existe, ele e revalidado como `RunAgentInput` inteiro e entregue ao `LangGraphAgent.run(...)` do pacote oficial `ag-ui-langgraph`, que propaga sozinho para o grafo. Isso e o que sustenta **frontend tools/actions e shared state do CopilotKit** (detalhe e limites reais na secao 2.2 — inclusive um caso em que o HIL **nativo da plataforma** ainda nao tem retomada ligada por este endpoint).
 3. A resposta e o **mesmo stream AG-UI por SSE** da secao 2 (mesma matriz de eventos da secao 7), com o header `X-Correlation-Id` oficial.
 
 A regra de seguranca da secao 4 continua valendo integralmente: `userEmail`, `yamlConfig`/`encryptedData` e a `X-API-Key` sao injetados pelo **servidor confiavel do parceiro** (o backend-for-frontend que faz a ponte com o CopilotKit), nunca no JavaScript publico. O threat model da secao 4.3 nao muda: campos sensiveis escondidos em `state`/`messages`/`forwardedProps` continuam barrados em falha fechada.
@@ -142,6 +204,163 @@ A regra de seguranca da secao 4 continua valendo integralmente: `userEmail`, `ya
 ### Onde o CopilotKit aponta
 
 No cliente React do parceiro, o `runtimeUrl` de cada agente aponta para o backend-for-frontend do parceiro, que reescreve a chamada para `POST /ag-ui/copilotkit/runs` adicionando a `X-API-Key` e o `forwardedProps.platform`. O CopilotKit segue falando `RunAgentInput` puro de ponta a ponta; a traducao para o contrato governado acontece nesse salto servidor-a-servidor.
+
+### Wiring do cliente React (referencia oficial do SDK CopilotKit)
+
+Esta subsecao documenta como o **SDK CopilotKit** (pacotes `@copilotkit/react-core`, `@copilotkit/runtime`, `@ag-ui/client`) espera ser configurado para apontar a um agente AG-UI proprio — isto e comportamento **oficial do CopilotKit**, nao do nosso backend; o contrato do nosso servidor continua sendo exatamente o descrito acima (`RunAgentInput` + `forwardedProps.platform`).
+
+O SDK CopilotKit conecta um agente por HTTP com a classe `HttpAgent` do pacote `@ag-ui/client`, que aceita `url` e `headers` fixos:
+
+```typescript
+// backend-for-frontend do parceiro (Node.js, ex.: rota de API do Next.js)
+// server-side — nunca no browser.
+import { CopilotRuntime, copilotRuntimeNextJSAppRouterEndpoint } from "@copilotkit/runtime";
+import { HttpAgent } from "@ag-ui/client";
+
+const runtime = new CopilotRuntime({
+  agents: {
+    // "default" (ou o nome que o front escolher) aponta para o endpoint
+    // de compatibilidade da Plataforma de Agentes de IA.
+    default: new HttpAgent({
+      url: "https://prometeu.exemplo.local/ag-ui/copilotkit/runs",
+      headers: { "X-API-Key": process.env.PROMETEU_AG_UI_API_KEY! },
+    }),
+  },
+});
+
+export const POST = async (req: NextRequest) => {
+  const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
+    runtime,
+    endpoint: "/api/copilotkit",
+  });
+  return handleRequest(req);
+};
+```
+
+No React do parceiro, o provider `<CopilotKit>` so precisa apontar para **o proprio backend do parceiro**, nunca direto para a plataforma:
+
+```tsx
+import { CopilotKit } from "@copilotkit/react-core";
+import { CopilotChat } from "@copilotkit/react-ui";
+
+export default function App() {
+  return (
+    <CopilotKit runtimeUrl="/api/copilotkit">
+      <CopilotChat />
+    </CopilotKit>
+  );
+}
+```
+
+**Ponto critico de seguranca, que o SDK CopilotKit nao resolve sozinho:** o `HttpAgent.headers` acima e **estatico** (a mesma `X-API-Key` do servidor para todo mundo) — ele resolve bem a chave de API, que e uma credencial do servidor do parceiro, nao do usuario final. Mas `forwardedProps.platform.userEmail` e a fonte de YAML **variam por usuario/tenant** e nao tem, hoje, um hook documentado do CopilotKit para injecao dinamica por request dentro de `CopilotRuntime`/`HttpAgent`. O caminho seguro e o mesmo da secao 3 deste guia: a rota `/api/copilotkit` do backend-for-frontend do parceiro (o handler acima) le a sessao autenticada do usuario **antes** de `handleRequest(req)`, e monta a chamada final para `/ag-ui/copilotkit/runs` com `forwardedProps.platform` resolvido a partir dessa sessao — nunca a partir de um valor que o browser escolheu.
+
+> Nao confundir com a prop `properties` do `<CopilotKit>` (`<CopilotKit properties={{...}}>`, documentada no SDK para repassar dados como `tenantId` para `forwardedProps`): essa prop roda no **browser** e o valor vai exposto no payload publico. Ela serve para metadado de aplicacao não sensível — nunca para `userEmail`/`yamlInlineContent`/`encryptedData`, que precisam nascer no servidor confiavel (secao 4 deste guia).
+>
+> Referencia oficial consultada para este wiring: documentacao do pacote `@copilotkit/runtime` (`CopilotRuntime`, `copilotRuntimeNextJSAppRouterEndpoint`) e `@ag-ui/client` (`HttpAgent`). Comportamento de terceiros — nao e codigo deste repositorio; o contrato que o nosso servidor aceita continua sendo o documentado nas subsecoes anteriores desta secao 2.1.
+
+## 2.2. Recursos do CopilotKit com os DeepAgents da plataforma (o que funciona de fato)
+
+O CopilotKit anuncia um conjunto de recursos de alto nivel (streaming, frontend
+actions, human-in-the-loop, generative UI, shared state). Esta secao mapeia, recurso a
+recurso, o que **realmente** chega a um DeepAgent desta plataforma quando o cliente usa
+`/ag-ui/copilotkit/runs` — com honestidade sobre o que nao esta ligado hoje.
+
+### Streaming de mensagens — funciona
+
+O CopilotKit consome o mesmo stream SSE AG-UI da secao 7 (matriz de eventos). Como o
+`RunAgentInput` do CopilotKit e revalidado e entregue integralmente ao `LangGraphAgent`
+oficial (sem recorte, confirmado no codigo), os eventos `TEXT_MESSAGE_START/CONTENT/END`
+chegam exatamente como em qualquer outro cliente AG-UI. `useCopilotChat`/`CopilotChat`
+do lado React consomem isso nativamente.
+
+### Frontend actions/tools (`useCopilotAction`) — funciona, com a mesma allowlist da secao 4.2
+
+Uma `useCopilotAction` declarada no React vira, no protocolo, uma entrada em
+`RunAgentInput.tools`. Isso chega ao DeepAgent do mesmo jeito que qualquer frontend
+tool do caminho cru (secao 4.2): **nao** e uma Tool LangChain da plataforma, e vale a
+mesma regra pratica — se a capability nao publicou aquele nome em `frontendTools` no
+discovery (`GET /ag-ui/capabilities`), a tool nao deveria ser usada para autorizar nada
+alem de uma acao visual da interface.
+
+### Human-in-the-loop — dois mecanismos diferentes, so um funciona ponta a ponta hoje
+
+O CopilotKit documenta HIL como `useCopilotAction({ renderAndWaitForResponse })`: uma
+acao de frontend que o agente chama, a interface renderiza um painel de aprovacao e
+**a propria conversa continua** com o resultado da decisao como resposta da tool — sem
+precisar de um mecanismo de pausa/retomada dedicado no protocolo. Esse padrao, sendo
+apenas troca de mensagens (`messages`/`tools`), **funciona** com o DeepAgent da mesma
+forma que qualquer frontend tool.
+
+Ja o **HIL nativo desta plataforma** e outro mecanismo: uma pausa real do grafo
+LangGraph (`interrupt()`), que termina o run com `RUN_FINISHED` e
+`outcome.type: "interrupt"` (secao 7, secao 4.6), e so continua com um **novo run**
+carregando `AgUiRunRequest.resume` (lista de `AgUiResumeInput`: `interruptId`,
+`status`, `payload.decisions`). **Esse campo `resume` nao e populado pelo
+`CopilotKitAgUiCompatService`** (`src/api/services/copilotkit_ag_ui_compat_service.py`,
+metodo `build_run`, lido por completo): ele nunca le nem `forwardedProps.platform` nem
+nenhum outro lugar do `RunAgentInput` para preencher `AgUiRunRequest.resume` — o valor
+fica sempre `None`. Na pratica: um DeepAgent que pausa (`RUN_FINISHED`/`interrupt`)
+durante uma execucao iniciada por `/ag-ui/copilotkit/runs` **emite a pausa
+corretamente** para o cliente CopilotKit (o evento chega), mas **nao ha, hoje, um
+caminho comprovado no codigo para retomar essa pausa especifica atraves do mesmo
+endpoint `/ag-ui/copilotkit/runs`** — a retomada testada e documentada (secao 4.6, e o
+teste `tests/unit/test_02-01-100_ag_ui_copilotkit_compat.py`) so cobre a traducao da
+requisicao inicial, nao um segundo round-trip de `resume`. Isso e uma lacuna real, nao
+uma limitacao de design explicada em algum lugar do codigo — registre-a como tal ao
+planejar um caso de uso que dependa de HIL nativo via CopilotKit.
+
+### Generative UI — funciona, via A2UI, sem passar pelo Component Catalog do CopilotKit
+
+O gatilho e um unico campo no YAML do supervisor DeepAgent:
+
+```yaml
+multi_agents:
+  - id: ag_ui_pdv_vendas_supervisor
+    execution:
+      type: deepagent
+    ag_ui:
+      generative:
+        chat_renderer: copilotkit   # em vez de "jspuro" — sinaliza cliente CopilotKit
+        a2ui_schema:
+          catalog_id: "https://plataforma.local/catalogs/pdv-vendas-a2ui.json"
+          components: [Card, Column, Row, Text, BarChart, LineChart, DataTable, Divider]
+```
+
+- `chat_renderer: copilotkit` (obrigatorio dentro do bloco `generative`): so muda **quem
+  consome** o envelope A2UI — o supervisor continua gerando o mesmo conteudo com
+  `jspuro` ou `copilotkit` (proximo paragrafo comprova isso lendo o codigo).
+- `a2ui_schema.catalog_id`/`a2ui_schema.components`: identicos ao caminho `jspuro`,
+  contrato completo e exemplo passo a passo em
+  [TUTORIAL-101-GENERATIVE-UI.md](TUTORIAL-101-GENERATIVE-UI.md).
+
+Quando o YAML do supervisor declara `ag_ui.generative.chat_renderer: copilotkit`, o
+supervisor gera o **mesmo** envelope A2UI (`generate_a2ui`, `{a2ui_operations:
+[createSurface, updateComponents]}`) que geraria com `chat_renderer: jspuro` — a
+injecao do catalogo no estado do grafo nao muda de comportamento por causa do
+`chat_renderer` (confirmado lendo `AgUiDeepAgentAdapter._build_a2ui_schema_context_entries`,
+onde o valor so aparece em log, nunca em um `if`/branch). O que muda e **quem renderiza**:
+com `copilotkit`, o `TOOL_CALL_RESULT` carregando o envelope A2UI chega sem filtro ao
+cliente React, e quem o transforma em componentes visuais e o middleware oficial
+`@ag-ui/a2ui-middleware` (pacote npm mantido fora deste repositorio, ja embutido no
+runtime do CopilotKit quando ele fala AG-UI) — nao o renderer `jspuro` desta
+plataforma. O catalogo de 8 componentes continua sendo o mesmo, governado pelo YAML;
+o integrador nao escolhe componentes livremente.
+
+### Shared state (`useCoAgent`) — passthrough comprovado no codigo, sem teste automatizado ate a ponta do grafo
+
+O campo `state` do `RunAgentInput` do CopilotKit atravessa intacto ate
+`RunAgentInput.model_validate(dict(context.protocol_input))`, dentro de
+`AgUiLangGraphExecutionAdapter._build_run_input`, e e entregue ao `LangGraphAgent.run(...)`
+do pacote oficial `ag-ui-langgraph` sem recorte prévio deste repositorio. Isso significa
+que a sincronizacao de estado que `useCoAgent` espera (eventos `STATE_SNAPSHOT`/
+`STATE_DELTA`, presentes na matriz de eventos da secao 7) depende, na pratica, do
+comportamento padrao do SDK `ag-ui-langgraph` ao redor do grafo do DeepAgent — este
+projeto nao adiciona nem recorta esse comportamento. **Nao encontramos, na leitura
+realizada para este guia, um teste automatizado do repositorio que exercite `useCoAgent`
+sincronizando estado real de um DeepAgent ponta a ponta**; a afirmacao acima e baseada em
+leitura direta do wiring do adapter, nao em um teste que prove o comportamento no
+frontend React. Trate como comportamento esperado do SDK oficial, nao como garantia
+testada deste repositorio.
 
 ## 3. Primeiro agent em 10 minutos
 
@@ -182,25 +401,22 @@ Chame:
 GET /ag-ui/capabilities
 ```
 
-Se o seu cliente precisa validar aderencia ao shape oficial do SDK antes de abrir o run, chame tambem:
+Voce pode filtrar por `executionKind` (`deepagent`, `workflow` ou `capability_pack`) e, para capability packs, tambem por `capabilityPackId` (`retail_demo`, `erp_backoffice_demo`):
 
 ```text
-GET /ag-ui/capabilities
+GET /ag-ui/capabilities?executionKind=capability_pack&capabilityPackId=retail_demo
 ```
 
 Olhe principalmente para estes campos:
 
-1. `executionKind`: identifica o runtime ou capability pack exposto.
-2. `capability`: identifica a intencao de negocio liberada.
-3. `frontendTools`: lista de ferramentas de interface que o browser pode declarar.
-4. `supportedEvents`: lista de eventos que a tela deve entender.
-5. `supportsHil` e `supportsResume`: indicam pausa humana e retomada.
+1. `executionKind`: identifica o runtime ou o executionKind compartilhado `capability_pack`.
+2. `capabilityPackId`: quando presente, identifica qual pack de negocio (`retail_demo`, `erp_backoffice_demo`) responde por aquela capability dentro do executionKind `capability_pack`.
+3. `capability`: identifica a intencao de negocio liberada.
+4. `frontendTools`: lista de ferramentas de interface que o browser pode declarar.
+5. `supportedEvents`: lista de eventos que a tela deve entender.
+6. `supportsHil` e `supportsResume`: indicam pausa humana e retomada.
 
-Na rota canônica por `agent_id`, olhe principalmente para `identity`, `transport`, `tools`, `state`, `humanInTheLoop`, `multiAgent` e `custom.prometeu`. Esse bloco `custom.prometeu` existe para carregar os metadados governados do produto sem deformar o contrato oficial do SDK.
-
-Para capability packs registrados, como `retail_demo` e `erp_backoffice_demo`, o `agent_id` da rota publica e o proprio identificador registrado. Para DeepAgent ou Workflow vinculados a YAML de um tenant, o `agent_id` deve existir na configuracao da Plataforma de Agentes de IA vinculada aquela credencial.
-
-Importante: capability pack continua sendo catalogo de negocio. Nem todo capability pack vira `AgentCapabilities` canônico. Se a rota por `agent_id` recusar esse alvo, isso nao significa defeito; significa apenas que aquele item continua exposto pelo catalogo da Plataforma de Agentes de IA e nao como runtime AG-UI oficial do SDK.
+**Nao existe rota publica por `agent_id`** neste boundary — nem para execucao nem para capabilities (secao 2 acima). Existe, porem, um metodo de servico interno (`AgUiCapabilitiesService.get_canonical_agent_capabilities`, com cobertura de teste unitario) que projeta uma capability isolada no shape oficial `AgentCapabilities` do SDK (`identity`, `transport`, `tools`, `state`, `humanInTheLoop`, `multiAgent`); ele **nao esta ligado a nenhum endpoint HTTP hoje** — e implementacao sem rota exercitada, nao um caminho publico disponivel. Se seu cliente precisa desse shape especifico, monte-o no seu proprio backend a partir do payload de `GET /ag-ui/capabilities`.
 
 ### 3.4. Monte um AgUiRunRequest minimo
 
@@ -226,97 +442,13 @@ Esse JSON representa a chamada do backend confiavel para `POST /ag-ui/runs`, nao
 
 Se a integracao usar um backend-for-frontend proprio, o browser pode continuar montando um `RunAgentInput` local para falar com esse backend. O ponto importante e que o servidor do integrador converta esse envelope para `AgUiRunRequest` antes de chamar a plataforma.
 
-O browser nao deve enviar diretamente:
-
-1. `security_keys`.
-2. `tools_library`.
-3. DSN ou connection string.
-4. SQL livre.
-5. API key.
-
-Os campos `yaml_inline_content` e `encrypted_data` pertencem ao boundary confiavel. Em termos simples: eles podem existir no servidor do integrador ou no backend da plataforma, mas nao devem virar segredo exposto em JavaScript publico.
-
-### 3.5. Consuma o stream com o SDK oficial
-
-No frontend, use `@ag-ui/client`.
-
-Para terceiros, nao consuma `@prometeu/ag-ui-runtime` diretamente. Esse pacote organiza o runtime interno da Plataforma de Agentes de IA e permanece privado. A integracao externa suportada e: template de referencia + `@ag-ui/client` + backend-for-frontend mantendo a chave e a configuracao no servidor.
-
-O template demonstra o fluxo com:
-
-1. `runHttpRequest` para abrir o POST streaming.
-2. `transformHttpEventStream` para transformar o stream em eventos oficiais.
-3. Um store local simples para desenhar status, mensagens e eventos.
-
-O frontend pode trocar completamente a camada visual. O protocolo nao muda.
-
-### 3.6. Reconstrua com replay
-
-Quando precisar reconstruir a tela depois de refresh, suporte ou auditoria, consulte:
-
-```text
-GET /ag-ui/runs/{run_id}/events
-```
-
-O replay e sanitizado no event store. Ele existe para reconstruir a experiencia sem reexpor segredos internos.
-
-## 4. Guia de seguranca
-
-### 4.1. Segredos
-
-Segredo fica no servidor.
-
-O browser pode receber uma configuracao publica, como rotas do backend-for-frontend e labels de exibicao. Ele nao pode receber API key, DSN, YAML interno cru, catalogo de tools LangChain, credenciais de banco ou security keys.
-
-### 4.2. Tools LangChain e frontendTools nao sao a mesma coisa
-
-No boundary publico AG-UI, `RunAgentInput.tools` significa somente frontend tools quando o browser fala com o backend-for-frontend do integrador.
-
-Frontend tool e uma capacidade visual da interface, por exemplo abrir um painel aprovado. Ela nao e uma Tool LangChain da plataforma, nao passa pela ToolsFactory e nao autoriza banco, Redis, Qdrant, APIs internas ou SQL.
-
-A regra pratica e simples:
-
-1. Se a capability nao publicou `frontendTools`, envie `tools: []`.
-2. Se publicou, envie apenas o nome e o schema exatos da allowlist.
-3. Nunca use `tools` para tentar transportar SQL, DSN, segredo, credencial ou selecao de runtime.
-
-### 4.3. Threat model do RunAgentInput publico
-
-O risco principal do payload publico e virar um atalho para driblar a governanca do produto.
-
-Por isso a plataforma registra `ag_ui.public_payload.decision` e opera em falha fechada quando encontra campos sensiveis, runtime divergente ou tentativa de esconder dados internos dentro de `metadata`, `forwardedProps`, `state` ou `messages`.
-
-Em termos simples: se o payload publico tentar agir como YAML, banco, segredo ou roteador de runtime, o backend rejeita a chamada.
-
-## 5. Varejo e vendas
-
-No dominio de varejo e vendas, a interface normalmente quer pedir uma capacidade de negocio, nao um runtime tecnico.
-
-Exemplo pratico: a tela pode pedir `sales_summary`, `catalog_health` ou `turn_closure_review`. O backend usa o YAML para decidir se aquilo sera atendido por DeepAgent, Workflow ou capability pack governado.
-
-## 6. Migracao e adaptacao de ERP
-
-Em ERP, o erro mais comum e tentar usar `agent_id` como se fosse a chave primaria da integracao. Isso cria uma arquitetura paralela e quebra o modelo YAML-first.
-
-O caminho correto e este:
-
-1. O ERP fala com o backend do integrador ou com o boundary confiavel da plataforma.
-2. O backend confiavel injeta `yaml_inline_content` ou `encrypted_data`.
-3. A plataforma deriva o runtime pelo YAML.
-4. A tela consome SSE e replay sem decidir infraestrutura no browser.
-
-Isso reduz acoplamento e evita que cada cliente externo precise reinventar resolucao de tenant, runtime e permissao.
-  }
-}
-```
-
 O browser nao deve enviar:
 
 1. YAML bruto.
 2. `executionKind`.
 3. `tenantId`.
-4. `securityKeys`.
-5. `toolsLibrary`.
+4. `security_keys` (o boundary bloqueia tambem a grafia `securityKeys`).
+5. `tools_library` (o boundary bloqueia tambem a grafia `toolsLibrary`).
 6. DSN ou connection string.
 7. SQL livre.
 8. API key.
@@ -336,6 +468,143 @@ O template demonstra o fluxo com:
 3. Um store local simples para desenhar status, mensagens e eventos.
 
 O frontend pode trocar completamente a camada visual. O protocolo nao muda.
+
+### 3.5.1. Exemplo real de consumo (fetch + SSE + tratamento de HIL)
+
+O trecho abaixo reproduz, quase literalmente, o codigo real do template
+(`templates/ag-ui-official-third-party/frontend/src/ag-ui-client.js` e `main.js`) e
+acrescenta o tratamento de pausa humana (HIL) — que **o template de referencia hoje NAO
+implementa no frontend** (confirmado lendo `frontend/src/main.js`: o handler de
+`RUN_FINISHED` so muda o status visual para "completed", sem checar `event.outcome`).
+Se a sua integracao usa DeepAgent com HIL (secao 4.6), o bloco `if (event.outcome?.type
+=== 'interrupt')` abaixo e uma extensao que voce precisa escrever — nao vem pronta.
+
+```javascript
+import { runHttpRequest, transformHttpEventStream } from '@ag-ui/client';
+
+/** Abre o POST streaming e devolve uma Promise que resolve quando o run termina. */
+function runOfficialAgUiStream({ endpoint, payload, onEvent, signal }) {
+  const requestInit = {
+    method: 'POST',
+    headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(payload),
+    signal,
+  };
+  // runHttpRequest/transformHttpEventStream sao do SDK oficial @ag-ui/client;
+  // este projeto nao reimplementa parsing de protocolo (README-TECNICO-AG-UI.md, secao 14.1, item 7).
+  const httpEvents = runHttpRequest(endpoint, requestInit);
+  const agUiEvents = transformHttpEventStream(httpEvents);
+
+  return new Promise((resolve, reject) => {
+    const subscription = agUiEvents.subscribe({
+      next(event) { onEvent?.(event); },
+      error(error) { reject(error); },
+      complete() { resolve(); },
+    });
+    signal?.addEventListener('abort', () => subscription.unsubscribe(), { once: true });
+  });
+}
+
+/** Trata cada evento recebido — igual ao template, com a extensao de HIL adicionada. */
+function renderEvent(event) {
+  if (event.type === 'RUN_STARTED') {
+    setStatus('running');
+  }
+  if (event.type === 'TEXT_MESSAGE_CONTENT' || event.type === 'TEXT_MESSAGE_CHUNK') {
+    appendMessage(event.delta || event.content || '');
+  }
+  if (event.type === 'RUN_FINISHED') {
+    // Extensao de HIL (nao existe no template original): checar outcome.type
+    // antes de tratar o run como concluido de verdade.
+    if (event.outcome?.type === 'interrupt') {
+      handleHilInterrupt(event.outcome.interrupts); // AgUiInterrupt[] — ver abaixo
+      return;
+    }
+    setStatus('completed');
+  }
+  if (event.type === 'RUN_ERROR') {
+    setStatus('failed');
+    appendMessage(event.message || 'Falha no run AG-UI.');
+  }
+}
+
+/**
+ * `interrupts` e uma lista de AgUiInterrupt (src/api/schemas/ag_ui_models.py):
+ * { id, reason, message, toolCallId, responseSchema, expiresAt, metadata }.
+ * `responseSchema` e um JSON Schema com a lista de decisoes permitidas em
+ * `properties.decisions.items.enum` (contrato montado em
+ * src/api/services/ag_ui_hil_protocol_mapper.py, funcao _build_response_schema).
+ */
+function handleHilInterrupt(interrupts) {
+  for (const interrupt of interrupts) {
+    const decisoesPermitidas =
+      interrupt.responseSchema?.properties?.decisions?.items?.enum || ['approve', 'reject'];
+    mostrarPainelDeAprovacao({
+      mensagem: interrupt.message,
+      decisoesPermitidas,
+      onDecidir: (tipoDecisao) => enviarResume({
+        threadId: ultimoRunPausado.threadId,
+        parentRunId: ultimoRunPausado.runId,
+        interruptId: interrupt.id,
+        tipoDecisao,
+        userEmail: ultimoRunPausado.userEmail,
+        yamlInlineContent: ultimoRunPausado.yamlInlineContent,
+      }),
+    });
+  }
+}
+
+/**
+ * Retoma um run pausado. Contrato confirmado em AgUiRunRequest.resume
+ * (lista de AgUiResumeInput: interruptId, status, payload) — a retomada e um
+ * NOVO run (novo runId), referenciando o run pausado via parentRunId, exemplo
+ * real do shape em README-TECNICO-AG-UI.md, secao 3.2.2.
+ */
+async function enviarResume({ threadId, parentRunId, interruptId, tipoDecisao, userEmail, yamlInlineContent }) {
+  const payload = {
+    threadId,
+    runId: `${threadId}-resume-${Date.now()}`,
+    parentRunId,
+    user_email: userEmail,
+    yaml_inline_content: yamlInlineContent,
+    resume: [
+      {
+        interruptId,
+        status: 'resolved', // ou 'cancelled' para desistir da pausa
+        // tipoDecisao: 'approve' | 'reject' | 'edit' | 'respond' (AgentResumeDecision)
+        payload: { decisions: [{ type: tipoDecisao }] },
+      },
+    ],
+  };
+  return runOfficialAgUiStream({
+    endpoint: `${apiBaseUrl}/ag-ui/runs`,
+    payload,
+    onEvent: renderEvent,
+  });
+}
+
+// --- Disparo do primeiro run ---
+const controller = new AbortController();
+await runOfficialAgUiStream({
+  endpoint: `${apiBaseUrl}/ag-ui/runs`,
+  payload: {
+    threadId: 'portal-terceiro',
+    runId: `run-${Date.now()}`,
+    user_email: 'operacao@cliente.exemplo',
+    input: { message: 'Resuma vendas do dia.' },
+    yaml_inline_content: '<yaml-governado-no-servidor>',
+  },
+  onEvent: renderEvent,
+  signal: controller.signal,
+});
+```
+
+Note que este exemplo usa `input`/`user_email`/`yaml_inline_content` (o envelope
+`AgUiRunRequest` da secao 2, montado por um backend confiavel) em vez do
+`RunAgentInput` puro (`messages`/`forwardedProps`) do template — os dois formatos
+funcionam em `POST /ag-ui/runs`, mas `AgUiRunRequest` e o contrato recomendado para
+quem nao esta usando o CopilotKit (secao 2).
 
 ### 3.6. Reconstrua com replay
 
@@ -495,22 +764,24 @@ Esse checklist evita que um componente novo vire uma excecao escondida no contra
 
 Este guia foi escrito com base no fluxo executavel atual, nao apenas em intencao de produto.
 
-Evidencias principais:
+Evidencias principais (paths a partir da raiz do repositorio; corrigidos nesta rodada — apontavam para `../src/...`/`../templates/...`/`../tests/...`, um nivel raso demais a partir de `docs/usuario/`):
 
-1. [src/api/routers/ag_ui_router.py](../src/api/routers/ag_ui_router.py)
-2. [src/api/schemas/ag_ui_models.py](../src/api/schemas/ag_ui_models.py)
-3. [src/api/services/ag_ui_public_run_resolver.py](../src/api/services/ag_ui_public_run_resolver.py)
-4. [src/api/services/ag_ui_frontend_tool_policy.py](../src/api/services/ag_ui_frontend_tool_policy.py)
-5. [src/api/services/ag_ui_event_store.py](../src/api/services/ag_ui_event_store.py)
-6. [src/api/services/ag_ui_adapter_registry.py](../src/api/services/ag_ui_adapter_registry.py)
-7. [src/api/services/ag_ui_langgraph_agent_factory.py](../src/api/services/ag_ui_langgraph_agent_factory.py)
-8. [src/api/services/copilotkit_ag_ui_compat_service.py](../src/api/services/copilotkit_ag_ui_compat_service.py) — traducao `RunAgentInput` (CopilotKit) -> `AgUiRunRequest` da secao 2.1
-9. [templates/ag-ui-official-third-party](../templates/ag-ui-official-third-party)
-10. [tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py](../tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py)
-11. [tests/unit/test_02-01-48_ag_ui_router.py](../tests/unit/test_02-01-48_ag_ui_router.py)
-12. [tests/unit/test_02-01-100_ag_ui_copilotkit_compat.py](../tests/unit/test_02-01-100_ag_ui_copilotkit_compat.py) — prova a secao 2.1 (traducao + wiring da rota)
-13. [tests/unit/test_02-01-38_ag_ui_event_store.py](../tests/unit/test_02-01-38_ag_ui_event_store.py)
-14. [tests/js/ag_ui_runtime.test.js](../tests/js/ag_ui_runtime.test.js)
+1. [src/api/routers/ag_ui_router.py](../../src/api/routers/ag_ui_router.py) — as 5 rotas reais (`capabilities`, `runs`, `copilotkit/runs`, `runs/{run_id}/events`, `threads/{thread_id}/events`)
+2. [src/api/schemas/ag_ui_models.py](../../src/api/schemas/ag_ui_models.py) — `AgUiRunRequest`/`AgUiStrictModel` bloqueiam campo desconhecido no topo do payload; `input`/`metadata` não têm varredura recursiva comprovada (lacuna registrada em [README-TECNICO-AG-UI-BORDA-HTTP-DEDICADA.md, seção 9](../tecnico/README-TECNICO-AG-UI-BORDA-HTTP-DEDICADA.md)); `AgUiResumeInput`, `AgUiInterrupt`, `AgUiRunInterruptOutcome` (contrato de HIL usado nas seções 3.5.1 e 2.2)
+3. [src/api/services/ag_ui_yaml_first_run_preparation_service.py](../../src/api/services/ag_ui_yaml_first_run_preparation_service.py)
+4. [src/api/services/ag_ui_frontend_tool_policy.py](../../src/api/services/ag_ui_frontend_tool_policy.py)
+5. [src/api/services/ag_ui_event_store.py](../../src/api/services/ag_ui_event_store.py)
+6. [src/api/services/ag_ui_adapter_registry.py](../../src/api/services/ag_ui_adapter_registry.py)
+7. [src/api/services/ag_ui_langgraph_agent_factory.py](../../src/api/services/ag_ui_langgraph_agent_factory.py) — `AgUiLangGraphExecutionAdapter._build_run_input`: decide entre sintetizar `RunAgentInput` a partir de `context.input` ou revalidar `context.protocol_input` inteiro (caso CopilotKit), sem recorte antes de `LangGraphAgent.run(...)` (base da seção 2.2)
+8. [src/api/services/copilotkit_ag_ui_compat_service.py](../../src/api/services/copilotkit_ag_ui_compat_service.py) — traducao `RunAgentInput` (CopilotKit) -> `AgUiRunRequest` da secao 2.1; `build_run` nunca popula `AgUiRunRequest.resume` (lacuna de HIL documentada na seção 2.2)
+9. [src/api/services/ag_ui_deepagent_adapter.py](../../src/api/services/ag_ui_deepagent_adapter.py) — `_build_a2ui_schema_context_entries`: injeção do catálogo A2UI independe do valor de `chat_renderer` (seção 2.2, "Generative UI")
+10. [src/api/services/ag_ui_hil_protocol_mapper.py](../../src/api/services/ag_ui_hil_protocol_mapper.py) e [src/api/services/ag_ui_runtime_adapter_support.py](../../src/api/services/ag_ui_runtime_adapter_support.py) — mapeamento de interrupção LangGraph para `AgUiInterrupt`/`AgUiRunInterruptOutcome` e `execute_agentic_resume` (contrato de `resume` usado na seção 3.5.1)
+11. [templates/ag-ui-official-third-party](../../templates/ag-ui-official-third-party) — `frontend/src/ag-ui-client.js` (`runOfficialAgUiStream`, `buildRunAgentInput`) e `frontend/src/main.js` (`renderEvent`); o frontend do template **não** trata `RUN_FINISHED.outcome`/interrupt (base do exemplo estendido na seção 3.5.1)
+12. [tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py](../../tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py)
+13. [tests/unit/test_02-01-48_ag_ui_router.py](../../tests/unit/test_02-01-48_ag_ui_router.py)
+14. [tests/unit/test_02-01-100_ag_ui_copilotkit_compat.py](../../tests/unit/test_02-01-100_ag_ui_copilotkit_compat.py) — prova a secao 2.1 (traducao + wiring da rota) até o `AgUiRunContext` entregue ao orchestrator; não prova a cadeia até o grafo compilado do DeepAgent (limite registrado na seção 2.2, "Shared state")
+15. [tests/unit/test_02-01-38_ag_ui_event_store.py](../../tests/unit/test_02-01-38_ag_ui_event_store.py)
+16. [tests/js/ag_ui_runtime.test.js](../../tests/js/ag_ui_runtime.test.js)
 
 ## 10. Proximos passos de leitura
 
