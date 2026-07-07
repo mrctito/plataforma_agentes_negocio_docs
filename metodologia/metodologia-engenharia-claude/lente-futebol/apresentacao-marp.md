@@ -77,9 +77,9 @@ estrutura, a trabalhar como um engenheiro sênior disciplinado — não como um 
 
 # A formação 4-3-3 da nossa engenharia
 
-- **CLAUDE.md** = DNA (lido em 100% das sessões)
+- **CLAUDE.md** = DNA (raiz lido em 100% das sessões + 5 por setor)
 - **hooks** = árbitro automático (linhas do campo)
-- **agents** = jogadores (22 especialistas)
+- **agents** = jogadores (20 especialistas)
 - **skills** = convocação (`/comando`)
 - **rules** = jogadas ensaiadas (sob demanda)
 
@@ -94,7 +94,7 @@ de jogadas no banco, consultado na hora certa."
 
 # O elenco em números
 
-# 22 · 19 · 12 · 7 · **0**
+# 20 · 17 · 20 · 7 · **0**
 
 agentes · skills · regras · hooks · **commands**
 
@@ -182,14 +182,16 @@ INTERAÇÃO: "Quem já viu uma tarefa de 2 horas virar um projeto de 2 semanas '
 
 # As jogadas ensaiadas (`rules/`)
 
-Conhecimento profundo **carregado sob demanda**
+**20 jogadas**, conhecimento profundo **carregado sob demanda** (por `paths:`)
 
-- **Contratos:** logs · reuso · definição de pronto · suíte · python
-- **Caderno de aprendizado:** lessons · error-backlog · regression · bad-instructions
+- **Contratos:** logs · reuso · definição de pronto · suíte · python · acesso a dados…
+- **Aprendizado real:** loops estratégicos (correção por log + memória de rodada) → promoção a `licoes-aprendidas`
 
 <!--
-FALA: "O DNA é curto de propósito. O detalhe pesado fica aqui, consultado na hora da jogada — como um
-manual de posição. É o nosso conhecimento institucional ESCRITO, não na cabeça de poucos."
+FALA: "O DNA é curto de propósito. O detalhe pesado fica aqui — são vinte manuais — e cada um entra em
+campo SOZINHO, na hora da jogada: a regra declara os caminhos que a disparam. E o aprendizado não é um
+arquivo central de lições: é um contrato — todo erro real dispara o loop de correção por log, e só a
+lição durável COMPROVADA é promovida ao caderno do agente."
 -->
 
 ---
@@ -289,13 +291,17 @@ foto antes, mexem o mínimo, registram tudo. Disciplina de quem mexe em produç�
 
 # Treinos e comissão técnica
 
-- **Treinos:** executar-testes · criar-testes · testar-ingestao/webchat/nl2sql…
-- **Bastidores:** documentar · sincronizar-doc · inventário · validar-instructions · analisar-produto
+- **Treinos (agentes):** executar-testes · criar-testes · testar-ingestao · testar-cancelamento
+- **Jogadas de treino (skills):** webchat · nl2sql · nl2yaml · páginas web
+- **Bastidores:** documentar · sincronizar-doc · inventário ×2 · analisar-produto
+- \+ validador de descrições: `./validar_descricao_subagentes.sh`
 
 <!--
 FALA: "Os treinos provam o time na vida real — a ingestão DNIT exige TRÊS provas independentes pra dar
-sucesso. E os bastidores cuidam pra que o conhecimento não apodreça: doc fiel ao código, catálogo do que
-já existe, e um agente que audita as próprias instruções."
+sucesso. Os testes de webchat e NL2SQL/NL2YAML são JOGADAS ENSAIADAS (skills com procedimento fixo), não
+jogadores. E os bastidores cuidam pra que o conhecimento não apodreça: doc fiel ao código, catálogo do
+que já existe, um validador que audita as descrições dos subagentes — e a regra de ouro: se o contrato
+divergir do código, o código vence."
 -->
 
 ---
@@ -330,7 +336,7 @@ trabalhar' fica SÓ no agente. Sem duplicação pra dessincronizar."
 
 <!--
 FALA: "Parece burocracia, mas é um contrato semântico. Ensina o sistema a chamar a skill certa — e até
-aponta pra concorrente quando ela é a melhor escolha. Num time de 22 especialistas, saber quem chamar já
+aponta pra concorrente quando ela é a melhor escolha. Num time de 20 especialistas, saber quem chamar já
 é metade da qualidade."
 -->
 
@@ -368,11 +374,16 @@ INTERAÇÃO: "Qual a diferença entre uma regra que a gente PEDE e uma que o sis
 
 - **bash-guard:** bloqueia `rm -rf`, `drop table`, e **varredura cega de /logs** (trava a sessão!)
 - **write-guard:** impede teste nascer em pasta que a suíte não roda
+- **worktree-guard:** **cartão vermelho direto** — falha fechada; só destrava com token nominal
 
 <!--
 FALA: "Coisas que NÃO podem acontecer viram trava automática. Um rm -rf, um drop table, ou uma listagem
-numa pasta com 50 mil arquivos que congela tudo. O agente nem chega a tentar. E ele 'falha aberto': se a
-própria checagem der pau, deixa passar, pra nunca atrapalhar indevidamente."
+numa pasta com 50 mil arquivos que congela tudo. O agente nem chega a tentar. O bash-guard 'falha
+aberto': se a própria checagem der pau, deixa passar, pra nunca atrapalhar indevidamente. Já o
+worktree-guard é o oposto: como não dá pra provar de quem é um worktree, apagar worktree é cartão
+vermelho direto, sem VAR — 'falha fechado', e só destrava com um token que nomeia o alvo exato,
+confirmado pelo humano. Falha aberta pra não atrapalhar; falha fechada pra não destruir — assimetria de
+risco."
 -->
 
 ---
@@ -392,15 +403,19 @@ técnica — no momento mais barato de consertar, a hora da edição, não num r
 
 ---
 
-# O ciclo de aprendizado que se fecha sozinho
+# A súmula honesta: quem está em campo (e quem ficou no banco)
 
-- `session-start` → injeta as **lições passadas** no começo (preleção)
-- `stop-loop` → **cobra** registrar novas lições no fim (vestiário)
+- Em campo: **3 travas** (bash · worktree · write) + **3 bandeirinhas** (lint · logging · disciplina)
+- No banco: `stop-loop-reminder` — **pronto, mas sem wiring** (lacuna declarada)
+- A "preleção" não é hook: é o **DNA + jogadas carregados automaticamente**
 
 <!--
-FALA: "O detalhe mais bonito: no começo da sessão o sistema LEMBRA das lições antigas; no fim, COBRA que
-você registre as novas. O aprendizado da empresa acontece automaticamente — o time sai de campo mais
-inteligente do que entrou, por construção."
+FALA: "Uma honestidade que vale mais que marketing: a súmula real tem seis hooks em campo — três que
+apitam e três que levantam bandeira — e UM jogador pronto no banco, o stop-loop-reminder, que lembraria
+'você mexeu em src sem tocar nos testes' no fim da rodada, mas ainda não foi registrado na súmula. A
+gente DECLARA essa lacuna em vez de fingir que ele joga — doc que mente é o que este time combate. E o
+aprendizado do time não depende dele: vive nos loops estratégicos e na promoção de lições, que são
+contrato obrigatório, não lembrete."
 -->
 
 ---
@@ -427,7 +442,7 @@ cada troca de pé e em qual árbitro está de olho."
 
 # O jogo, lance a lance
 
-preleção → **olheiro** → **zagueiro** → **meia** → **atacante** → **jogo real** → **goleiro** → cobrança
+preleção → **olheiro** → **zagueiro** → **meia** → **atacante** → **jogo real** → **goleiro** → lição promovida
 
 <!--
 [mostrar Diagrama 1 e Diagrama 2 de ../base-conceitual/diagramas.md]
@@ -484,8 +499,9 @@ FALA: "O placar defensivo. Cada um desses erros clássicos tem um responsável n
 <!--
 FALA: "Dois motores rodando o tempo todo, e gente confunde os dois. Auto-correção: executa, falha,
 conserta, revalida — até acertar OU declarar que travou, com limite de tentativas. Auto-aperfeiçoamento:
-no começo lembra das lições, no fim cobra registrar as novas. Um conserta o jogo; o outro muda o treino
-da semana."
+durante a campanha o agente registra cada tentativa numa memória de rodada — pra nunca repetir beco sem
+saída — e a lição durável COMPROVADA é promovida ao caderno de lições do agente. Um conserta o jogo; o
+outro muda o treino da semana."
 INTERAÇÃO: "Qual desses a maioria das empresas NÃO tem?" (o segundo — o conhecimento some quando a pessoa sai)
 -->
 

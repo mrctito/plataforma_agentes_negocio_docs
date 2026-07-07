@@ -79,11 +79,11 @@ estrutura, a produzir como uma fábrica madura com QA — não como um artesão 
 
 # O chão de fábrica da nossa engenharia
 
-- **CLAUDE.md** = Norma da Fábrica (lida em 100% das sessões)
+- **CLAUDE.md** = Norma da Fábrica (raiz lido em 100% das sessões + 5 por área)
 - **hooks** = poka-yoke + Andon + sensores (dispositivos automáticos)
-- **agents** = estações da linha (22 especialistas)
+- **agents** = estações da linha (20 especialistas)
 - **skills** = ordem de produção (`/comando`)
-- **rules** = especificações de processo / SOPs (sob demanda)
+- **rules** = especificações de processo / SOPs (20, sob demanda)
 
 <!--
 [mostrar o layout ASCII da doc-mãe (README.md) seção 2]
@@ -96,7 +96,7 @@ hora certa."
 
 # O parque em números
 
-# 22 · 19 · 12 · 7 · **0**
+# 20 · 17 · 20 · 7 · **0**
 
 estações · ordens · especificações · dispositivos · **commands**
 
@@ -149,14 +149,17 @@ Guardem eles — vão reaparecer em cada estação."
 
 # A Norma: CLAUDE.md
 
-- Lida em **100% das sessões**, antes de tudo
+- Raiz lido em **100% das sessões** + **5 instruções por área** da planta
 - **Curta e referencial:** princípio sempre presente, SOP sob demanda
-- 17 seções: cultura · pontos de controle · projeto da peça · disciplina
+- Raiz com 12 seções: cultura · pontos de controle · projeto da peça · disciplina
+- Precedência: em sobreposição, **o raiz é a base**
 
 <!--
 FALA: "A Norma converte cultura de engenharia em ESPECIFICAÇÃO APLICADA. Não é 'seria bom testar' — é
-'a peça não passa sem ensaio'. E é enxuta de propósito: a instrução densa entra só quando o trabalho toca
-o tema. Mesmo lazy-loading do bom software, aplicado à própria config."
+'a peça não passa sem ensaio'. E não é documento único: norma corporativa (raiz) + instrução de trabalho
+por área (src, tests, yaml, ui, docs), carregada quando o trabalho entra lá. Enxuta de propósito: a
+instrução densa entra só quando o trabalho toca o tema. Mesmo lazy-loading do bom software, aplicado à
+própria config."
 -->
 
 ---
@@ -177,14 +180,16 @@ Faça o LOTE certo com perfeição — não invente encomenda nova. Isso é cont
 
 # As especificações de processo (rules/)
 
-- **Profundas (SOPs):** log, reuso, definição-de-pronto, suíte, python, large-repo
+- **20 SOPs**, quase todos injetados **por caminho** (`paths:`)
+- **Profundas:** log, reuso, definição-de-pronto, suíte, python, large-repo…
 - **Contratos de passagem de bastão:** estratégia, fidelidade-do-pedido
-- **Diário de bordo (Kaizen):** lessons · error-backlog · regression · bad-instructions
+- **Kaizen real:** loops-estrategicos → memória de rodada → `licoes-aprendidas.md`
 
 <!--
-FALA: "São as instruções de trabalho na estação. O ponto DRY elegante: os contratos de passagem de bastão
-vivem em arquivo PRÓPRIO para não duplicar entre estações. A fábrica obedece às mesmas regras que impõe ao
-produto."
+FALA: "São as instruções de trabalho na estação — 20, entregues na hora em que o trabalho toca o tema. O
+ponto DRY elegante: os contratos de passagem de bastão vivem em arquivo PRÓPRIO para não duplicar entre
+estações. E o aprendizado tem contrato próprio: o dos loops estratégicos. A fábrica obedece às mesmas
+regras que impõe ao produto."
 -->
 
 ---
@@ -273,12 +278,14 @@ juntos."
 **Manutenção do chão (infra real):** postgres · redis · job-core · scheduler
 → snapshot antes de mexer, dry-run, lockout-tagout
 
-**Lote piloto (testes de fluxo real):** ingestão-dnit, webchat, nl2sql, nl2yaml…
+**Lote piloto (testes de fluxo real):** ingestão-dnit e cancelamento (estações)
+· webchat, nl2sql, nl2yaml, páginas-web (skills — Cap. 4)
 → três provas: UI + log + paralelismo real
 
 <!--
 FALA (rápido): "A manutenção é a mais paranoica: fotografa antes de mexer, mexe o mínimo, registra tudo. O
-lote piloto prova na vida real — acaba com o 'passou na minha bancada'."
+lote piloto prova na vida real — acaba com o 'passou na minha bancada'. Detalhe de inventário: os ensaios
+de interface são ORDENS DE PRODUÇÃO com procedimento próprio (skills), não estações."
 -->
 
 ---
@@ -313,8 +320,8 @@ O `description` não é decoração — é **contrato semântico**:
 3. **Exclusão** (palavras negativas delimitam a fronteira)
 
 <!--
-FALA: "Numa fábrica de 22 postos, saber QUAL acionar é metade da qualidade. O 'Use when' até diz 'para isso
-aqui, prefira a outra skill' — evita duas ordens disputando o mesmo pedido."
+FALA: "Numa fábrica de 20 estações e 17 ordens, saber QUAL acionar é metade da qualidade. O 'Use when' até
+diz 'para isso aqui, prefira a outra skill' — evita duas ordens disputando o mesmo pedido."
 -->
 
 ---
@@ -354,13 +361,18 @@ cada risco."
 # Os guards (poka-yoke / Andon)
 
 - `bash-guard` — trava varredura cega de `/logs` e comandos destrutivos (`rm -rf`, `drop table`, `--force`)
+- `worktree-guard` — trava exclusão de célula (worktree) alheia
 - `write-guard` — impede ensaio nascer em pasta proibida
 
-> Detalhe: o bash-guard **falha aberto** — na dúvida do próprio funcionamento, não trava a produção.
+> `bash-guard` **falha aberto**; `worktree-guard` **falha fechado** (token nominal, sem bypass em lote) —
+> a política de falha segue a irreversibilidade do dano.
 
 <!--
-FALA: "Dois acidentes clássicos de automação: travar a sessão com uma listagem gigante e destruir dados com
-um comando irreversível. O poka-yoke torna os dois IMPOSSÍVEIS — não depende de a IA 'lembrar'."
+FALA: "Acidentes clássicos de automação: travar a sessão com uma listagem gigante, destruir dados com um
+comando irreversível — e, com várias janelas em paralelo, apagar o worktree de OUTRA sessão. O poka-yoke
+torna isso IMPOSSÍVEL — não depende de a IA 'lembrar'. E repare no contraste de engenharia: o bash-guard
+falha aberto (na dúvida do próprio funcionamento, não trava a produção); o worktree-guard falha FECHADO
+(dano irreversível a trabalho alheio → nega sempre, só libera com token que nomeia o alvo exato)."
 -->
 
 ---
@@ -381,18 +393,22 @@ script de sandbox."
 
 ---
 
-# O Kaizen que se fecha sozinho
+# O Kaizen real (e uma lacuna declarada)
 
 ```
-INÍCIO DO TURNO            FIM DO TURNO
-session-start              stop-loop-reminder
-lê lessons.md              cobra registrar lição/defeito
-(começa relembrado)        (termina tendo registrado)
+erro real ──► loop forense (log prova a causa)
+          ──► memória de rodada (hipótese falsificada não repete)
+          ──► gate: "lição durável comprovada?" ──► licoes-aprendidas.md do agente
 ```
+
+> Lacuna declarada: `stop-loop-reminder.sh` (aviso "src sem tests" no fim da rodada)
+> existe na pasta de hooks, mas **não está ligado** ao settings.
 
 <!--
-FALA: "session-start LEMBRA das lições no começo; stop-loop COBRA o registro no fim. Juntos, a melhoria
-contínua acontece automaticamente, sem depender de alguém lembrar de documentar. Kaizen ligado na tomada."
+FALA: "O aprendizado não é um lembrete de fim de turno — é encadeado ao defeito PROVADO: o log prova a
+causa, a memória de rodada impede repetir hipótese falsificada, e só a lição durável comprovada é promovida
+ao caderno do agente; ruído local morre com o lote. E honestidade de engenharia: existe um sensor de fim de
+turno pronto na pasta, mas não está conectado — lacuna conhecida e declarada, não proteção vendida."
 -->
 
 ---
@@ -419,14 +435,15 @@ e qual dispositivo está de olho."
 
 # A produção, estação por estação
 
-briefing → **metrologia** → **inspeção** → **PCP** → **fabricação** → **lote piloto** → **controle de qualidade** → registro
+**metrologia** → **inspeção** → **PCP** → **fabricação** → **lote piloto** → **controle de qualidade** → promoção da lição
 
 <!--
 [mostrar Diagrama 1 e Diagrama 2 de ../base-conceitual/diagramas.md]
 FALA: "A metrologia lê o log e acha a etapa do defeito. A inspeção vai ao código real e mede a verdade com
 evidência. O PCP emite o roteiro e mapeia os ensaios. A fabricação conserta, e os sensores alertam se ela
-esquecer um log. O lote piloto prova na ingestão real, com três provas. E o QA só libera a peça se estiver
-ativa no runtime — senão, devolve ao PCP."
+esquecer um log. O lote piloto prova na ingestão real, com três provas. O QA só libera a peça se estiver
+ativa no runtime — senão, devolve ao PCP. E a lição durável comprovada vira patrimônio no caderno do
+agente."
 -->
 
 ---
@@ -435,7 +452,7 @@ ativa no runtime — senão, devolve ao PCP."
 
 REPROVADO → volta ao PCP (retrabalho, com inventário)
 
-APROVADO → stop-loop cobra o Kaizen
+APROVADO → lição durável promovida (Kaizen)
 
 > A linha **não é de mão única** — ela recupera o trabalho quando a peça não sai conforme.
 
@@ -553,14 +570,18 @@ revisão — é mais revisão, contínua e sem fadiga. Detalhe completo na base-
 # A leitura honesta (e onde mora a garantia)
 
 - O humano **não some** — sobe de altitude (aprova evidência, não sintaxe)
-- A garantia é tão boa quanto os **contratos** (por isso validar-instructions existe)
+- A garantia é tão boa quanto os **contratos** — curados pelo humano, checados
+  onde dá por validador determinístico (`./validar_descricao_subagentes.sh`)
+- Contrato que apodrece é desarmado pela regra: **código vence contrato**
 - Decisões de produto realmente novas → ainda pedem julgamento humano
 
 > A garantia mora no **conteúdo dos contratos**, não no agente.
 
 <!--
 FALA: "Sejamos honestos: 'sem digitar código' não é 'sem engenharia'. O esforço migra da digitação para a
-curadoria dos contratos e a leitura crítica da evidência. É mais alavancado, não inexistente."
+curadoria dos contratos e a leitura crítica da evidência. É mais alavancado, não inexistente. E a leitura
+honesta: quando o contrato diverge do código executável, o código vence — a doc nunca se acha dona da
+verdade."
 -->
 
 ---

@@ -40,7 +40,7 @@
   trabalho** na prateleira, consultadas na hora certa."
 
 ### Slide 5 — O parque em números
-- **TELA:** "22 · 19 · 12 · 7 · **0**" (estações · ordens · especificações · dispositivos · commands).
+- **TELA:** "20 · 17 · 20 · 7 · **0**" (estações · ordens · especificações · dispositivos · commands).
 - **FALA:** "O zero é de propósito. A gente **escolheu** não usar 'commands'. As skills já fazem esse
   papel, melhor. Menos mecanismos paralelos = menos confusão. Volto nisso no Ato 3."
 
@@ -61,9 +61,11 @@
 ## ATO 2 — As Estações e as Especificações (≈18 min)
 
 ### Slide 8 — A Norma: CLAUDE.md
-- **TELA:** "Lida em 100% das sessões. Curta e referencial."
+- **TELA:** "Norma raiz lida em 100% das sessões + 5 instruções por área da planta. Curta e referencial."
 - **FALA:** "A Norma converte cultura em **especificação aplicada**. Não é 'seria bom testar' — é 'a peça
-  não passa sem ensaio'. É enxuta de propósito: a instrução densa entra só quando o trabalho toca o tema."
+  não passa sem ensaio'. E não é um documento único: o raiz (12 seções) vale sempre, e cada área da
+  planta — src, tests, yaml, ui, docs — tem sua instrução de trabalho, carregada quando o trabalho entra
+  lá. Em sobreposição, o raiz é a base."
 
 ### Slide 9 — O detalhe genial do "100%"
 - **TELA:** "'100%' qualifica a execução, não autoriza o escopo."
@@ -71,10 +73,10 @@
   isso. Faça o **lote certo** com perfeição — não invente encomenda nova. Controle de custo puro."
 
 ### Slide 10 — As especificações de processo (rules/)
-- **TELA:** SOPs profundos · contratos de passagem de bastão · diário de bordo (Kaizen).
-- **FALA:** "São as instruções de trabalho na estação. Ponto DRY elegante: os contratos de passagem de
-  bastão vivem em arquivo próprio para **não duplicar** entre estações. A fábrica obedece às regras que
-  impõe ao produto."
+- **TELA:** 20 SOPs profundos · contratos de passagem de bastão · contrato dos loops (Kaizen real).
+- **FALA:** "São as instruções de trabalho na estação — 20, quase todas injetadas por caminho, na hora em
+  que o trabalho toca o tema. Ponto DRY elegante: os contratos de passagem de bastão vivem em arquivo
+  próprio para **não duplicar** entre estações. A fábrica obedece às regras que impõe ao produto."
 
 ### Slide 11 — A especificação mais valiosa: o raio-X
 - **TELA:** `log-instructions.md` — correlation_id, campos canônicos, logger.exception, anti-varredura.
@@ -113,9 +115,12 @@
   tudo. Disciplina de mexer numa máquina ligada com checklist."
 
 ### Slide 16 — Lote piloto e engenharia da qualidade ⏩
-- **TELA:** testes de fluxo real (três provas) · documentar · inventário · validar-instructions.
-- **FALA (rápido):** "O lote piloto prova na vida real — acaba com o 'passou na minha bancada'. E a
-  engenharia da qualidade mantém o conhecimento fiel ao código."
+- **TELA:** testes de fluxo real (três provas) · documentar · inventário · validador de descrições
+  (`./validar_descricao_subagentes.sh`).
+- **FALA (rápido):** "O lote piloto prova na vida real — acaba com o 'passou na minha bancada'. A
+  engenharia da qualidade mantém o conhecimento fiel ao código. E a auditoria da própria config é um
+  **validador determinístico** — script, não estação — mais a regra: se o contrato divergir do código, o
+  código vence."
 
 ---
 
@@ -128,8 +133,8 @@
 
 ### Slide 18 — A engenharia do "Use when:"
 - **TELA:** auto-disparo · desambiguação · exclusão.
-- **FALA:** "O `description` é contrato semântico. Numa fábrica de 22 postos, saber **qual acionar** é
-  metade da qualidade. Ele até diz 'para isso, prefira a outra ordem'."
+- **FALA:** "O `description` é contrato semântico. Numa fábrica de 20 estações e 17 ordens, saber **qual
+  acionar** é metade da qualidade. Ele até diz 'para isso, prefira a outra ordem'."
 
 ### Slide 19 — Por que NÃO usamos commands
 - **TELA:** tabela command × skill × agent.
@@ -144,10 +149,13 @@
 - **INTERAÇÃO:** "Qual a diferença entre uma regra que a gente 'pede' e uma que o dispositivo 'garante'?"
 
 ### Slide 21 — Os guards (poka-yoke / Andon)
-- **TELA:** bash-guard (varredura de logs, rm -rf, drop) · write-guard. "Falha aberto."
-- **FALA:** "Dois acidentes clássicos: travar a sessão com listagem gigante e destruir dados. O poka-yoke
-  torna os dois **impossíveis** — não depende de a IA 'lembrar'. E falha aberto: na dúvida do próprio
-  funcionamento, não trava a produção indevidamente."
+- **TELA:** bash-guard (varredura de logs, rm -rf, drop; falha aberto) · worktree-guard (célula alheia;
+  **falha fechado**, token nominal) · write-guard.
+- **FALA:** "Três travas. O bash-guard evita travar a sessão e destruir dados — e falha aberto: na dúvida
+  do próprio funcionamento, não trava a produção. O worktree-guard é o intertravamento entre células
+  paralelas: apagar worktree alheio é irreversível, então ele **falha fechado** — só libera com um token
+  que nomeia o alvo exato, sem bypass em lote. A política de falha de cada trava segue a
+  irreversibilidade do dano."
 
 ### Slide 22 — Os sensores (alarmes)
 - **TELA:** logging-nudge · py-lint · py-discipline.
@@ -155,10 +163,13 @@
   mais barato: a hora da edição. Por que alarme e não trava? Porque pede julgamento — um print() pode ser
   legítimo num script de sandbox."
 
-### Slide 23 — O Kaizen que se fecha sozinho
-- **TELA:** session-start (lê lições) ↔ stop-loop (cobra registro).
-- **FALA:** "Começo do turno: **lembra** das lições. Fim do turno: **cobra** o registro de novas. A
-  melhoria contínua acontece automaticamente, sem depender de alguém lembrar de documentar."
+### Slide 23 — O Kaizen real (e uma lacuna declarada)
+- **TELA:** erro → loop forense (log) → memória de rodada → promoção com gate → `licoes-aprendidas.md`.
+- **FALA:** "O aprendizado não é um lembrete de fim de turno — é encadeado ao defeito **provado**: o log
+  prova a causa, a memória de rodada impede repetir hipótese falsificada, e só a lição durável comprovada
+  é promovida ao caderno do agente — ruído local morre com o lote. Honestidade: existe um sensor de fim
+  de turno pronto na pasta de hooks (avisa 'mexeu em src sem tocar em tests'), mas ele **não está
+  ligado** — lacuna conhecida e declarada."
 
 ---
 
@@ -170,14 +181,14 @@
   consulta e qual dispositivo está de olho."
 
 ### Slide 25 — A produção, estação por estação
-- **TELA:** briefing → metrologia → inspeção → PCP → fabricação → lote piloto → QA → registro.
+- **TELA:** metrologia → inspeção → PCP → fabricação → lote piloto → QA → promoção da lição.
 - **FALA:** "A metrologia lê o log e acha a etapa do defeito. A inspeção mede o código real com evidência.
   O PCP emite o roteiro e mapeia os ensaios. A fabricação conserta, e os sensores alertam se ela esquecer
   um log. O lote piloto prova na ingestão real, com três provas. O QA só libera se a peça estiver ativa no
-  runtime."
+  runtime. E a lição durável comprovada vira patrimônio no caderno do agente."
 
 ### Slide 26 — O lote pode voltar
-- **TELA:** REPROVADO → volta ao PCP; APROVADO → stop-loop cobra o Kaizen.
+- **TELA:** REPROVADO → volta ao PCP; APROVADO → lição durável promovida (Kaizen).
 - **FALA:** "A linha **não é de mão única**. Devolver **com inventário** — exatamente o que faltou — é o
   que impede o falso-verde de chegar ao cliente."
 
@@ -222,10 +233,13 @@
   de garantias do começo ao fim. Não é menos revisão — é mais, contínua e sem fadiga."
 
 ### Slide 32 — A leitura honesta (e onde mora a garantia)
-- **TELA:** o humano sobe de altitude · garantia = qualidade dos contratos · decisões novas pedem humano.
+- **TELA:** o humano sobe de altitude · garantia = qualidade dos contratos · "código vence contrato" ·
+  decisões novas pedem humano.
 - **FALA:** "Sejamos honestos: 'sem digitar código' não é 'sem engenharia'. O esforço migra da digitação
   para a **curadoria dos contratos** e a **leitura crítica da evidência**. É mais alavancado, não
-  inexistente. A garantia mora no **conteúdo dos contratos**, não no agente."
+  inexistente. A garantia mora no **conteúdo dos contratos** — curados pelo humano, checados por um
+  validador determinístico onde dá (`./validar_descricao_subagentes.sh`) e desarmados pela regra de ouro
+  quando apodrecem: se o contrato divergir do código executável, **o código vence**."
 
 ---
 

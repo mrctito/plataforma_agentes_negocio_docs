@@ -23,11 +23,6 @@ dispositivo está de olho**.
 
 ## 6.2 A produção, estação por estação
 
-### Início do turno — `session-start` faz o briefing
-Antes de qualquer coisa, o dispositivo `session-start` injeta as **lições passadas** (`lessons.md`) e
-avisa quantos defeitos há no backlog. A linha começa o turno já sabendo o que deu errado antes. *(Cap. 5 —
-lado "ler" do Kaizen)*
-
 ### 1ª estação — `analisar-log` (metrologia) lê os instrumentos
 Como há um defeito real com rastro, o primeiro a operar é a **metrologia**. Pega o `correlation_id` (número
 de série) da execução que falhou e roda a CLI oficial de análise — **sem corrigir nada ainda**. Consolida
@@ -71,19 +66,18 @@ critério? Confere o raio-X diretamente: a escrita do log e a cobertura diagnós
 é dura: **ensaio verde não prova linha real**. Veredito explícito: APROVADO, COM RESSALVAS, REPROVADO ou
 BLOQUEADO. Se reprovado, **devolve o lote ao PCP** com um inventário do que faltou. *(Cap. 3.1)*
 
-### Fim do turno — `stop-loop` cobra o Kaizen
-No fim, o dispositivo `stop-loop` cobra: esse defeito virou uma **lição transversal** em `lessons.md`? Foi
-para o `error-backlog`? Se mexeu em `src/` sem tocar em `tests/`, acende o alarme. A linha termina o turno
-**mais inteligente do que começou**. *(Cap. 5.5 — lado "escrever" do Kaizen)*
+### Fecho do lote — a lição durável é promovida (Kaizen)
+Durante a correção, a estação de RCA manteve a **memória de rodada** (cada hipótese testada, com
+evidência). No fecho, ela aplica o gate de promoção: essa rodada revelou uma **regra preventiva durável
+comprovada**? Se sim, a lição vai para o `licoes-aprendidas.md` do agente; se é ruído operacional local,
+morre com o lote. A linha termina o turno **mais inteligente do que começou** — e, se a lição pedir
+mudança de contrato (Norma/SOP), o humano faz a edição. *(Cap. 2.2 — o Kaizen real)*
 
 ---
 
 ## 6.3 O mapa da produção (visão de cima)
 
 ```
- session-start ─ briefing (lições passadas)
-        │
-        ▼
  analisar-log ──► investigar ──► planejar ──► implementar ──► testar-ingestao ──► validar-entrega
  (metrologia)   (inspeção)     (PCP)        (fabricação)     (lote piloto)       (controle qualid.)
         │              │            │             │                 │                  │
@@ -92,7 +86,7 @@ para o `error-backlog`? Se mexeu em `src/` sem tocar em `tests/`, acende o alarm
                                                           ┌─────────────────────────────┘
                                                           ▼
                                             REPROVADO? ──► volta ao PCP (retrabalho)
-                                            APROVADO?  ──► stop-loop cobra o Kaizen
+                                            APROVADO?  ──► lição durável promovida (Kaizen)
 ```
 
 Repare: **o lote pode voltar.** A linha não é de mão única — é uma célula que **recupera o trabalho**
@@ -131,26 +125,34 @@ tentativa já descartada) e **teto + status binário** (converge ou declara bloq
 
 ### 🔁 Auto-aperfeiçoamento = Kaizen (melhora a fábrica para os PRÓXIMOS lotes)
 
-**Kaizen** é a melhoria contínua **entre turnos**. Na nossa fábrica, é o **loop de auto-aperfeiçoamento**:
-os dispositivos de início/fim de turno (a **troca de turno**) leem as lições na entrada e cobram o
-registro na saída, fazendo o know-how se acumular na empresa.
+**Kaizen** é a melhoria contínua **entre lotes**. Na nossa fábrica, ele não é um lembrete de troca de
+turno — é um **encadeamento com gates**, declarado em contrato (`loops-estrategicos.md`) e fechado por
+curadoria humana:
 
 ```
-   INÍCIO DO TURNO                                 FIM DO TURNO
-   session-start.sh                                stop-loop-reminder.sh
-   ── lê e injeta lessons.md                       ── cobra registrar lição/defeito/reincidência
-      (o turno começa relembrado)                     (o turno termina tendo registrado)
-            │                                                    │
-            └──────────── lado "LER" ── + ── lado "ESCREVER" ────┘
-                                       │
-                          DIÁRIO DE BORDO (.claude/rules/)
-                  lessons.md · error-backlog.md · regression-logs.md · bad-instructions.md
+   ERRO REAL no lote
+        │
+        ▼
+   LOOP 1 — prova forense por log
+   correlation_id → src.log_analyzer → cara-crachá log × código
+   (proibido rotular "ambiente/credencial/sem dado" sem prova)
+        │
+        ▼
+   LOOP 2 — memória de rodada (efêmera, local ao lote)
+   cada tentativa registrada com evidência; hipótese falsificada não se repete
+        │
+        ▼  gate: "regra preventiva durável comprovada?"  (não promover ruído local)
+   PROMOÇÃO — licoes-aprendidas.md do agente
+   (patrimônio durável; ex.: corrigir-erros-com-log, testar-ingestao-dnit)
+        │
+        ▼  quando a lição pede mudança de contrato
+   CURADORIA HUMANA — edição da Norma / SOP
 ```
 
 ### A ponte entre os dois (onde se encontram)
 
-> Quando o **Andon** de um lote descobre uma regra preventiva reaproveitável, essa lição é **promovida**
-> para o **Kaizen** (vai para o `lessons.md`).
+> Quando o **Andon** de um lote descobre uma regra preventiva durável comprovada, essa lição é
+> **promovida** para o **Kaizen** (vai para o `licoes-aprendidas.md` do agente).
 
 O conserto de **um** defeito de hoje vira a **prevenção** de uma família de defeitos amanhã. O esforço de
 auto-correção não se perde quando o lote fecha — parte vira patrimônio da fábrica.
@@ -159,7 +161,7 @@ auto-correção não se perde quando o lote fecha — parte vira patrimônio da 
 |---|---|---|
 | **Pergunta** | "Já está conforme?" | "O que aprendemos para não repetir?" |
 | **Escopo** | Um lote/rodada | Todos os lotes futuros |
-| **Dispara por** | Defeito detectado no próprio lote | Troca de turno (hooks de início/fim) |
+| **Dispara por** | Defeito detectado no próprio lote | Lição durável comprovada numa correção (com gate) |
 | **Termina** | Quando converge (com teto) | Nunca (é contínuo) |
 | **Mata o problema de** | Peça "quase pronta", retrabalho infinito | Repetir defeito, conhecimento que apodrece |
 
@@ -174,11 +176,11 @@ auto-correção não se perde quando o lote fecha — parte vira patrimônio da 
 | **Defeito invisível no cliente** | `log-instructions` + laboratório de observabilidade + `logging-nudge` |
 | **Duplicação / estoque de código** | `reuso-instructions` + `inventario-componentes` |
 | **Over-engineering / escopo inflado** | `CLAUDE.md` ("100%" qualifica execução) + `planejar` |
-| **Regressão silenciosa** | `criar-testes` + `executar-testes` + `stop-loop` |
-| **Acidente operacional** (rm -rf, drop) | `bash-guard` (poka-yoke) + manutenção (dry-run) |
+| **Regressão silenciosa** | `criar-testes` + `executar-testes` + teste de regressão estrutural |
+| **Acidente operacional** (rm -rf, drop, worktree alheio) | `bash-guard` + `worktree-guard` (poka-yokes) + manutenção (dry-run) |
 | **Travar a sessão** com varredura de log | `bash-guard` + regra anti-varredura |
-| **Conhecimento que apodrece** | `documentar` + `sincronizar-documentacao` + diário de bordo |
-| **Repetir o mesmo defeito** | `session-start` + `stop-loop` + `lessons.md` (Kaizen) |
+| **Conhecimento que apodrece** | `documentar` + `sincronizar-documentacao` + `licoes-aprendidas.md` |
+| **Repetir o mesmo defeito** | memória de rodada + promoção a `licoes-aprendidas.md` (Kaizen) |
 
 ---
 

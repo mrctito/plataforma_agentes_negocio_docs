@@ -44,7 +44,9 @@ observabilidade permite reconstruir o comportamento real pelo log. Nenhum sistem
 real** (`read`), com path e linha. Comentário e documentação são "pista, nunca prova; código executável
 vence sempre". A alucinação não é eliminada por mágica — ela é **estruturalmente desincentivada**: toda
 afirmação precisa de evidência rastreável, e o `validar-entrega` confere contra o código executável, não
-contra a "memória" da IA.
+contra a "memória" da IA. Para **estado de recurso externo** (banco, filas, vector store), a regra é
+ainda mais dura: `ferramentas-acesso-dados.md` proíbe concluir por proxy — "não existe / está vazio" só
+vale depois de consultar o store físico com as ferramentas prontas de `.claude/scripts/`.
 
 ### 🛠️ "IA erra. O que impede um erro de virar um loop infinito de tentativas?"
 Os loops de auto-correção têm **teto explícito** (ex.: ~20 ciclos no `executar-testes`, ~50 no
@@ -71,11 +73,11 @@ entender o que aconteceu — geralmente *melhor* do que num fluxo tradicional.
 
 ### 🧑‍💼 / 🛠️ "E segurança? A IA não pode rodar um `rm -rf` ou vazar um segredo?"
 Há travas determinísticas (guards) para isso: o `bash-guard` **bloqueia** comandos destrutivos
-(`rm -rf`, `drop table`, `git push --force`) e a varredura cega de logs; os agentes de infra operam em
-**dry-run** e só executam mutação com flag explícita; o `CLAUDE.md §8` faz o catálogo de tools **falhar
-fechado**; e logar dado sensível é proibido (só shape/contagem/decisão). Não é confiança no bom
-comportamento da IA — é **impossibilidade imposta pelo árbitro automático**. *(Detalhe dos hooks na
-seção de arbitragem de cada lente.)*
+(`rm -rf`, `drop table`, `git push --force`) e a varredura cega de logs; o `worktree-guard` **falha
+fechado** — nega remover worktree que não é da sessão sem um token nominal explícito; os agentes de
+infra operam em **dry-run** e só executam mutação com flag explícita; e logar dado sensível é proibido
+(só shape/contagem/decisão). Não é confiança no bom comportamento da IA — é **impossibilidade imposta
+pelo árbitro automático**. *(Detalhe dos hooks na seção de arbitragem de cada lente.)*
 
 ---
 
@@ -123,16 +125,19 @@ continuam sendo trabalho humano — e mais valioso do que antes. *(A leitura hon
 ## Bloco 6 — Manutenção da própria metodologia
 
 ### 🛠️ "E se os contratos ficarem desatualizados ou contraditórios?"
-Há um agente dedicado a isso: o `validar-instructions` audita as próprias regras em busca de contradição,
-redundância e ambiguidade, e registra em `bad-instructions.md`. E a regra de ouro recorrente — **"se o
-contrato divergir do código executável, o código vence"** — impede que uma regra velha mande no
-comportamento real. A metodologia tem mecanismo de auto-auditoria.
+A resposta honesta: a auto-auditoria hoje é **parcial**. O que existe: (1) a regra de ouro recorrente —
+**"se o contrato divergir do código executável, o código vence"** — impede que uma regra velha mande no
+comportamento real; (2) um validador automático cobre um recorte específico, as descrições/gatilhos dos
+subagentes (`./validar_descricao_subagentes.sh`); (3) o resto é **curadoria humana contínua** —
+contrato que se mostra ambíguo ou errado no uso é corrigido na hora (higiene corretiva), não acumulado
+em backlog. Não há um agente auditando contradições entre contratos automaticamente; esse é um limite
+real da metodologia hoje.
 
 ### 🛠️ "Quem garante que um novo agente/skill seja criado do jeito certo?"
-Hoje, a consistência vem das próprias regras (reuso, anti-duplicação) e da revisão humana. Esse é,
-honestamente, um ponto que **se beneficia de um checklist formal de extensão** — recomendado como próximo
-artefato no [cartao-de-referencia.md](cartao-de-referencia.md). É um exemplo de onde a metodologia ainda
-depende de disciplina humana.
+Hoje, a consistência vem das próprias regras (reuso, anti-duplicação), do **checklist de extensão** no
+[cartao-de-referencia.md](cartao-de-referencia.md) (seção 5), do validador de descrições de subagentes
+(`./validar_descricao_subagentes.sh`) e da revisão humana. Fora o validador, nada disso é automático —
+é um exemplo de onde a metodologia ainda depende de disciplina humana.
 
 ---
 

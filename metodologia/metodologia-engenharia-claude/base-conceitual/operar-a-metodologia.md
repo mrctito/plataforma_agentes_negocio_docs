@@ -84,7 +84,9 @@ quando:
 - a **documentação e o código parecem divergir**.
 
 Implementar sem evidência quase sempre gera mais trabalho depois. O custo de investigar primeiro é
-quase sempre menor que o custo de desfazer uma implementação errada.
+quase sempre menor que o custo de desfazer uma implementação errada. E vale a trava anti-rótulo: causa
+("ambiente", "credencial", "sem dado") só depois de esgotar hipóteses na fonte de verdade real —
+contratos `disciplina-investigacao-teste.md` e `ferramentas-acesso-dados.md`.
 
 ---
 
@@ -95,7 +97,9 @@ Corrigir o agente **não é atrito — é parte do método**. Seja direto e cir�
 1. **Diga qual premissa está errada** ("você assumiu que X existe; não existe").
 2. **Aponte a evidência que contradiz** ("o arquivo Y, linha Z, mostra o contrário").
 3. Se o erro **pode se repetir**, peça para **registrar uma lição** ([os dois loops](os-dois-loops.md)).
-4. Se a causa foi uma **instrução ambígua/contraditória**, peça para registrar em `bad-instructions`.
+4. Se a causa foi uma **instrução ambígua/contraditória** num contrato, peça para **corrigir o contrato
+   na hora** (higiene corretiva) — ou, se a correção não couber no escopo, registre o defeito no
+   relatório da rodada. Não existe backlog separado de "instruções ruins".
 
 Quanto mais específica a correção (premissa + evidência), mais rápido o rumo se ajusta — e menos a
 mesma confusão volta.
@@ -123,7 +127,8 @@ provas e **interromper quando o processo sai do trilho**.
 - [ ] os **arquivos alterados** fazem sentido para o escopo (nada fora do pedido);
 - [ ] **validações** foram executadas — ou o **bloqueio** foi explicado com evidência;
 - [ ] **links, diagramas e documentação** foram verificados quando aplicável;
-- [ ] os **registros obrigatórios** (lição/erro/regressão/encerramento) foram atualizados quando cabível;
+- [ ] **lição durável comprovada** foi promovida ao `licoes-aprendidas.md` do agente quando cabível —
+      e o log da rodada segue consultável por `correlation_id`;
 - [ ] os **riscos residuais** foram declarados.
 
 ---

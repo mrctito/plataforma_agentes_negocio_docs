@@ -37,14 +37,16 @@ o instrumento certo para cada risco**: poka-yoke para o inegociável, alarme par
 
 ## 5.2 Quando cada dispositivo dispara (os momentos da linha)
 
-Os hooks estão amarrados no `settings.json` a quatro momentos:
+Os hooks estão amarrados no `settings.json` a **dois momentos** — antes da operação e depois da edição:
 
 ```
-  SessionStart   ──►  antes do turno começar          ──►  session-start.sh        (briefing de turno)
-  PreToolUse     ──►  antes de uma operação (Bash/Write) ─► bash-guard / write-guard  (poka-yoke: pode travar)
-  PostToolUse    ──►  depois de editar um arquivo      ──►  py-lint / logging-nudge / py-discipline  (sensores)
-  Stop           ──►  no fim do turno                  ──►  stop-loop-reminder      (registro pós-turno)
+  PreToolUse   ──►  antes de um comando (Bash)   ──►  bash-guard + worktree-guard   (poka-yoke: pode travar)
+               ──►  antes de criar arquivo (Write) ─► write-guard                    (poka-yoke: pode travar)
+  PostToolUse  ──►  depois de editar um arquivo  ──►  py-lint / logging-nudge / py-discipline  (sensores)
 ```
+
+Não há dispositivo de início nem de fim de turno ligado hoje: a pasta contém um sétimo script
+(`stop-loop-reminder.sh`) **pronto mas não conectado** — lacuna conhecida, detalhada no §5.5.
 
 ---
 
@@ -71,6 +73,24 @@ produção indevidamente. Segurança sem virar obstáculo.
 
 **Defeito que evita:** dois acidentes clássicos de automação — **travar a sessão** com uma listagem
 gigante e **destruir dados** com um comando irreversível.
+
+### `worktree-guard.sh` — o intertravamento entre células paralelas
+
+O segundo dispositivo no comando de terminal protege um risco específico do trabalho em paralelo: várias
+janelas/agentes operam ao mesmo tempo em **worktrees** (células de produção isoladas — `worktree.md`,
+Cap. 2), e um `git worktree remove` ou `git branch -D` descuidado pode **destruir o trabalho de outra
+sessão de forma irreversível**. Como o naming é fixo (`worktree-codex`/`worktree-claude`), o nome não
+prova posse — então o dispositivo **nega sempre**.
+
+A única válvula de escape é um **token nominal**: prefixar o comando com
+`CONFIRMO_EXCLUSAO_WT_ALHEIA=<nome-exato-do-worktree>`, obtido só após confirmação expressa do humano
+para **aquele alvo exato** — "não existe bypass genérico ou em lote".
+
+**Detalhe de engenharia — o contraste com o bash-guard:** este dispositivo **falha fechado**: na dúvida,
+**trava**. A assimetria é deliberada e é a mesma de um intertravamento de prensa (lockout-tagout): o
+bash-guard protege contra travar a produção (na dúvida do próprio funcionamento, deixa passar); o
+worktree-guard protege contra **destruir produção alheia irreversível** (na dúvida, nega). A política de
+falha de cada poka-yoke é escolhida pela **irreversibilidade do dano**, não por padrão único.
 
 ### `write-guard.sh` — o dispositivo no arquivo
 
@@ -127,35 +147,34 @@ no **momento exato da edição**, quando é barato consertar, em vez de numa ins
 
 ---
 
-## 5.5 Os dispositivos de início e fim de turno — fechando o Kaizen
+## 5.5 O sensor de fim de turno que existe mas não está ligado (lacuna declarada)
 
-### `session-start.sh` — o briefing antes do turno
+Na pasta de hooks há um sétimo script, `stop-loop-reminder.sh`, projetado para o fim da rodada (`Stop`):
+se a rodada editou `src/**.py` **sem tocar em `tests/`**, ele acenderia o alarme de cobertura de ensaios
+e observabilidade. Só isso — é um sensor fino de "peça sem ensaio", não um cobrador de lições.
 
-No começo de **toda sessão**, injeta automaticamente no contexto o conteúdo de `lessons.md` (as lições
-globais) e um resumo dos registros (quantos defeitos no backlog, quantas reincidências). É o **lado
-"ler"** do Kaizen: a linha começa o turno já lembrada das lições passadas.
+**Estado real: pronto, mas não conectado.** O script não está registrado em nenhum `settings`, então
+nunca dispara. É uma **lacuna conhecida e declarada** — na fábrica, um sensor já fabricado aguardando
+instalação no painel. Enquanto isso, a checagem que ele automatizaria continua existindo como regra (a
+Norma exige teste proporcional ao risco) e como estação (`validar-entrega` reprova entrega sem ensaio) —
+mas depende de disciplina, não de dispositivo.
 
-### `stop-loop-reminder.sh` — o registro no fim do turno
-
-No fim da rodada (`Stop`), se houve edição real, cobra o **lado "escrever"** do Kaizen: registrar defeito
-real em `error-backlog.md`, reincidência em `regression-logs.md`, promover lição transversal para
-`lessons.md`. E faz uma checagem fina: **se editou `src/**.py` mas não tocou em `tests/`**, acende o
-alarme sobre cobertura de ensaios e rastreabilidade.
-
-> 🧑‍💼 **RESUMO EXECUTIVO — o Kaizen que se fecha sozinho.** O `session-start` *lembra* das lições no
-> começo; o `stop-loop` *cobra* o registro de novas lições no fim. Juntos, fazem a melhoria contínua
-> acontecer **automaticamente**, sem depender de alguém lembrar de documentar. É a máquina de Kaizen
-> ligada na tomada — a fábrica fica mais inteligente a cada turno, por construção.
+E o Kaizen? **Não mora nos hooks.** O mecanismo de aprendizado da fábrica é o trio contrato dos loops +
+memória de rodada + promoção com gate (Cap. 2, §2.2) — acionado pelo **defeito provado**, não por um
+lembrete de fim de turno.
 
 ---
 
 ## 5.6 `settings.json` e `settings.local.json` — o roteiro mestre e as autorizações
 
 - **`settings.json`** é o **roteiro de fabricação**: amarra cada dispositivo ao seu momento
-  (`SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`). É o que faz a linha de proteção existir.
+  (`PreToolUse` para os três guards, `PostToolUse` para os três sensores). É o que faz a linha de
+  proteção existir — script fora dele é sensor na prateleira.
 - **`settings.local.json`** é a lista de **autorizações locais**: pré-autoriza operações seguras e
-  repetitivas (rodar a suíte, `ruff`, `mypy`, `pytest`, `npm run test:*`) para não pedir confirmação a
-  cada vez. É produtividade sem abrir mão de segurança — só entra aqui o que é comprovadamente seguro.
+  repetitivas — a suíte oficial (`python suite_de_testes_padrao.py`), `jest`, `ruff check`, a CLI de
+  análise de logs (`python -m src.log_analyzer`) e a consulta PostgreSQL canônica
+  (`run_postgresql_query.py`) — para não pedir confirmação a cada vez. É produtividade sem abrir mão de
+  segurança — só entra aqui o que é comprovadamente seguro.
 
 ---
 
@@ -163,13 +182,13 @@ alarme sobre cobertura de ensaios e rastreabilidade.
 
 | Dispositivo | Momento | Tipo | Garante |
 |---|---|---|---|
-| session-start | início | injeção | Lições passadas presentes desde o 1º minuto |
-| bash-guard | antes de Bash | **poka-yoke** + alarme | Não trava a sessão, não destrói dados |
+| bash-guard | antes de Bash | **poka-yoke** + alarme (falha aberto) | Não trava a sessão, não destrói dados |
+| worktree-guard | antes de Bash | **poka-yoke** (falha fechado, token nominal) | Célula alheia não é destruída |
 | write-guard | antes de Write | **poka-yoke** | Ensaio nasce no lugar certo |
 | py-lint | após editar .py | alarme | Acabamento limpo no momento da edição |
 | logging-nudge | após editar .py | alarme | Rastreabilidade canônica por sensor |
 | py-discipline | após editar .py | alarme | Disciplina Python/ensaios |
-| stop-loop-reminder | fim | alarme | Aprendizado registrado + cobertura lembrada |
+| stop-loop-reminder | (não ligado) | alarme na prateleira | Lacuna declarada: aviso "src sem tests" |
 
 ---
 
@@ -179,9 +198,11 @@ alarme sobre cobertura de ensaios e rastreabilidade.
   pilar que converte "intenção" em "garantia".
 - A distinção mestra: **poka-yoke/Andon (trava/`deny`)** para o risco inegociável; **sensor/alarme
   (aviso)** para o que exige julgamento. Escolher o instrumento certo é a engenharia.
+- A **política de falha** de cada trava é escolhida pela irreversibilidade do dano: bash-guard falha
+  aberto; worktree-guard falha fechado, com token nominal e sem bypass em lote.
 - Os sensores transformam especificações densas (como a de logs) em **radares automáticos** que corrigem
   no momento mais barato — a hora da edição.
-- `session-start` + `stop-loop` **fecham o Kaizen automaticamente** — a fábrica aprende por construção,
-  não por disciplina individual.
+- A honestidade faz parte do desenho: um sensor pronto e não ligado é **declarado como lacuna**, não
+  vendido como proteção. E o Kaizen não mora nos hooks — mora nos loops estratégicos (Cap. 2 e 6).
 
 **Próximo:** [Capítulo 6 — Um Lote na Linha (a fábrica inteira em ação)](capitulo-06-um-lote-na-linha.md).

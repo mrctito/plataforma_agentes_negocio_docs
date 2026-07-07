@@ -4,9 +4,9 @@
 
 > **Parte da fábrica:** a skill é a **ordem de produção / o botão que aciona a estação certa**. Quando
 > você digita `/investigar`, a skill não trabalha — ela **aciona** a estação `investigar` e sai da
-> frente. É o documento que diz "rode este posto", não o posto em si. A maioria das nossas skills é
-> deliberadamente "fina": só faz o acionamento. Algumas poucas carregam, elas mesmas, um procedimento
-> obrigatório completo.
+> frente. É o documento que diz "rode este posto", não o posto em si. São **17 skills**: **9
+> despachantes finas** (só o acionamento) e **8 autocontidas**, que carregam, elas mesmas, um
+> procedimento obrigatório completo.
 
 > 🧑‍💼 **RESUMO EXECUTIVO.** A separação entre "acionar a estação" (skill) e "a estação trabalhar"
 > (agente) parece detalhe técnico, mas é decisão de eficiência e manutenção que economiza dinheiro:
@@ -65,14 +65,14 @@ Isso **não é decoração**. É um contrato semântico com três funções:
    fronteira da ordem.
 
 **Defeito que evita:** a ferramenta errada para o trabalho — inspecionar quando era para corrigir,
-planejar quando era para só medir. Numa fábrica de 22 postos, saber **qual acionar** é metade da
-qualidade.
+planejar quando era para só medir. Numa fábrica de 20 estações e 17 ordens, saber **qual acionar** é
+metade da qualidade.
 
 ---
 
 ## 4.3 As skills que fogem do padrão (procedimento próprio robusto)
 
-Nem toda skill é fina. Algumas — quase todas de **ensaio/validação de fluxo real** — carregam um
+Nem toda skill é fina. Oito — quase todas de **ensaio/validação de fluxo real** — carregam um
 procedimento completo embutido: `corrigir-com-log`, `auditoria-suite-testes`, `testar-webchat`,
 `testar-webchat-dnit`, `testar-nl2sql`, `testar-nl2yaml`, `testar-paginas-web-projeto`, e a referência
 técnica `playwright-cli`.
@@ -92,7 +92,27 @@ máquina**, que o operador não tem autoridade para encurtar.
 
 ---
 
-## 4.4 Skill vs. Agent vs. Command — o quadro que tira a dúvida
+## 4.4 A ordem de produção com apontamento por operação (execução resumível)
+
+A ordem `/implementar` tem uma política própria de orquestração para planos grandes
+(`execucao-plano-resumivel.md`, Cap. 2), com três papéis:
+
+- **Orquestrador quente:** a janela principal segura o plano, despacha **uma fase por vez** e valida o
+  retorno — nunca re-onboarda, nunca acumula o trabalho pesado das tarefas.
+- **Worker descartável:** um agente `implementar` por fase executa tarefa a tarefa, devolve um ponto de
+  retomada compacto **e morre** — contexto zerado a cada fase.
+- **Diário write-ahead:** o status de cada tarefa (`CONCLUIDA` com evidência / `BLOQUEADA` com motivo) é
+  gravado **no arquivo do plano antes** de a próxima fase ser despachada.
+
+Na fábrica, é a **ordem de produção com apontamento por operação**: cada operação concluída é apontada na
+própria OP antes de a peça seguir. Se o operador cair no meio do turno (worker morre, sessão estoura), o
+próximo lê a OP e retoma da primeira operação pendente — **a perda máxima é a tarefa em voo**, nunca o
+lote. O contrapeso está no próprio SOP: plano de até ~4 tarefas roda numa invocação única — o apontamento
+por operação só se paga em lote grande.
+
+---
+
+## 4.5 Skill vs. Agent vs. Command — o quadro que tira a dúvida
 
 | Conceito | Papel na fábrica | Onde mora a inteligência |
 |---|---|---|
@@ -107,15 +127,18 @@ que o `CLAUDE.md §6` proíbe.
 
 ---
 
-## 4.5 O que levar deste capítulo
+## 4.6 O que levar deste capítulo
 
-- A skill é a **ordem de produção**, não a estação. A inteligência mora no agente.
+- A skill é a **ordem de produção**, não a estação. A inteligência mora no agente. São 17: 9 finas + 8
+  autocontidas.
 - O **acionamento fino** entrega três coisas: contexto limpo, custo menor e fonte única de verdade (zero
   duplicação skill↔agente).
 - O `description` em formato `Use when:` é um **contrato semântico** que dispara a ordem certa e
   desambigua das parecidas.
 - Skills **robustas** existem para **fixar procedimentos que não podem ser pulados** — governança, não
   tamanho.
+- Plano grande roda como **OP com apontamento por operação**: orquestrador quente, worker descartável
+  por fase, diário write-ahead — perda máxima é a tarefa em voo.
 - Não usamos commands de propósito: as skills já fazem o papel, melhor, sem duplicar mecanismo.
 
 **Próximo:** [Capítulo 5 — Poka-yoke e Andon (`.claude/hooks/`)](capitulo-05-pokayoke-e-andon.md).

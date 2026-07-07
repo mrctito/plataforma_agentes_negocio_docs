@@ -23,12 +23,12 @@ são densos (o de logs tem centenas de linhas). Misturar tudo tornaria cada turn
 solução é a de uma fábrica enxuta (e de um bom software): **norma estreita na parede + instruções de
 trabalho carregadas na estação, sob demanda.**
 
-As `rules/` dividem-se em dois tipos:
-
-- **Especificações profundas** (instruções de trabalho): a versão completa de um procedimento. Ex.:
-  `log-instructions.md`.
-- **Registros de melhoria contínua** (o diário de bordo da fábrica): memória viva que muda a cada turno.
-  Ex.: `lessons.md`, `error-backlog.md`.
+São **20 especificações** hoje — e há um detalhe de engenharia na forma de entrega: **19 das 20 declaram
+no cabeçalho (`paths:`) a quais arquivos se aplicam**, e a instrução é injetada automaticamente quando o
+trabalho toca aquele caminho — inclusive quando o "caminho" é o arquivo de uma estação (a regra entra
+junto quando a estação opera). É **injeção de dependência de contexto**: nenhuma estação copia a
+especificação, então nenhuma cópia desatualiza. A única exceção sem `paths:` é `qualidade-texto.md`, que
+vale para todo texto.
 
 ---
 
@@ -64,11 +64,12 @@ paralelismo real, erros e estado final.
 ### `reuso-instructions.md` — a especificação do "consulte o almoxarifado antes de fabricar"
 
 Antes de criar qualquer classe, helper, service, adapter, resolver, validator: é **obrigatório**
-pesquisar o que já existe, consultar `docs/README-TOOLS-LIB.md`, ler os candidatos, e só então — com
-justificativa — fabricar algo novo.
+pesquisar o que já existe, consultar `docs/tecnico/README-TOOLS-LIB.md`, ler os candidatos, e só então —
+com justificativa — fabricar algo novo.
 
-**O que força:** uma ordem de 9 passos que termina em "somente depois disso considerar criar algo novo",
-com postura de **advogado do diabo**: "em fábrica madura, peça nova é rara".
+**O que força:** uma ordem de **6 passos** (identificar candidatos → buscar no código → ler direto →
+entender a intenção → avaliar se resolve/evolui → **só então** considerar criar algo novo), com postura
+de **advogado do diabo**: "em fábrica madura, peça nova é rara".
 
 **Problema que evita:** duplicação. Refabricar um componente que já existe gera **divergência de
 comportamento** (dois jeitos de fazer a mesma coisa, que evoluem diferente), dobra a manutenção e espalha
@@ -79,7 +80,8 @@ inconsistência. E um achado-chave: se a busca encontra **duas** soluções para
 
 ### `definicao-de-pronto.md` — o procedimento de inspeção final (anti-falso-verde)
 
-A versão profunda do `CLAUDE.md §14`. Define "pronto" de forma **falsificável**.
+O portão de saída que já viveu na Norma raiz e hoje é SOP dedicado. Define "pronto" de forma
+**falsificável**.
 
 **O conceito central — falso-verde:** "quando a entrega parece correta porque ensaios isolados passaram,
 a documentação foi atualizada ou uma peça nova foi criada, mas a linha oficial em runtime ainda não usa a
@@ -143,44 +145,109 @@ Definem como uma estação entrega à próxima sem perder informação:
 > configuração — as estações *referenciam* o procedimento, não o redefinem. A fábrica obedece às mesmas
 > regras que impõe ao produto.
 
+### As especificações de governança da própria linha
+
+Além das instruções de operação, um grupo de SOPs governa **como a fábrica trabalha** — investigação,
+custo, paralelismo e texto:
+
+- **`loops-estrategicos.md` — o contrato dos dois motores.** Declara os dois loops como features de
+  primeira classe: **Loop 1**, auto-correção por log (erro real de backend → capturar `correlation_id` →
+  abrir o log oficial → cara-crachá log × código até a causa **provada** — proibido declarar
+  "ambiente/credencial/sem dado" por inferência); **Loop 2**, memória de rodada (registrar cada tentativa
+  falsificada para não repetir beco sem saída na mesma campanha). É a fonte do Kaizen real (§2.2).
+- **`regras_uso_subagentes.md` — a política de custo por estação.** Define quando um subagente pode usar
+  o modelo barato, com **duas travas**: (1) **trava do falso negativo** — quem entrega afirmação de
+  ausência/completude ("não existe", "está vazio", "cobertura total") fica no modelo forte, porque saída
+  verificável prova precisão, nunca recall; (2) **baixe o effort antes de baixar o tier**. Pergunta de
+  corte: "se esse subagente errar, o principal percebe e corrige fácil?"
+- **`ferramentas-acesso-dados.md` — o inventário de instrumentos de medição.** "LEIA ANTES de dizer 'não
+  tenho como verificar'": catálogo dos scripts prontos de `.claude/scripts/` (Qdrant, PostgreSQL, Redis,
+  filas, scheduler, logs) que tocam a **fonte de verdade real**; proibido reinventar acesso ad-hoc quando
+  há ferramenta pronta.
+- **`disciplina-investigacao-teste.md` — a trava anti-teste-raso.** Falha, vazio ou erro são o **início**
+  da investigação: enumerar hipóteses → testar cada uma na fonte real → só rotular a causa depois de
+  esgotá-las. Distingue camadas que se parecem ("tabela-registro vazia" ≠ "store físico vazio").
+- **`execucao-plano-resumivel.md` — a produção com apontamento por operação.** Orquestrador quente na
+  janela principal + worker descartável por fase + **diário write-ahead** por tarefa no arquivo do plano;
+  perda máxima numa queda = a tarefa em voo. Contrapeso: plano de até ~4 tarefas não se fracionar.
+  *(Detalhe no [Cap. 4](capitulo-04-ordem-de-producao.md).)*
+- **`qualidade-texto.md` — a especificação do texto.** Anti-linguiça **e** anti-lacuna: mede densidade de
+  valor por linha, nunca tamanho. Conteúdo necessário entra mesmo longo; redundante sai mesmo curto.
+- **`worktree.md` — o procedimento de células paralelas.** Como criar e operar worktrees isoladas
+  (naming fixo `worktree-codex`/`worktree-claude`, setup de `.env`/`.venv`, foco exclusivo na própria
+  célula) — imposto por um dispositivo de intertravamento (ver [Cap. 5](capitulo-05-pokayoke-e-andon.md)).
+
+### A prateleira completa — os 20 SOPs
+
+| SOP | Em uma linha |
+|---|---|
+| `log-instructions.md` | O registro de processo (raio-X): correlation_id, campos canônicos, builders |
+| `reuso-instructions.md` | Almoxarifado antes de fabricar: 6 passos, advogado do diabo |
+| `definicao-de-pronto.md` | Inspeção final anti-falso-verde: pronto = ativo no runtime |
+| `suite-testes-instructions.md` | O procedimento de ensaios: modos, `--run-id`, telemetria |
+| `python.md` | A especificação do material: tipagem, mocks, markers, retry |
+| `large-repo-navigation.md` | Navegar a planta enorme: âncora, slices, "busca localiza, leitura comprova" |
+| `estrategia-recomendacoes.md` | Contrato de passagem de bastão PCP → fabricação |
+| `fidelidade-pedido-usuario.md` | O pedido do cliente não evapora no meio da linha |
+| `loops-estrategicos.md` | Os dois motores: correção por log + memória de rodada |
+| `regras_uso_subagentes.md` | Custo por estação: tier de modelo com as duas travas |
+| `ferramentas-acesso-dados.md` | Instrumentos prontos para tocar a fonte de verdade real |
+| `disciplina-investigacao-teste.md` | Anti-teste-raso: esgotar hipóteses na fonte real |
+| `execucao-plano-resumivel.md` | Ordem de produção com apontamento por operação (write-ahead) |
+| `qualidade-texto.md` | Anti-linguiça + anti-lacuna em todo texto |
+| `worktree.md` | Células de produção paralelas isoladas |
+| `ambiente-local.md` | Operar a planta local: FastAPI, porta presa, navegador |
+| `componente-chat-embutivel.md` | Contrato do componente de chat embutível |
+| `dyn-sql-tools-registro.md` | Contrato das tools SQL dinâmicas (YAML-first + registro) |
+| `padrao-listas-perguntas-teste.md` | Padrão das listas de perguntas usadas nos ensaios |
+| `subagentes-descricao-instructions.md` | Regra arquitetural das descrições de subagentes |
+
 ---
 
-## 2.2 O registro de melhoria contínua (o diário de bordo / Kaizen)
+## 2.2 O mecanismo real de melhoria contínua (o Kaizen da fábrica)
 
-Estes quatro arquivos não são especificações fixas — são **memória que muda a cada turno**. É aqui que a
-fábrica "aprende com a produção".
+Aqui a fábrica "aprende com a produção" — mas não por um diário central que alguém preenche no fim do
+turno. O mecanismo real tem **três camadas**, cada uma com sua vida útil:
 
-| Arquivo | Papel na fábrica | O que registra |
-|---|---|---|
-| `lessons.md` | A lição de processo, gravada | Apenas lições com **valor preventivo transversal** — regras que mudam como as estações pensam em mais de um slice |
-| `error-backlog.md` | O relatório de não-conformidade | Todo defeito real de produto (com cenário, módulo, evidência) |
-| `regression-logs.md` | A reincidência de defeito | Defeito já registrado que **voltou** — tratado como falha grave da ação corretiva |
-| `bad-instructions.md` | A auditoria da própria norma | Contradições, ambiguidades e lacunas nas próprias instruções |
+1. **O contrato (`loops-estrategicos.md`):** todo erro real dispara o Loop 1 (prova forense por log) — a
+   fábrica **não pode** rotular a causa sem evidência. É o que gera matéria-prima de aprendizado
+   confiável: causa provada, não achismo.
+2. **A memória de rodada (Loop 2):** dentro de uma campanha de correção, cada tentativa é registrada com
+   evidência (erro dominante, hipótese, checagem discriminante, ação, resultado) e **relida antes de cada
+   nova hipótese** — a campanha não repete beco sem saída. É memória **efêmera, local ao lote**.
+3. **A promoção com gate (o Kaizen durável):** quando uma rodada revela uma **regra preventiva durável
+   comprovada**, ela é promovida para o arquivo `licoes-aprendidas.md` **do agente** que a aprendeu — com
+   o contrapeso explícito de "**não promover ruído operacional local**". As memórias reais existem e têm
+   volume: `corrigir-erros-com-log` e `testar-ingestao-dnit` acumulam dezenas de KB de lições cada um.
 
-**A engenharia por trás:** `lessons.md` tem **curadoria rígida** — não é diário nem backlog. Antes de
-promover uma lição, a pergunta obrigatória é: *"se outra estação operar amanhã em outro slice, esta regra
-ainda reduziria chance real de defeito?"* Se não, fica na memória local. Isso impede que o registro
-central vire um depósito inútil.
+**A engenharia por trás:** separar o **efêmero** (memória de rodada, morre com o lote) do **durável**
+(lição promovida, protege os próximos lotes), com um gate humano-auditável no meio. Antes de promover, a
+pergunta é a mesma de sempre: *"se este agente operar amanhã em outro lote, esta regra ainda reduziria
+chance real de defeito?"* Se não, fica na rodada. Isso impede que o registro durável vire depósito
+inútil. E o fecho do ciclo é **curadoria humana**: lição durável que pede mudança de contrato vira edição
+da Norma ou de um SOP — pelo humano, não por auto-escrita.
 
-**Valor:** **Kaizen** — melhoria contínua **institucional** (o know-how fica na empresa, não na pessoa).
-E note a simetria: este diário é alimentado automaticamente pelos dispositivos de início e fim de turno
-(ver [Cap. 5](capitulo-05-pokayoke-e-andon.md)) — a fábrica é *lembrada* de aprender.
+**Valor:** **Kaizen** — melhoria contínua **institucional** (o know-how fica na empresa, não na pessoa),
+com uma honestidade importante: o gatilho é o **defeito provado**, não um lembrete automático de fim de
+turno.
 
-> 🧑‍💼 **RESUMO EXECUTIVO.** Este é o mecanismo que faz a produção ficar **melhor com o tempo, sozinha**.
-> Cada defeito vira uma regra que previne o próximo. É capitalização de conhecimento: o que aprendemos
-> numa quarta protege todos os lotes da quinta em diante.
+> 🧑‍💼 **RESUMO EXECUTIVO.** Este é o mecanismo que faz a produção ficar **melhor com o tempo**. Cada
+> defeito provado vira uma regra que previne o próximo — com um filtro que separa lição de ruído. É
+> capitalização de conhecimento: o que aprendemos numa quarta protege todos os lotes da quinta em diante.
 
 ---
 
 ## 2.3 O que levar deste capítulo
 
-- `rules/` é o **conhecimento de processo carregado sob demanda** — o detalhe que não cabe na Norma.
+- `rules/` são os **20 SOPs carregados sob demanda** — 19 deles injetados por caminho (`paths:`), o
+  detalhe que não cabe na Norma entregue no momento exato da operação.
 - As **especificações profundas** (log, reuso, pronto, suíte, python, large-repo) são as instruções de
-  trabalho de cada operação.
+  trabalho de cada operação; as de **governança** (loops, subagentes, acesso a dados, investigação,
+  plano resumível, texto, worktree) definem como a própria linha trabalha.
 - Os **contratos de passagem de bastão** (estratégia, fidelidade) existem em arquivo próprio para **não
   duplicar** entre estações — DRY na própria config.
-- O **registro de melhoria contínua** (lessons, error-backlog, regression, bad-instructions) é o Kaizen
-  que faz a fábrica melhorar com o tempo.
+- O **Kaizen real** é o trio contrato dos loops + memória de rodada + promoção com gate para o
+  `licoes-aprendidas.md` de cada agente — efêmero separado do durável, com curadoria humana no contrato.
 - A regra de ouro recorrente: **"se divergir do código executável, o código vence"** — a doc nunca se
   acha dona da verdade.
 

@@ -43,6 +43,20 @@ Três linhas de instrução. Nenhuma regra de negócio. Só a convocação. Esse
 > mudança tem um único lugar — isso é o Princípio da Responsabilidade Única aplicado à própria
 > configuração da IA.
 
+### A exceção instrutiva: `/implementar` carrega a prancheta de despacho
+
+A skill `/implementar` continua fina sobre o **como executar** (isso vive no agente), mas carrega uma
+política inteira da **camada de despacho**: a orquestração resumível de plano (fonte única:
+`execucao-plano-resumivel.md` — [Cap. 2](capitulo-02-rules-playbook.md)). A janela principal vira o
+**orquestrador quente** — nunca re-onboarda, segura o plano e despacha **uma fase por vez** (~3
+tarefas) a um **worker descartável** (o agente `implementar`), que grava o status **por tarefa** no
+arquivo do plano (**diário write-ahead**) antes de morrer. Um timeout perde no máximo a tarefa em voo —
+nunca a fase, nunca o plano. E o contrapeso anti-burocracia: plano de até ~4 tarefas roda numa
+invocação única, sem fracionar.
+
+Por que essa política mora na skill, e não no agente? Porque ela pertence a **quem despacha** (a
+janela principal), não a quem executa. Cada regra no lugar do seu dono — o mesmo SRP de sempre.
+
 ---
 
 ## 4.2 A engenharia do `description` (o frontmatter que dispara o jogo)
@@ -67,17 +81,33 @@ Isso **não é decoração**. É um contrato semântico com três funções de e
    a fronteira da skill.
 
 **Problema que evita:** a ferramenta errada para o trabalho — investigar quando era para corrigir,
-planejar quando era para só analisar. Em um time de 22 especialistas, saber **quem chamar** é metade
+planejar quando era para só analisar. Em um time de 20 especialistas, saber **quem chamar** é metade
 da qualidade.
 
 ---
 
 ## 4.3 As skills que fogem do padrão (conteúdo próprio robusto)
 
-Nem toda skill é fina. Algumas — quase todas de **teste/validação de fluxo real** — carregam um
-procedimento completo embutido: `corrigir-com-log`, `auditoria-suite-testes`, `testar-webchat`,
-`testar-webchat-dnit`, `testar-nl2sql`, `testar-nl2yaml`, `testar-paginas-web-projeto`, e a referência
-técnica `playwright-cli`.
+Nem toda skill é fina. Das **17 skills**, **9 são dispatchers finos** (`analisar-log`, `criar-testes`,
+`executar-testes`, `implementar`, `inventario-componentes-genericos`, `investigar`, `planejar`,
+`testar-ingestao-dnit`, `validar-entrega`) e **8 são autocontidas** — quase todas de **teste/validação
+de fluxo real**, com o procedimento completo embutido:
+
+- **`corrigir-com-log`** — a correção forense dirigida por `correlation_id` (a porta de entrada do
+  Loop 1 — Cap. 2.2);
+- **`auditoria-suite-testes`** — roda a auditoria da suíte oficial em loop, com telemetria por
+  tentativa;
+- **`testar-webchat`** — três interfaces de chat em loop teste → correção → teste, até 100% verde com
+  comprovação das respostas;
+- **`testar-webchat-dnit`** — a bateria de perguntas de engenharia nos dois webchats na mesma rodada,
+  com relatório e telemetria por pergunta e por alvo;
+- **`testar-nl2sql`** — prova a geração de SQL revisável em linguagem natural (guardrail, diagnostics
+  e o handoff opcional para query governada);
+- **`testar-nl2yaml`** — gera briefings de negócio a partir dos artefatos reais do YAML e valida se a
+  engine reconstrói agentes/workflows equivalentes;
+- **`testar-paginas-web-projeto`** — abre a página real no navegador, inspeciona DOM, console e
+  requests, e corrige com evidência;
+- **`playwright-cli`** — a referência técnica de automação de navegador usada pelas demais.
 
 **Por que essas são "gordas"?** Porque o procedimento delas é um **ciclo obrigatório e iterativo** que
 **não pode ser violado por conveniência**: enviar a pergunta real → capturar o `correlation_id` da
@@ -114,9 +144,13 @@ o tipo de duplicação que o `CLAUDE.md §6` proíbe.
 
 ## 4.5 O que levar desta posição para a aula
 
-- A skill é o **apito de convocação**, não o jogador. A inteligência mora no agente.
+- A skill é o **apito de convocação**, não o jogador. A inteligência mora no agente. São **17**: 9
+  dispatchers finos + 8 autocontidas.
 - O **atalho fino** entrega três coisas: contexto limpo, custo menor e fonte única de verdade (zero
   duplicação skill↔agente).
+- A exceção instrutiva: `/implementar` carrega a **política de despacho** (orquestrador quente +
+  worker descartável + diário write-ahead) — porque essa regra pertence a quem despacha, não a quem
+  executa.
 - O `description` em formato `Use when:` é um **contrato semântico** que dispara a skill certa e
   desambigua das parecidas.
 - Skills **gordas** existem para **fixar procedimentos que não podem ser pulados** — governança, não

@@ -7,8 +7,9 @@
 >
 > ⚠️ **Aviso honesto de engenharia.** A maioria destes indicadores **ainda não é coletada
 > automaticamente** hoje — este documento é a **proposta de medição**, não um relatório de números
-> existentes. Vários sinais já existem na forma bruta (telemetria da suíte, `error-backlog.md`,
-> `regression-logs.md`, logs por `correlation_id`); transformá-los em indicador é um trabalho a fazer.
+> existentes. Vários sinais já existem na forma bruta (telemetria da suíte, relatórios `validacao--*.md`,
+> `licoes-aprendidas.md` dos agentes, logs por `correlation_id`); transformá-los em indicador é um
+> trabalho a fazer.
 > Não apresente estes números como se já estivessem sendo medidos.
 
 > 🧑‍💼 **RESUMO EXECUTIVO.** Três perguntas que a liderança deve conseguir responder com número, não
@@ -35,10 +36,10 @@ Um erro clássico é medir **atividade** ("quantas tarefas a IA fez", "quantas l
 
 | Indicador | Como calcular | Fonte de dados | Lê como |
 |---|---|---|---|
-| **Taxa de aprovação na 1ª validação** | entregas APROVADAS sem retorno ÷ total validado | relatórios de `validar-entrega` em `.sandbox` | ↑ = plano e execução estão maduros |
-| **Taxa de retorno (bola que volta)** | entregas REPROVADAS que voltaram ao `planejar` ÷ total | relatórios de `validar-entrega` | Saudável **não é zero** — zero pode ser validação frouxa |
-| **Densidade de regressão** | itens novos em `regression-logs.md` ÷ período | `regression-logs.md` | ↑ = correções não estão atacando a causa raiz |
-| **Idade do bug ao corrigir** | tempo entre 1º registro no log e correção | `correlation_id` + `error-backlog.md` | ↓ = observabilidade está ajudando o diagnóstico |
+| **Taxa de aprovação na 1ª validação** | entregas APROVADAS sem retorno ÷ total validado | relatórios `validacao--*.md` em `docs/.interno/.planos/` | ↑ = plano e execução estão maduros |
+| **Taxa de retorno (bola que volta)** | entregas REPROVADAS que voltaram ao `planejar` ÷ total | relatórios `validacao--*.md` | Saudável **não é zero** — zero pode ser validação frouxa |
+| **Densidade de regressão** | mesmo erro/`event_name` reaparecendo em novas correlações após correção | logs por `correlation_id` (`src.log_analyzer`) + git log das correções | ↑ = correções não estão atacando a causa raiz |
+| **Idade do bug ao corrigir** | tempo entre 1º log do erro e o commit da correção | `correlation_id` + git log | ↓ = observabilidade está ajudando o diagnóstico |
 
 > **O contraintuitivo:** a "taxa de retorno" **não deve ser zero**. Se o `validar-entrega` nunca reprova
 > nada, desconfie — ou o time está perfeito (improvável) ou a validação virou carimbo. Um sistema
@@ -50,14 +51,15 @@ Um erro clássico é medir **atividade** ("quantas tarefas a IA fez", "quantas l
 
 | Indicador | Como calcular | Fonte | Lê como |
 |---|---|---|---|
-| **Lições transversais promovidas** | nº de lições novas em `lessons.md` ÷ período | `lessons.md` (git log) | ↑ controlado = o time captura aprendizado |
-| **Reincidência** | erros do `error-backlog` que reaparecem em `regression-logs` | cruzamento dos dois arquivos | ↓ = lições estão de fato prevenindo |
-| **Razão de reuso** | quantas vezes um componente do inventário foi reutilizado | `README-TOOLS-LIB.md` + buscas | ↑ = duplicação está sendo evitada |
-| **Saúde das instruções** | nº de itens abertos em `bad-instructions.md` | `bad-instructions.md` | ↓ ao longo do tempo = contratos amadurecendo |
+| **Lições duráveis promovidas** | nº de lições novas nos `licoes-aprendidas.md` dos agentes ÷ período | git log de `.claude/agents/*/licoes-aprendidas.md` | ↑ controlado = o sistema captura aprendizado |
+| **Reincidência pós-lição** | erro de família já coberta por lição promovida que volta a ocorrer | logs por `correlation_id` × lições promovidas | ↓ = lições estão de fato prevenindo |
+| **Razão de reuso** | quantas vezes um componente do inventário foi reutilizado | `docs/tecnico/README-TOOLS-LIB.md` + buscas | ↑ = duplicação está sendo evitada |
+| **Maturidade dos contratos** | churn corretivo dos arquivos de governança ÷ período | git log de `CLAUDE.md` + `.claude/rules/` | ↓ ao longo do tempo = contratos amadurecendo |
 
-> **Cuidado com o `lessons.md`:** "mais lições" **não é sempre melhor**. A regra de curadoria existe
-> justamente para o arquivo não virar lixão. O indicador saudável é **lições promovidas com qualidade**
-> (passaram no teste de promoção), não volume bruto.
+> **Cuidado com o `licoes-aprendidas.md`:** "mais lições" **não é sempre melhor**. O porteiro de
+> promoção existe justamente para o arquivo não virar lixão (*"não promover ruído operacional local"*).
+> O indicador saudável é **lições promovidas com qualidade** (regra preventiva durável comprovada), não
+> volume bruto.
 
 ---
 
@@ -68,7 +70,7 @@ Estes são os mais importantes e os mais esquecidos. Eles detectam quando a equi
 | Sinal de burla | Como detectar | O que significa |
 |---|---|---|
 | **Implementação sem investigação/plano** | tarefas que foram direto ao `/implementar` | Pulou o eixo — risco de escopo inflado e falso-verde |
-| **`src/` editado sem `tests/`** | o nudge `stop-loop` já sinaliza; contar a frequência | Cobertura sendo negligenciada |
+| **`src/` editado sem `tests/`** | hoje: revisão do diff (o hook `stop-loop-reminder.sh` existe para sinalizar isto, mas **não está plugado** — proposta, wiring pendente) | Cobertura sendo negligenciada |
 | **Disparos de guard** | quantas vezes o `bash-guard` bloqueou (destrutivo/varredura) | Alto e recorrente = falta treino ou há automação perigosa |
 | **Nudges ignorados repetidamente** | mesmos sinais do `logging-nudge` reaparecendo | Disciplina de log/Python erodindo |
 | **Excesso de "APROVADO COM RESSALVAS"** | proporção sobre o total aprovado | Qualidade entrando por baixo do radar |
@@ -84,11 +86,10 @@ Estes são os mais importantes e os mais esquecidos. Eles detectam quando a equi
 
 Não tente instrumentar tudo de uma vez. Ordem sugerida, do mais barato ao mais elaborado:
 
-1. **Manual / mensal (custo quase zero):** contar itens em `error-backlog.md`, `regression-logs.md`,
-   `lessons.md`, `bad-instructions.md` por período (um `git log` resolve). Já responde "estamos
-   aprendendo?".
-2. **Semi-automático:** um script que varre os relatórios em `.sandbox` (`validacao--*.md`) e conta os
-   status (APROVADO / RESSALVAS / REPROVADO / BLOQUEADO). Responde "a qualidade está subindo?".
+1. **Manual / mensal (custo quase zero):** contar lições promovidas nos `licoes-aprendidas.md` dos
+   agentes por período (um `git log` resolve). Já responde "estamos aprendendo?".
+2. **Semi-automático:** um script que varre os relatórios em `docs/.interno/.planos/` (`validacao--*.md`)
+   e conta os status (APROVADO / RESSALVAS / REPROVADO / BLOQUEADO). Responde "a qualidade está subindo?".
 3. **Automático:** agregar a telemetria da suíte (`telemetry.json`) e eventos de log por `correlation_id`
    num painel. Responde "o processo está sendo seguido?".
 
@@ -111,8 +112,9 @@ Não tente instrumentar tudo de uma vez. Ordem sugerida, do mais barato ao mais 
 - Meça **resultado** (qualidade sobe?), **aprendizado** (erra menos o mesmo?) e **integridade**
   (processo seguido?).
 - **Integridade é o indicador mais negligenciado e o mais importante** — sem ele, o resultado mente.
-- Vários sinais já existem em bruto (`error-backlog`, `regression-logs`, relatórios de validação,
-  telemetria). Falta **agregá-los** — e isso é um trabalho a fazer, não um número pronto.
+- Vários sinais já existem em bruto (`licoes-aprendidas.md` dos agentes, relatórios de validação,
+  telemetria, logs por `correlation_id`). Falta **agregá-los** — e isso é um trabalho a fazer, não um
+  número pronto.
 - Cuidado com vaidade: linhas geradas e tarefas concluídas **não** são qualidade.
 
 > **Frase para a liderança:** "A pergunta não é 'a IA fez muito?'. É 'a qualidade subiu, o time errou

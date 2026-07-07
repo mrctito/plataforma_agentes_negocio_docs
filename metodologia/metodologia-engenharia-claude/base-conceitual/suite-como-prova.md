@@ -4,7 +4,7 @@
 > runtime* (anti-falso-verde, na [Definição de Pronto](../README.md)). Este documento explica **o
 > mecanismo concreto que produz essa prova**: a suíte oficial de testes. Ele é sobre o **papel
 > metodológico** da suíte — *por que ela existe e o que ela garante*. O **guia operacional** (comandos,
-> modos, flags) vive em `docs/README-TESTS.MD` e o contrato normativo em
+> modos, flags) vive em `docs/.interno/README-TESTS.MD` e o contrato normativo em
 > `.claude/rules/suite-testes-instructions.md`; este documento **não os repete** — aponta para eles.
 
 > 🧑‍💼 **RESUMO EXECUTIVO.** A pergunta perigosa é: *"como sei que passou de verdade, e não que alguém
@@ -123,4 +123,4 @@ resumível nem a integração com os gates do repositório. Em uma frase:
 [Ciclo de Vida do Software](ciclo-de-vida-software.md) · [Indicadores](indicadores.md) ·
 [↩ Índice da metodologia](../README.md)
 ·
-*Operacional:* `docs/README-TESTS.MD` · *Contrato normativo:* `.claude/rules/suite-testes-instructions.md`
+*Operacional:* `docs/.interno/README-TESTS.MD` · *Contrato normativo:* `.claude/rules/suite-testes-instructions.md`

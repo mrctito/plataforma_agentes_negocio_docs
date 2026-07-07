@@ -5,10 +5,10 @@
 > **Parte da fábrica:** os agentes são as **estações de trabalho de verdade**. Cada uma tem cérebro
 > próprio, contexto isolado, um conjunto de ferramentas e uma função exclusiva. Entram em operação quando
 > acionadas por uma ordem de produção (Cap. 4), produzem segundo a Norma (Cap. 1) consultando as
-> especificações de processo (Cap. 2), sob a vigilância dos dispositivos à prova de erro (Cap. 5). São 22
+> especificações de processo (Cap. 2), sob a vigilância dos dispositivos à prova de erro (Cap. 5). São 20
 > — e o segredo não é o número, é a **divisão de funções**: cada estação faz uma coisa, e a faz com rigor.
 
-> 🧑‍💼 **RESUMO EXECUTIVO.** Em vez de uma "IA genérica que faz tudo mais ou menos", temos **22 postos
+> 🧑‍💼 **RESUMO EXECUTIVO.** Em vez de uma "IA genérica que faz tudo mais ou menos", temos **20 postos
 > especializados que fazem uma coisa muito bem**. É exatamente o que uma fábrica madura faz: ninguém é
 > "faz-tudo"; há o inspetor de entrada, o engenheiro de processo, o montador, o controle de qualidade, o
 > laboratório, a manutenção. A especialização é o que produz qualidade consistente e permite auditar quem
@@ -46,7 +46,8 @@ Estas quatro formam o fluxo oficial de quase todo trabalho não-trivial.
   - **Zero alucinação:** proibido especular, presumir ou deduzir de nome/comentário; toda afirmação
     precisa de `read` com filepath e linhas.
   - **Escopo efetivo:** define no início o que é e o que não é o alvo.
-  - **Materialização obrigatória:** o laudo precisa existir como arquivo em `.sandbox/`, não só no chat.
+  - **Materialização obrigatória:** o laudo precisa existir como arquivo em `docs/.interno/.planos/`,
+    não só no chat — resposta só na conversa é entrega inválida.
 - **Defeito que evita:** **medição inventada** (tratar peça que "deveria existir" como existente) e
   **falsa confiança** (laudo "alta confiança" sem ter lido o código-chave).
 - **Passe:** entrega ao PCP (`planejar`). Medição ruim = roteiro ruim. Por isso a inspeção de entrada é a
@@ -188,39 +189,43 @@ Estações que **provam que a linha funciona** antes da produção oficial.
   Status **binário**: SUCESSO ou ERRO, sem "parcial".
 - **`testar-cancelamento-ingestao-dnit`:** ensaia **exclusivamente** a capacidade de **parar** quando
   pedido — prova no log que o processamento de fato cessou (não só que a UI disse "cancelado").
-- **`testar-webchat`, `testar-webchat-dnit`, `testar-nl2sql`, `testar-nl2yaml`, `testar-paginas-web-projeto`:**
-  validam interfaces reais (chat, geração de SQL/YAML, páginas), sempre capturando o `correlation_id` da
-  response real e corrigindo por log.
 
-**Defeito que todas evitam:** o "passou na minha bancada". Estas estações provam comportamento em
+> 🛠️ **Nota de inventário:** `testar-webchat`, `testar-webchat-dnit`, `testar-nl2sql`, `testar-nl2yaml`
+> e `testar-paginas-web-projeto` também ensaiam interfaces reais (chat, geração de SQL/YAML, páginas,
+> sempre capturando o `correlation_id` da response e corrigindo por log) — mas são **ordens de produção
+> (skills) com procedimento próprio**, não estações: rodam na janela principal, sem agente dedicado.
+> O porquê dessa escolha está no [Cap. 4](capitulo-04-ordem-de-producao.md).
+
+**Defeito que todas evitam:** o "passou na minha bancada". Estes ensaios provam comportamento em
 **execução real**, com evidência de três fontes, não em simulação.
 
 ---
 
 ## 3.5 Engenharia da qualidade e documentação — governança e conhecimento
 
-Seis estações que cuidam do conhecimento e da consistência institucional.
+Cinco estações que cuidam do conhecimento e da consistência institucional.
 
 - **`documentar`:** produz documentação profunda (técnica + executiva + comercial), lendo o **código como
   fonte de verdade**, nunca a doc existente. Proíbe documento raso e inventário de arquivos.
 - **`sincronizar-documentacao`:** mantém `docs/` sincronizado com o código real ao longo do tempo,
   evitando a "doc que mente". Gera FAQ de onboarding para o consultor júnior.
 - **`inventario-componentes-genericos`:** cataloga o que já existe e pode ser reutilizado, alimentando
-  `docs/README-TOOLS-LIB.md`. É o "inventário do almoxarifado" — base do gate de reuso.
+  `docs/tecnico/README-TOOLS-LIB.md`. É o "inventário do almoxarifado" — base do gate de reuso.
 - **`inventario-yaml`:** caça **só problemas** de YAML × código — chaves órfãs, ausentes, duplicadas,
   desalinhamento com a AST, ensaios ausentes. Não lista o que está certo.
-- **`validar-instructions`:** audita as próprias instruções (a Norma e os SOPs) em busca de contradição,
-  redundância, ambiguidade — consultando a doc oficial mais recente. Registra em `bad-instructions.md`.
-  **É a fábrica auditando o próprio processo.**
 - **`analisar-produto`:** investiga a solução sob a ótica técnica, comercial e competitiva; separa
   **documentado × implementado × não encontrado**; produz insumos comerciais.
 
+A auditoria da própria configuração não tem estação dedicada: o que existe é um **validador
+determinístico** (`./validar_descricao_subagentes.sh`) para as descrições de subagentes, mais a regra de
+ouro que desarma contrato podre — **"se o SOP divergir do código executável, o código vence"**.
+
 **Defeito que todas evitam:** o apodrecimento do conhecimento — doc desatualizada, duplicação por
-desconhecimento do que existe, instruções contraditórias, promessa comercial que o produto não cumpre.
+desconhecimento do que existe, promessa comercial que o produto não cumpre.
 
 ---
 
-## 3.6 A tabela completa das estações
+## 3.6 A tabela completa das 20 estações
 
 | Estação | Setor | Função em uma linha |
 |---|---|---|
@@ -239,25 +244,44 @@ desconhecimento do que existe, instruções contraditórias, promessa comercial 
 | criar-testes | Projeto de ensaios | Amplia cobertura só onde reduz risco |
 | testar-ingestao-dnit | Lote piloto oficial | Prova a ingestão real por três fontes |
 | testar-cancelamento-ingestao-dnit | Lote piloto (parada) | Prova que o sistema para quando mandado |
-| testar-webchat / -dnit | Ensaios de interface | Provam os chats reais por log |
-| testar-nl2sql / nl2yaml | Ensaios de interface | Provam geração de SQL/YAML revisável |
-| testar-paginas-web-projeto | Ensaio de interface | Prova páginas reais no navegador |
 | documentar | Documentação técnica | Documentação profunda a partir do código |
 | sincronizar-documentacao | Documentação técnica | Mantém docs fiel ao código |
 | inventario-componentes-genericos | Engenharia da qualidade | Cataloga o reutilizável (o almoxarifado) |
 | inventario-yaml | Engenharia da qualidade | Caça problemas de YAML × código |
-| validar-instructions | Auditoria de processo | Audita as próprias instruções |
 | analisar-produto | Inteligência de mercado | Posiciona o produto com evidência |
+
+> Os ensaios de interface (`testar-webchat`, `testar-webchat-dnit`, `testar-nl2sql`, `testar-nl2yaml`,
+> `testar-paginas-web-projeto`) não estão na tabela porque **não são estações**: são ordens de produção
+> (skills) com procedimento próprio — ver a nota do §3.4 e o [Cap. 4](capitulo-04-ordem-de-producao.md).
 
 ---
 
-## 3.7 O que levar deste capítulo
+## 3.7 O custo por estação é proporcional ao risco (tiering de modelo)
+
+Nem toda estação precisa da máquina mais cara. O cabeçalho de cada agente pode fixar o **modelo** que a
+estação usa, e a distribuição real hoje é: **5 no modelo forte (opus)** — `investigar`, `planejar`,
+`implementar`, `validar-entrega`, `inventario-componentes-genericos`; **7 no modelo barato (sonnet)** —
+`analisar-log`, `documentar`, `sincronizar-documentacao`, `inventario-yaml` e os três `testar-*` de
+ingestão/CLI; **8 herdam o modelo da sessão** (as quatro `gerenciar-*`, `corrigir-erros-com-log`,
+`criar-testes`, `executar-testes`, `analisar-produto`).
+
+O critério não é "tarefa grande ou pequena" — é o **tipo de conclusão** que a estação assina
+(`regras_uso_subagentes.md`, Cap. 2): quem decide, planeja, fabrica ou **afirma ausência/completude**
+("não existe", "sem reuso", "coberto 100%") fica no forte, porque o falso negativo dessas conclusões é
+barato de cometer e caro de detectar. Repare que `inventario-componentes-genericos` — "só um catálogo" —
+está no forte exatamente por isso: a saída dele alimenta o gate de reuso, e um "não existe" errado ali
+vira peça duplicada na linha.
+
+---
+
+## 3.8 O que levar deste capítulo
 
 - Os agentes são **estações de função única e contexto isolado** — o oposto da "IA faz-tudo".
 - A **célula central** (investigar → planejar → implementar → validar) tem **contratos de propósito
   opostos** que criam checagem independente a cada passagem de bastão — segregação de funções.
 - O **laboratório** garante diagnóstico; a **manutenção** garante operação real auditável; os **ensaios**
   provam a linha na vida real; a **engenharia da qualidade** mantém o conhecimento fiel.
+- O **custo por estação é calibrado pelo risco da conclusão**, não pelo tamanho da tarefa.
 - O padrão transversal mais valioso: **medir/ler antes de agir, dry-run antes de mutar, três fontes de
   prova, status binário ou explícito.**
 

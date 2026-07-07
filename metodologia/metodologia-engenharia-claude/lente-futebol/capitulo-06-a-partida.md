@@ -20,9 +20,12 @@ qual árbitro está de olho**.
 
 ## 6.2 O jogo, lance a lance
 
-### Apito inicial — `session-start` faz a preleção
-Antes de qualquer coisa, o hook `session-start` injeta as **lições passadas** (`lessons.md`) e avisa
-quantos erros há no backlog. O time entra em campo já sabendo o que deu errado antes. *(Cap. 5)*
+### Apito inicial — a preleção já está no vestiário
+Não há hook de abertura: a preleção é o **carregamento automático do DNA**. O `CLAUDE.md` raiz entra
+em 100% das sessões e, conforme a bola toca cada setor (`src/`, `tests/`…), o `CLAUDE.md` daquele
+setor e as jogadas ensaiadas com `paths:` casando entram sozinhas no contexto. O time entra em campo
+com a filosofia e os manuais da posição já na cabeça — sem depender de ninguém lembrar de lê-los.
+*(Cap. 1 e Cap. 2)*
 
 ### 1º toque — `analisar-log` (o olheiro) lê o jogo
 Como há um erro real com rastro, o primeiro a tocar é o **olheiro**. Ele pega o `correlation_id` da
@@ -67,17 +70,20 @@ o raio-X diretamente: a escrita do log e a cobertura diagnóstica do fluxo. A re
 **teste verde não prova fluxo real**. Veredito explícito: APROVADO, COM RESSALVAS, REPROVADO ou
 BLOQUEADO. Se reprovado, ele **devolve a bola para o meia** com um inventário do que faltou. *(Cap. 3.1)*
 
-### Apito final — `stop-loop` cobra o aprendizado
-No fim, o hook `stop-loop` cobra: esse bug virou uma **lição transversal** em `lessons.md`? Foi para o
-`error-backlog`? Se mexeu em `src/` sem tocar em `tests/`, levanta a bandeira. O time sai de campo **mais
-inteligente do que entrou**. *(Cap. 5.5)*
+### Apito final — o veredito vira arquivo, e a lição durável sobe ao caderno
+O fechamento real tem dois atos. Primeiro, o **veredito do goleiro é materializado**: a validação vira
+arquivo em `docs/.interno/.planos/` (`validacao--*.md`) — auditável amanhã, não só no chat. Segundo,
+se a rodada revelou uma **regra preventiva durável e comprovada**, ela é promovida ao
+`licoes-aprendidas.md` do agente (com o gate "não promover ruído operacional local"); o que era só
+tática desta campanha fica na memória de rodada. O time sai de campo **mais inteligente do que
+entrou** — por contrato dos loops estratégicos, não por hook. *(Cap. 2.2)*
 
 ---
 
 ## 6.3 O mapa da jogada (visão de cima)
 
 ```
- session-start ─ preleção (lições passadas)
+ DNA + jogadas por caminho ─ a preleção automática (CLAUDE.md + rules com paths:)
         │
         ▼
  analisar-log ──► investigar ──► planejar ──► implementar ──► testar-ingestao ──► validar-entrega
@@ -88,7 +94,8 @@ inteligente do que entrou**. *(Cap. 5.5)*
                                                           ┌─────────────────────────────┘
                                                           ▼
                                             REPROVADO? ──► volta para planejar
-                                            APROVADO?  ──► stop-loop cobra aprendizado
+                                            APROVADO?  ──► validação materializada
+                                                           + lição durável promovida
 ```
 
 Repare: **a bola pode voltar.** O sistema não é uma esteira de mão única — é um time que recupera a
@@ -108,11 +115,11 @@ Vale fechar com o placar — o que esta tática, no conjunto, impede que aconte�
 | **Bug invisível em produção** | `log-instructions` + setor de observabilidade + `logging-nudge` |
 | **Duplicação / dívida técnica** | `reuso-instructions` + `inventario-componentes` |
 | **Over-engineering / escopo inflado** | `CLAUDE.md` ("100%" qualifica execução) + `planejar` |
-| **Regressão silenciosa** | `criar-testes` + `executar-testes` + `stop-loop` |
-| **Acidente operacional** (rm -rf, drop) | `bash-guard` (guard) + agentes de infra (dry-run) |
+| **Regressão silenciosa** | `criar-testes` + `executar-testes` + teste de regressão estrutural |
+| **Acidente operacional** (rm -rf, drop, worktree alheio) | `bash-guard` + `worktree-guard` (guards) + agentes de infra (dry-run) |
 | **Travar a sessão** com varredura de log | `bash-guard` + regra anti-varredura |
-| **Conhecimento que apodrece** | `documentar` + `sincronizar-documentacao` + caderno de aprendizado |
-| **Repetir o mesmo erro** | `session-start` + `stop-loop` + `lessons.md` |
+| **Conhecimento que apodrece** | `documentar` + `sincronizar-documentacao` + `licoes-aprendidas` por agente |
+| **Repetir o mesmo erro** | loops estratégicos (memória de rodada) + `licoes-aprendidas` por agente |
 
 ---
 

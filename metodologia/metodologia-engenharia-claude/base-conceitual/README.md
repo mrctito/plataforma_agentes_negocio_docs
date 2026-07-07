@@ -16,6 +16,7 @@
 
 | Documento | Do que trata | Quando consultar |
 |---|---|---|
+| [Mapa da Governança](mapa-governanca.md) | O mapa **fiel, arquivo a arquivo**: 7 camadas e seus mecanismos de carregamento, grafo de orquestração, catálogo de mecanismos, números do sistema e as decisões de engenharia por trás do desenho | Para entender **como o conteúdo distribuído pelos arquivos orquestra o processo** — a anatomia completa |
 | [Operar a Metodologia](operar-a-metodologia.md) | O manual de quem **dirige**: a fórmula do bom pedido, acompanhar/corrigir a execução, quando **não** implementar ainda, checklist de aceite | Para aprender **como conduzir** uma mudança por linguagem natural |
 | [A Suíte como Prova](suite-como-prova.md) | A suíte oficial como **evidência auditável**: artefatos, `run_id`, foco × fechamento, o que fazer ao falhar | Para entender **como a validação vira prova**, não opinião |
 | [Os Dois Loops](os-dois-loops.md) | Auto-correção (dentro da tarefa) × auto-aperfeiçoamento (entre tarefas) — opostos e complementares; inclui **quando registrar cada aprendizado** | Para entender **como o sistema converge e como aprende** |

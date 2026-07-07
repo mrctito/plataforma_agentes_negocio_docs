@@ -77,7 +77,8 @@ Aqui está o ponto central do apêndice. Para cada etapa, três blocos:
     recebe é **rastreável até o código**, e você confere a *evidência*, não o código.
   - **3 fases obrigatórias** (mapear → fechar lacunas → auditar observabilidade) que não podem ser
     puladas — garante que a investigação não é superficial.
-  - **Materialização obrigatória:** o relatório existe como arquivo auditável, não some no chat.
+  - **Materialização obrigatória:** o relatório existe como arquivo auditável (em
+    `docs/.interno/.planos/`), não some no chat.
 - 🧪 **Como você confere sem digitar:** lê o relatório e checa se cada achado tem evidência (path/linha).
   Se tiver, está provado; se não tiver, o próprio contrato proíbe que esteja lá.
 
@@ -109,6 +110,9 @@ Aqui está o ponto central do apêndice. Para cada etapa, três blocos:
     a checagem de "limpou a sujeira?" do code review.*
   - **Definição de pronto:** antes de declarar CONCLUÍDA, prova que o comportamento está **ativo no
     caminho oficial** e cria **teste de regressão estrutural**. Falhou? Vira BLOQUEADA.
+  - **Execução resumível em plano longo** (`execucao-plano-resumivel.md`): orquestrador na janela
+    quente + worker descartável por fase, com diário write-ahead por tarefa no próprio plano — uma
+    interrupção perde no máximo a tarefa em voo, nunca a campanha.
   - **E, em paralelo, os hooks:** a cada `.py` salvo, `py-lint`, `logging-nudge` e `py-discipline`
     levantam a bandeira para `logger.error` em `except`, f-string em log, `print()` em `src/`, teste sem
     marker, import opcional, `FOR UPDATE`… *Isso é a checagem de estilo e disciplina do code review —
@@ -177,12 +181,12 @@ faz** e mostra que **cada função já tem um dono contínuo no processo**:
 |---|---|
 | Pegar **bug de correção** | `validar-entrega` (revisor independente) + auto-correção em **execução real** + testes — pega o que olho humano em diff não pega |
 | Conferir **estilo/padrão** | hooks `py-lint`/`py-discipline` — **no instante da escrita**, determinístico, sem cansaço |
-| Garantir que **há testes** | `criar-testes` + nudge `stop-loop` (src sem tests) + teste de regressão da `definicao-de-pronto` |
-| Checar **arquitetura/design** | `planejar` (postura crítica **antes** do código) + `CLAUDE.md §6` (SOLID, limites de classe) |
+| Garantir que **há testes** | `criar-testes` + teste de regressão da `definicao-de-pronto` (o nudge `stop-loop-reminder` para "src sem tests" existe, mas ainda não está plugado — wiring pendente) |
+| Checar **arquitetura/design** | `planejar` (postura crítica **antes** do código) + `CLAUDE.md §6` (SOLID, proibição de god class e métodos longos) |
 | Evitar **duplicação** | `reuso-instructions.md` + `inventario-componentes` — busca obrigatória antes de criar |
 | Garantir **observabilidade** | `logging-nudge` + auditoria de observabilidade do `validar-entrega` |
-| Impedir **código morto/legado** | default anti-legado do `implementar` + checklist de fechamento do `CLAUDE.md §14` |
-| Barrar **risco de segurança** | `bash-guard` (guard) + `CLAUDE.md §8` (tools falha fechado) |
+| Impedir **código morto/legado** | default anti-legado do `implementar` + checklist de fechamento da `definicao-de-pronto.md` |
+| Barrar **risco de segurança** | guards que bloqueiam (`bash-guard`; `worktree-guard`, que **falha fechado**; `write-guard`) + dry-run por default nos agentes de infra |
 | Confirmar que **está realmente pronto** | `definicao-de-pronto.md` (anti-falso-verde) + `validar-entrega` |
 
 **Por que isso é superior ao code review tradicional, e não apenas equivalente:**
@@ -241,9 +245,11 @@ O `CLAUDE.md` exige postura crítica, então sejamos honestos sobre os limites:
 - **O humano não some — ele sobe de altitude.** Você ainda lê e aprova **investigação, plano e
   validação**. Isso *é* revisão — só que no nível da evidência e da decisão, não da sintaxe. Quem
   aprova um plano ruim recebe uma execução fiel a um plano ruim.
-- **A garantia é tão boa quanto os contratos.** Contrato fraco → revisão fraca. Por isso existe o
-  `validar-instructions` (auditando as próprias regras) e o `bad-instructions.md`. A qualidade dos
-  arquivos é o investimento que sustenta tudo.
+- **A garantia é tão boa quanto os contratos.** Contrato fraco → revisão fraca. E a manutenção dos
+  próprios contratos hoje é só **parcialmente automatizada**: a regra "código executável vence contrato
+  desatualizado", o validador de descrições de subagentes (`./validar_descricao_subagentes.sh`) e, no
+  resto, **curadoria humana** — contrato que se mostra ruim no uso é corrigido na hora (higiene
+  corretiva). A qualidade dos arquivos é o investimento que sustenta tudo.
 - **Decisões de produto e arquitetura realmente novas** ainda pedem julgamento humano — e o sistema é
   desenhado para **escalá-las** (status BLOQUEADA, "decisão externa", a postura crítica do `planejar`),
   não para escondê-las.

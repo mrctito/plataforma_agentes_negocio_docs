@@ -82,6 +82,10 @@ Esta é a trava mais sutil e talvez a mais importante para o custo.
   conversa principal recebe **só o resultado**.
 - **O atalho fino mantém a janela principal limpa.** A própria skill diz: *"o agente roda isolado para
   manter o contexto principal limpo e gastar menos tokens"*.
+- **Até o modelo do subagente é governado por risco** (`regras_uso_subagentes.md`), com duas travas:
+  entrega que é **afirmação de ausência/completude** ("não existe", "100% coberto") fica no **modelo
+  forte** (trava do falso negativo); e antes de rebaixar o tier por custo, **baixa-se o effort**
+  mantendo o modelo forte.
 
 **Por que isso é uma trava de escala?** Porque sem ela, cada investigação grande entupiria a sessão, e
 todo o conteúdo lido seria **pago de novo** em cada interação seguinte (o contexto é reenviado a cada
@@ -108,12 +112,13 @@ estreito sempre carregado, módulos pesados sob demanda.**
 
 ---
 
-## B.5 Trava de complexidade — limites de tamanho e reuso obrigatório
+## B.5 Trava de complexidade — anti-god-class e reuso obrigatório
 
 Duas regras do `CLAUDE.md §6` que controlam a complexidade *do código* num repositório que cresce:
 
-- **Limites de tamanho de classe:** >500 linhas = atenção, >800 = avaliação explícita antes de novo
-  código, >1000 = exceção justificada. Impede a *god class* que ninguém mais entende.
+- **Anti-god-class:** proibido god class, métodos longos e módulo com múltiplas responsabilidades — a
+  regra é **qualitativa** (responsabilidade única por unidade, coesão, fronteiras claras), sem número
+  mágico de linhas. Impede a classe que ninguém mais entende.
 - **Reuso antes de criar** (`reuso-instructions.md`): "em repositório grande, solução nova é rara". O
   agente é obrigado a procurar o que já existe **antes** de criar — e, se acha **duas** soluções para o
   mesmo problema, trata como inconsistência a unificar (proibido criar a terceira).
@@ -143,7 +148,7 @@ entre fatias, fazendo a fatia seguinte recomeçar no escuro.
 | **Anti-varredura de logs** | contrato + `bash-guard` | Congelar a sessão numa pasta gigante |
 | **Isolamento de contexto** | agentes "vão e voltam" + atalho fino | Estouro de contexto e custo |
 | **Carregamento sob demanda** | DNA enxuto + regras referenciadas | Peso desnecessário em toda sessão |
-| **Limites de complexidade** | tamanho de classe + reuso obrigatório | God class, duplicação, entropia |
+| **Limites de complexidade** | anti-god-class (§6) + reuso obrigatório | God class, duplicação, entropia |
 | **Handoff explícito** | contrato de passagem entre fatias | Perda de contexto entre etapas |
 
 > **Frase para fechar o tema:** "A IA não tem memória infinita, e o código é enorme. Em vez de fingir

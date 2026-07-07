@@ -74,7 +74,7 @@
 
 ### Slide 5 — O elenco em números
 🖥️ **TELA**
-> **22** agentes (jogadores) · **19** skills (convocações) · **12** regras (jogadas) · **7** hooks (arbitragem)
+> **20** agentes (jogadores) · **17** skills (convocações) · **20** regras (jogadas) · **7** hooks (arbitragem)
 > **0** commands — *e isso é de propósito*
 
 🎤 **FALA**
@@ -145,13 +145,15 @@
 
 ### Slide 10 — As jogadas ensaiadas (rules/)
 🖥️ **TELA**
-> `.claude/rules/` — conhecimento profundo **carregado sob demanda**
-> Contratos: logs · reuso · definição de pronto · suíte · python · large-repo
-> Caderno de aprendizado: lessons · error-backlog · regression · bad-instructions
+> `.claude/rules/` — **20 jogadas**, conhecimento profundo **carregado sob demanda** (por `paths:`)
+> Contratos: logs · reuso · definição de pronto · suíte · python · large-repo · acesso a dados…
+> Aprendizado real: loops estratégicos (correção por log + memória de rodada) → promoção a `licoes-aprendidas`
 
 🎤 **FALA**
-> "O DNA é curto de propósito. O detalhe pesado fica aqui e é consultado **na hora da jogada** — como
-> um manual de posição. É o nosso conhecimento institucional **escrito**, não na cabeça de poucos."
+> "O DNA é curto de propósito. O detalhe pesado fica aqui — são vinte manuais — e cada um entra em
+> campo **sozinho, na hora da jogada**: a regra declara os caminhos que a disparam. E o aprendizado
+> não é um arquivo central de lições: é um contrato — todo erro real dispara o loop de correção por
+> log, e só a lição durável **comprovada** é promovida ao caderno do agente."
 
 ---
 
@@ -239,13 +241,17 @@
 
 ### Slide 16 — Treinos e comissão técnica ⏩
 🖥️ **TELA**
-> **Treinos:** executar-testes · criar-testes · testar-ingestao/cancelamento/webchat/nl2sql/...
-> **Bastidores:** documentar · sincronizar-doc · inventário · validar-instructions · analisar-produto
+> **Treinos (agentes):** executar-testes · criar-testes · testar-ingestao · testar-cancelamento
+> **Jogadas de treino (skills):** webchat · nl2sql · nl2yaml · páginas web
+> **Bastidores:** documentar · sincronizar-doc · inventário ×2 · analisar-produto
+> \+ validador de descrições: `./validar_descricao_subagentes.sh`
 
 🎤 **FALA**
 > "Os treinos provam o time na **vida real** — a ingestão DNIT, por exemplo, exige **três provas
-> independentes** pra dar sucesso. E os bastidores cuidam pra que o conhecimento não apodreça: doc
-> fiel ao código, catálogo do que já existe, e até um agente que **audita as próprias instruções**."
+> independentes** pra dar sucesso. Os testes de webchat e NL2SQL/NL2YAML são **jogadas ensaiadas**
+> (skills com procedimento fixo), não jogadores. E os bastidores cuidam pra que o conhecimento não
+> apodreça: doc fiel ao código, catálogo do que já existe, um validador que audita as descrições dos
+> subagentes — e a regra de ouro: se o contrato divergir do código, **o código vence**."
 
 ---
 
@@ -270,7 +276,7 @@
 
 🎤 **FALA**
 > "Esse cabeçalho parece burocracia, mas é um **contrato semântico**. Ele ensina o sistema a chamar a
-> skill certa — e até aponta pra concorrente quando ela é a melhor escolha. Num time de 22
+> skill certa — e até aponta pra concorrente quando ela é a melhor escolha. Num time de 20
 > especialistas, saber **quem chamar** já é metade da qualidade."
 
 ---
@@ -306,12 +312,16 @@
 🖥️ **TELA**
 > bash-guard: bloqueia `rm -rf`, `drop table`, e **varredura cega de /logs** (trava a sessão!)
 > write-guard: impede teste nascer em pasta que a suíte não roda
+> worktree-guard: **cartão vermelho direto** — falha fechada; só destrava com token nominal
 
 🎤 **FALA**
 > "Coisas que **não podem** acontecer viram trava automática. Um `rm -rf`, um `drop table`, ou uma
 > listagem numa pasta com 50 mil arquivos que congela tudo. O agente nem chega a tentar — o árbitro
-> apita antes. E ele 'falha aberto': se a própria checagem der pau, ele deixa passar, pra nunca
-> atrapalhar indevidamente."
+> apita antes. O bash-guard 'falha aberto': se a própria checagem der pau, deixa passar, pra nunca
+> atrapalhar indevidamente. Já o worktree-guard é o oposto: como não dá pra provar de quem é um
+> worktree, apagar worktree é **cartão vermelho direto, sem VAR** — 'falha fechado', e só destrava
+> com um token que nomeia o alvo exato, confirmado pelo humano. Falha aberta pra não atrapalhar;
+> falha fechada pra não destruir. A escolha é pela **assimetria de risco**."
 
 ---
 
@@ -327,15 +337,19 @@
 
 ---
 
-### Slide 23 — O ciclo de aprendizado que se fecha sozinho
+### Slide 23 — A súmula honesta: quem está em campo (e quem ficou no banco)
 🖥️ **TELA**
-> `session-start` → injeta as **lições passadas** no começo (preleção)
-> `stop-loop` → **cobra** registrar novas lições no fim (vestiário)
+> Em campo: **3 travas** (bash · worktree · write) + **3 bandeirinhas** (lint · logging · disciplina)
+> No banco: `stop-loop-reminder` — **pronto, mas sem wiring** (lacuna conhecida e declarada)
+> A "preleção" não é hook: é o **DNA + jogadas carregados automaticamente**
 
 🎤 **FALA**
-> "E o detalhe mais bonito: no começo da sessão, o sistema **lembra** das lições antigas; no fim, ele
-> **cobra** que você registre as novas. O aprendizado da empresa acontece **automaticamente** — o
-> time sai de campo mais inteligente do que entrou, por construção, não por disciplina individual."
+> "E aqui uma honestidade que vale mais que marketing: a súmula real tem seis hooks em campo — três
+> que apitam e três que levantam bandeira — e **um jogador pronto no banco**, o stop-loop-reminder,
+> que lembraria 'você mexeu em src sem tocar nos testes' no fim da rodada, mas ainda não foi
+> registrado na súmula. A gente **declara** essa lacuna em vez de fingir que ele joga — porque doc
+> que mente é exatamente o que este time combate. E o aprendizado do time não depende dele: vive nos
+> **loops estratégicos** e na promoção de lições, que são contrato obrigatório, não lembrete."
 
 ---
 
@@ -354,7 +368,7 @@
 ### Slide 25 — O jogo, lance a lance
 🖥️ **TELA**
 > *(projete o mapa da jogada da [Cap. 6, seção 3](capitulo-06-a-partida.md))*
-> preleção → olheiro → zagueiro → meia → atacante → jogo real → goleiro → cobrança
+> preleção → olheiro → zagueiro → meia → atacante → jogo real → goleiro → lição promovida
 
 🎤 **FALA**
 > *(Narre seguindo o Cap. 6.2 — resumido:)*
@@ -404,9 +418,11 @@
 🎤 **FALA**
 > "Tem dois motores rodando o tempo todo, e gente confunde os dois. Um é a **auto-correção**: o sistema
 > insiste numa tarefa — executa, falha, conserta, revalida — até acertar **ou declarar que travou**, com
-> limite de tentativas pra não rodar pra sempre. O outro é o **auto-aperfeiçoamento**: no começo de cada
-> sessão o sistema lembra das lições passadas, no fim ele cobra registrar as novas. O time sai de campo
-> mais inteligente do que entrou. Um conserta o jogo; o outro muda o treino da semana."
+> limite de tentativas pra não rodar pra sempre. O outro é o **auto-aperfeiçoamento**: durante a
+> campanha, o agente registra cada tentativa numa memória de rodada — pra nunca repetir um beco sem
+> saída — e, quando uma lição durável fica **comprovada**, ela é promovida ao caderno de lições do
+> agente. O time sai de campo mais inteligente do que entrou. Um conserta o jogo; o outro muda o
+> treino da semana."
 
 🙋 **INTERAÇÃO**
 > "Qual desses dois a maioria das empresas **não** tem? *(o segundo — o conhecimento some quando a
@@ -523,7 +539,7 @@
 > 6. A garantia mora no **conteúdo dos contratos**, não no agente
 
 🎤 **FALA**
-> "Cinco ideias. Se vocês forem montar algo parecido em qualquer time — com ou sem IA — comecem por
+> "Seis ideias. Se vocês forem montar algo parecido em qualquer time — com ou sem IA — comecem por
 > essas."
 
 ---
@@ -549,7 +565,7 @@ Para responder rápido se alguém perguntar "e o que faz X?":
 
 - **CLAUDE.md** → "O DNA. Lido sempre. Vira lei, não sugestão."
 - **rules/** → "Os manuais de posição. Conhecimento pesado, consultado na hora da jogada."
-- **agents/** → "Os jogadores. 22 especialistas de função única, contexto isolado."
+- **agents/** → "Os jogadores. 20 especialistas de função única, contexto isolado."
 - **skills/** → "O apito que chama o jogador certo. Atalho fino que delega ao agente."
 - **hooks/** → "O árbitro automático. Trava (guard) ou cutuca (nudge), sem a IA decidir."
 - **correlation_id** → "O número de rastreio. Nasce uma vez, atravessa tudo, permite o raio-X."

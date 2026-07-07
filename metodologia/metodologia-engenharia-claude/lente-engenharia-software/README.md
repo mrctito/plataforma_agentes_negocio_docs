@@ -43,9 +43,9 @@ confiável, repetível e auditável.
 
 | Na fábrica de software (lean) | Na nossa engenharia | O que isso materializa |
 |---|---|---|
-| Norma da fábrica / Manual de Qualidade mestre | `CLAUDE.md` — lido em 100% das sessões | Padrão de qualidade como lei aplicada, não preferência |
-| Especificações de processo / Instruções de Trabalho (SOPs) | `.claude/rules/` — contratos profundos sob demanda | Procedimento detalhado fora do padrão enxuto |
-| Estações da linha (operadores especializados) | `.claude/agents/` — 22 especialistas | SRP, segregação de funções, contexto isolado |
+| Norma da fábrica / Manual de Qualidade mestre | `CLAUDE.md` — 6 arquivos: o raiz (lido em 100% das sessões) + 5 por área da planta | Padrão de qualidade como lei aplicada, não preferência |
+| Especificações de processo / Instruções de Trabalho (SOPs) | `.claude/rules/` — 20 contratos profundos sob demanda | Procedimento detalhado fora do padrão enxuto |
+| Estações da linha (operadores especializados) | `.claude/agents/` — 20 especialistas | SRP, segregação de funções, contexto isolado |
 | Ordem de produção / botão que aciona a estação | `.claude/skills/` — gatilhos `/comando` | Disparo fino separado do "cérebro" da estação |
 | Poka-yoke + Andon + sensores automáticos | `.claude/hooks/` — guards e nudges | Automação determinística: travar vs. alertar |
 | Roteiro de fabricação / layout mestre da linha | `.claude/settings.json` | Amarra tudo: qual dispositivo dispara em cada momento |
@@ -59,13 +59,13 @@ confiável, repetível e auditável.
 ```
                           ┌─────────────────────────────────┐
                           │   NORMA DA FÁBRICA (padrão)      │
-                          │            CLAUDE.md             │
-                          │   lida em 100% das sessões       │
+                          │  CLAUDE.md raiz + 5 por área     │
+                          │  (raiz lido em 100% das sessões) │
                           └─────────────────────────────────┘
                                        │ rege
                                        ▼
   POKA-YOKE + ANDON (hooks) ░░░ dispositivos à prova de erro, sempre ligados ░░░
-  bash-guard · write-guard · py-lint · logging-nudge · py-discipline · stop-loop
+  bash-guard · worktree-guard · write-guard (travam) · py-lint · logging-nudge · py-discipline (avisam)
 
    INSPEÇÃO        PCP            FABRICAÇÃO        CONTROLE
    DE ENTRADA      (roteiro)      (montagem)        DE QUALIDADE
@@ -80,14 +80,16 @@ confiável, repetível e auditável.
    gerenciar-postgresql · gerenciar-redis · gerenciar-job-core-ingestao · gerenciar-scheduler
 
    ── ensaios e lote piloto (testes de fluxo real) ──
-   executar-testes · criar-testes · testar-ingestao-dnit · testar-cancelamento · testar-webchat · testar-nl2sql · testar-nl2yaml · testar-paginas-web
+   executar-testes · criar-testes · testar-ingestao-dnit · testar-cancelamento-ingestao-dnit
+   (webchat, webchat-dnit, nl2sql, nl2yaml e paginas-web são ORDENS DE PRODUÇÃO — skills, Cap. 4)
 
    ── engenharia da qualidade e documentação (governança/conhecimento) ──
-   documentar · sincronizar-documentacao · inventario-componentes · inventario-yaml · validar-instructions · analisar-produto
+   documentar · sincronizar-documentacao · inventario-componentes · inventario-yaml · analisar-produto
 
-   ── especificações de processo / SOPs (rules sob demanda) ──
-   log-instructions · reuso-instructions · suite-testes · definicao-de-pronto · estrategia-recomendacoes · python · large-repo · fidelidade-pedido
-   + registro de melhoria contínua: lessons · error-backlog · regression-logs · bad-instructions
+   ── especificações de processo / SOPs (20 rules sob demanda) ──
+   log-instructions · reuso-instructions · suite-testes · definicao-de-pronto · loops-estrategicos
+   · regras_uso_subagentes · ferramentas-acesso-dados · … (as 20 no Cap. 2)
+   + Kaizen real: loops estratégicos + memória de rodada + licoes-aprendidas.md por agente
 ```
 
 ---
@@ -147,9 +149,9 @@ da fábrica:
 
 | Capítulo | Parte da fábrica | O que você vai entender |
 |---|---|---|
-| [Cap. 1 — A Norma da Fábrica](capitulo-01-norma-da-fabrica.md) | O padrão mestre (`CLAUDE.md`) | Por que cada uma das 17 seções existe e que valor força |
-| [Cap. 2 — As Especificações de Processo](capitulo-02-especificacoes-processo.md) | Os SOPs (`rules/`) | Os contratos profundos e o registro de melhoria contínua |
-| [⭐ Cap. 3 — As Estações da Linha](capitulo-03-estacoes-da-linha.md) | Os 22 agentes | Função, papel e o defeito que cada estação evita |
+| [Cap. 1 — A Norma da Fábrica](capitulo-01-norma-da-fabrica.md) | O padrão mestre (`CLAUDE.md`, raiz + 5 por área) | Como a Norma se organiza e que valor cada seção força |
+| [Cap. 2 — As Especificações de Processo](capitulo-02-especificacoes-processo.md) | Os 20 SOPs (`rules/`) | Os contratos profundos e o mecanismo real de Kaizen (loops estratégicos) |
+| [⭐ Cap. 3 — As Estações da Linha](capitulo-03-estacoes-da-linha.md) | Os 20 agentes | Função, papel e o defeito que cada estação evita |
 | [Cap. 4 — A Ordem de Produção](capitulo-04-ordem-de-producao.md) | As skills (`/comando`) | Por que separar o acionamento do cérebro da estação |
 | [Cap. 5 — Poka-yoke e Andon](capitulo-05-pokayoke-e-andon.md) | Hooks e dispositivos | Automação determinística: parar a linha vs. alertar |
 | [⭐ Cap. 6 — Um Lote na Linha](capitulo-06-um-lote-na-linha.md) | A fábrica em ação | Um pedido do recebimento à expedição, com os dois ciclos atuando |

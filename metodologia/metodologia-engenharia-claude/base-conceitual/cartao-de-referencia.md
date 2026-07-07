@@ -18,7 +18,7 @@
 | `/corrigir-com-log` | Tenho um bug real para consertar | `correlation_id` do erro | Causa raiz (proibido mascarar); validado na suíte |
 | `/criar-testes` | Preciso de cobertura nova | Código a proteger | Família correta; reduz risco real (não testa cosmético) |
 | `/executar-testes` | A suíte caiu / preciso estabilizar | — | Suíte verde **de verdade**, auditada por telemetria |
-| `/documentar` | Documentar feature a fundo | Código pronto e provado | Doc do código real, não da intenção; nível 101 |
+| `documentar` *(agente, sem comando `/` — acione por delegação: "use o agente documentar")* | Documentar feature a fundo | Código pronto e provado | Doc do código real, não da intenção; nível 101 |
 
 > **Regra de desempate mais comum:** entender log → `/analisar-log`. Consertar bug → `/corrigir-com-log`.
 > Entender código → `/investigar`. *(Fluxograma completo em [diagramas.md](diagramas.md), Diagrama 3.)*
@@ -79,13 +79,17 @@
 
 **Antes de criar uma nova REGRA (`rules/`):**
 - [ ] É contrato profundo (carregado sob demanda) ou registro operacional (memória viva)?
-- [ ] Não conflita nem duplica regra existente? (rodar `validar-instructions` depois)
+- [ ] Não conflita nem duplica regra existente? (conferir manualmente as regras vizinhas — não há
+      auditor automático de contratos)
 - [ ] Tem rastreabilidade — alguém/algum agente realmente a consome?
-- [ ] Se for lição: passa no teste de promoção? *("outro agente, amanhã, em outro slice, evitaria erro?")*
+- [ ] Se for lição: é **regra preventiva durável comprovada**? (porteiro real: *"não promover ruído
+      operacional local"* — lição de agente vive no `licoes-aprendidas.md` dele, não vira regra global
+      automaticamente)
 
 **Depois de qualquer extensão:**
-- [ ] Rodar `/validar-instructions` para detectar contradição/redundância.
-- [ ] Atualizar o índice da metodologia / `README-TOOLS-LIB.md` se aplicável.
+- [ ] Reler os contratos vizinhos em busca de contradição/redundância (curadoria humana).
+- [ ] Se criou/alterou **agente**: rodar `./validar_descricao_subagentes.sh` (valida descrição/gatilho).
+- [ ] Atualizar o índice da metodologia / `docs/tecnico/README-TOOLS-LIB.md` se aplicável.
 
 ---
 

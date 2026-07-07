@@ -14,17 +14,19 @@
 
 ---
 
-## 2.0 Por que separar `rules/` do `CLAUDE.md`
+## 2.0 Por que separar `rules/` do `CLAUDE.md` — e como a jogada certa entra em campo sozinha
 
 Uma decisão de arquitetura: o `CLAUDE.md` precisa ser leve (lido sempre), mas alguns contratos são
 densos (o de logs tem centenas de linhas). Misturar tudo tornaria cada sessão cara e difícil de ler.
 A solução é a mesma de um bom software: **núcleo estreito + módulos carregados sob demanda.**
 
-Os arquivos de `rules/` dividem-se em dois tipos:
-
-- **Contratos profundos** (jogadas ensaiadas): a versão completa de um tema. Ex.: `log-instructions.md`.
-- **Registros operacionais** (o caderno de aprendizado do time): memória viva que muda a cada rodada.
-  Ex.: `lessons.md`, `error-backlog.md`.
+O caderno tem **20 jogadas**, e o mecanismo de entrega é tão importante quanto o conteúdo: **19 das 20
+têm um frontmatter `paths:`** — a jogada é injetada automaticamente no contexto quando o trabalho toca
+os caminhos declarados. E vários desses `paths:` apontam para **os próprios agentes** (ex.:
+`estrategia-recomendacoes.md` casa `.claude/agents/implementar.md` — o manual entra em campo junto com
+o jogador que o usa). É **injeção de dependência de contexto**: nenhum agente copia a regra para
+dentro de si, então não existe cópia para divergir. A única jogada sem `paths:` é
+`qualidade-texto.md` — porque ela vale para **todo** texto, em qualquer setor do campo.
 
 ---
 
@@ -61,11 +63,14 @@ paralelismo real, erros e estado final.
 ### `reuso-instructions.md` — o manual do "olhe o elenco antes de contratar"
 
 Antes de criar qualquer classe, helper, service, adapter, resolver, validator: é **obrigatório**
-pesquisar o que já existe, consultar `docs/README-TOOLS-LIB.md`, ler os candidatos diretamente, e só
-então — com justificativa — criar algo novo.
+pesquisar o que já existe lendo o código com `read` (áreas de alta chance: `src/core` e
+`src/api/services`; inventário complementar em `docs/tecnico/README-TOOLS-LIB.md`), e só então — com
+justificativa — criar algo novo.
 
-**O que força:** uma ordem de 9 passos que termina em "somente depois disso considerar criar algo
-novo". E uma postura de **advogado do diabo**: "em repositório grande, solução nova é rara".
+**O que força:** uma ordem de **6 passos** — identificar candidatos → buscar implementações
+relacionadas → **ler os arquivos direto** → entender a intenção → avaliar se resolve/evolui com
+segurança → só então considerar criar algo novo. E uma postura de **advogado do diabo**: "em
+repositório grande, solução nova é rara".
 
 **Problema que evita:** duplicação. Em sistema maduro, reimplementar um helper que já existe gera
 **divergência de comportamento** (dois jeitos de fazer a mesma coisa, que evoluem diferente), dobra a
@@ -77,7 +82,8 @@ e é proibido adicionar uma terceira.
 
 ### `definicao-de-pronto.md` — o manual do VAR (anti-falso-verde)
 
-A versão profunda do `CLAUDE.md §14`. Define o que significa "pronto" de forma **falsificável**.
+O contrato que define o que significa "pronto" de forma **falsificável** (morava no DNA; hoje é
+jogada ensaiada carregada por caminho — o raiz emagreceu delegando).
 
 **O conceito central — falso-verde:** "quando a entrega parece correta porque testes isolados
 passaram, a documentação foi atualizada ou uma classe nova foi criada, mas o caminho oficial do
@@ -156,48 +162,144 @@ informação se perca:
 > configuração da IA — os agentes *referenciam* o contrato, não o redefinem. A configuração obedece
 > às mesmas regras que impõe ao código.
 
+### `loops-estrategicos.md` — a jogada de recuperação de bola
+
+A fonte única dos **dois loops** que o DNA (§1) declara como comportamento default: auto-correção por
+log e memória de rodada. É o coração do aprendizado do time — detalhado na [seção 2.2](#22-o-playbook-real-de-aprendizado-os-dois-loops-e-a-promoção-de-lição)
+logo abaixo.
+
+### `regras_uso_subagentes.md` — o teto salarial: modelo por risco
+
+Decide quando um subagente pode rodar no modelo barato (Sonnet 5) e quando exige o forte. Duas travas
+têm prioridade sobre tudo: **Trava 1 (falso negativo)** — busca para *coletar evidência* pode ser
+barata; busca para **afirmar que algo não existe** ("vazio", "sem reuso", "100% coberto") fica no
+modelo forte, porque o falso negativo é o erro de alto impacto e baixa detectabilidade. **Trava 2** —
+antes de baixar o *tier*, baixe o *effort*. A pergunta de corte: *"se o subagente errar, o principal
+percebe e corrige fácil?"*. (A aplicação real, jogador a jogador, está no [Cap. 3](capitulo-03-agents-jogadores.md).)
+
+### `ferramentas-acesso-dados.md` — o manual do "vá ver com os próprios olhos"
+
+Abre com a instrução "**LEIA ANTES de dizer 'não tenho como verificar'**": inventário dos ~46 scripts
+prontos em `.claude/scripts/` (Qdrant, PostgreSQL, Redis, filas, scheduler, logs). Proibido concluir
+estado de recurso por proxy (grep, código, doc, log) e proibido reinventar acesso ad-hoc quando existe
+script — se faltar ferramenta, cria-se um script reutilizável e atualiza-se o inventário.
+
+### `disciplina-investigacao-teste.md` — a trava anti-teste-raso
+
+Falha, vazio ou erro são o **início** da investigação, não conclusão: enumerar as hipóteses (bug,
+config, wiring, dado ausente, credencial, ambiente) → testar **cada uma na fonte de verdade real** →
+só então rotular a causa. Com a taxonomia que evita o erro clássico: "tabela-registro vazia" ≠ "store
+físico vazio"; "log diz X" ≠ "estado real é X".
+
+### `execucao-plano-resumivel.md` — o revezamento que não perde o jogo por lesão
+
+O padrão de execução de plano longo: **orquestrador quente** (a janela principal, que nunca
+re-onboarda e segura o plano) + **worker descartável** (um subagente `implementar` por fase, que morre
+ao devolver) + **diário write-ahead** (status gravado por tarefa no arquivo do plano, antes de
+avançar). Se o worker cair, a perda máxima é **a tarefa em voo** — nunca o plano. Com o contrapeso:
+plano de até ~4 tarefas não se fracciona. (Como a skill `/implementar` carrega essa política:
+[Cap. 4](capitulo-04-skills-convocacao.md).)
+
+### `qualidade-texto.md` — o manual do discurso
+
+Anti-linguiça **e** anti-lacuna: todo acréscimo precisa agregar valor real; conteúdo necessário entra
+mesmo longo, redundante sai mesmo curto — a régua é **densidade de valor por linha**. A única jogada
+sem `paths:`, porque vale para todo texto, inclusive a resposta ao usuário.
+
+### `worktree.md` — o manual do treino em campo separado
+
+Paralelismo com isolamento: trabalho paralelo roda em worktrees de nome fixo
+(`worktree-codex`/`worktree-claude`), criados fora do repositório principal, com foco exclusivo no
+próprio worktree. É a única jogada com **trava de máquina dedicada**: o hook `worktree-guard`
+([Cap. 5](capitulo-05-hooks-arbitragem.md)) impede excluir worktree alheio.
+
 ---
 
-## 2.2 O caderno de aprendizado (a memória viva do time)
+## 2.2 O playbook real de aprendizado (os dois loops e a promoção de lição)
 
-Estes quatro arquivos não são contratos fixos — são **memória que muda a cada rodada**. É aqui que o
-time "aprende com o jogo".
+O time não aprende por mágica nem por um arquivo central de lições: aprende por **dois loops
+declarados como features estratégicas de primeira classe** em `loops-estrategicos.md` — e citados no
+próprio DNA (§1) como comportamento padrão obrigatório, não boa intenção.
 
-| Arquivo | Papel no time | O que registra |
-|---|---|---|
-| `lessons.md` | A lição do treinador, gravada | Apenas lições com **valor preventivo transversal** — regras que mudam como os agentes pensam em mais de um slice |
-| `error-backlog.md` | O relatório médico | Todo erro real de produto (com cenário, módulo, evidência) |
-| `regression-logs.md` | A reincidência de lesão | Erro já registrado que **voltou** — tratado como regressão grave |
-| `bad-instructions.md` | A ouvidoria do regulamento | Contradições, ambiguidades e lacunas nas próprias instruções |
+**Loop 1 — auto-correção por log (o ajuste dentro do jogo).** Gatilho: qualquer **erro real de
+backend** durante teste, validação ou execução de plano. É **proibido** declarar "ambiente / fora de
+escopo / credencial / dado faltando" por inferência, sem antes provar a causa pelo log. Os 5 passos:
 
-**A engenharia por trás:** `lessons.md` tem uma **regra de curadoria rígida** — não é diário nem
-backlog. Antes de promover uma lição, a pergunta obrigatória é: *"se outro agente atuar amanhã em
-outro slice, esta regra ainda reduziria chance real de erro?"* Se não, ela fica na memória local da
-skill. Isso impede que o arquivo central vire um depósito inútil.
+1. capturar o `correlation_id` (a response o devolve no corpo e no header `X-Correlation-Id`);
+2. abrir o log oficial via `python -m src.log_analyzer` (nunca varrer `/logs` cegamente);
+3. **cara-crachá**: confrontar cada evento do log com o código do caminho do erro, até a causa raiz
+   **provada** — não hipótese;
+4. decidir pela evidência: causa de escopo → corrigir na origem e voltar ao teste; causa fora do
+   escopo → registrar **com o log como prova** ("fora-de-escopo é conclusão provada, não atalho");
+5. response sem `correlation_id`? Isso é, em si, uma falha de observabilidade a registrar.
 
-**Problema que evita:** o time repetir o mesmo erro; e, do outro lado, a "poluição de memória" — um
-arquivo de lições tão cheio de detalhe local que ninguém lê.
+E em camadas, para não usar canhão em mosca: reflexo barato (`log_analyzer` inline) → `analisar-log`
+(diagnóstico fundo, sem corrigir) → `corrigir-com-log`/`corrigir-erros-com-log` (correção forense
+dedicada).
 
-**Valor:** melhoria contínua **institucional** (o conhecimento fica na empresa, não na pessoa). E note
-a simetria: este caderno é alimentado automaticamente pelos hooks de início e fim de sessão
-(ver [Cap. 5](capitulo-05-hooks-arbitragem.md)) — o time é *lembrado* de aprender.
+**Loop 2 — memória de rodada (anti-repetição na mesma campanha).** Dentro de uma campanha de
+correção, o agente registra cada tentativa com evidência objetiva (erro dominante, hipótese, checagem
+discriminante, ação, resultado, próximo passo) e **relê a memória antes de cada nova hipótese** — para
+nunca repetir um beco sem saída já falsificado. É memória local à campanha.
+
+**A promoção durável — o caderno que existe de verdade.** Quando uma rodada revela uma **regra
+preventiva durável e comprovada**, ela é promovida ao `licoes-aprendidas.md` do agente — hoje os
+cadernos mais grossos são os de `corrigir-erros-com-log` (~22 KB de lições) e `testar-ingestao-dnit`
+(~24 KB), cada um acompanhado do seu `log-rodada.md` (a memória efêmera do Loop 2). O gate de
+curadoria é explícito: **"não promover ruído operacional local"** — detalhe de uma rodada fica na
+memória de rodada; só sobe ao caderno a regra que ainda reduziria erro em rodadas futuras. Até os
+scripts ad hoc têm esse ciclo: descartar, manter ou promover para `.claude/scripts/`.
+
+**A engenharia por trás:** separar o **efêmero** (log-rodada, por campanha) do **durável**
+(licoes-aprendidas, por agente) com um gate de promoção no meio. Sem o gate, o caderno central viraria
+um depósito que ninguém lê; sem a memória de rodada, cada campanha repetiria as próprias tentativas.
 
 > 🧑‍💼 **RESUMO EXECUTIVO.** Este é o mecanismo que faz a nossa engenharia ficar **melhor com o
-> tempo, sozinha**. Cada erro vira uma regra que previne o próximo. É capitalização de conhecimento:
-> o que aprendemos numa quarta-feira protege todos os projetos da quinta em diante.
+> tempo**: cada erro real vira, primeiro, uma correção provada por evidência (Loop 1); depois, se a
+> lição for durável, vira regra preventiva escrita no caderno do especialista. É capitalização de
+> conhecimento — o que aprendemos numa quarta-feira protege as rodadas da quinta em diante.
 
 ---
 
-## 2.3 O que levar desta posição para a aula
+## 2.3 O playbook completo — as 20 jogadas num relance
 
-- `rules/` é o **conhecimento profundo carregado sob demanda** — o detalhe que não cabe no DNA.
-- Os **contratos profundos** (log, reuso, pronto, suíte, python, large-repo) são os manuais de posição.
-- Os **contratos de handoff** (estratégia, fidelidade) existem em arquivo próprio para **não duplicar**
-  entre agentes — DRY na própria config.
-- O **caderno de aprendizado** (lessons, error-backlog, regression, bad-instructions) é a memória viva
-  que faz o time melhorar com o tempo.
+| Jogada | Em uma linha |
+|---|---|
+| `log-instructions` | O contrato do raio-X: correlation_id, campos canônicos, builders, anti-varredura |
+| `reuso-instructions` | Os 6 passos obrigatórios antes de criar qualquer coisa nova |
+| `definicao-de-pronto` | Pronto = ativo no caminho oficial em runtime (anti-falso-verde) |
+| `suite-testes-instructions` | Qual modo da suíte rodar, sempre com `--run-id` e auditoria de telemetria |
+| `python` | Tipagem estrita, mocks honestos, markers de família |
+| `large-repo-navigation` | Âncora + fatia: navegar código enorme sem estourar contexto |
+| `estrategia-recomendacoes` | O contrato da bússola entre `planejar` e `implementar` |
+| `fidelidade-pedido-usuario` | O pedido do usuário não evapora no pipeline |
+| `loops-estrategicos` | Os dois loops: auto-correção por log + memória de rodada (§2.2) |
+| `regras_uso_subagentes` | Modelo por risco: as 2 travas contra o falso negativo barato |
+| `ferramentas-acesso-dados` | Fonte de verdade real: scripts prontos; proibido concluir por proxy |
+| `disciplina-investigacao-teste` | Enumerar hipóteses e testá-las na fonte antes de rotular causa |
+| `execucao-plano-resumivel` | Orquestrador quente + worker descartável + diário write-ahead |
+| `qualidade-texto` | Anti-linguiça e anti-lacuna; densidade de valor por linha |
+| `worktree` | Trabalho paralelo isolado em `worktree-codex`/`worktree-claude` |
+| `ambiente-local` | Procedimentos do ambiente local (FastAPI/"porta presa") e automação de navegador |
+| `componente-chat-embutivel` | Fonte única do chat embutível (`PrometeuEmbeddableChatRuntime`): gatilho de reuso |
+| `dyn-sql-tools-registro` | Contrato das tools `dyn_sql`: inline no YAML vence, registro é fallback |
+| `padrao-listas-perguntas-teste` | Formato simétrico das listas de perguntas dos testes de chat |
+| `subagentes-descricao-instructions` | Regra arquitetural das descrições de subagentes (validador `./validar_descricao_subagentes.sh`) |
+
+---
+
+## 2.4 O que levar desta posição para a aula
+
+- `rules/` é o **conhecimento profundo carregado sob demanda** — 20 jogadas, 19 delas com `paths:`:
+  a jogada entra em campo sozinha quando a bola chega no setor (**injeção de dependência de contexto**,
+  inclusive apontando para os próprios agentes).
+- Os **contratos profundos** (log, reuso, pronto, suíte, python, large-repo, acesso a dados,
+  subagentes…) são os manuais de posição; os **contratos de handoff** (estratégia, fidelidade) vivem
+  em arquivo próprio para **não duplicar** entre agentes — DRY na própria config.
+- O **aprendizado real** são os dois loops (`loops-estrategicos.md`): auto-correção provada por log +
+  memória de rodada, com **promoção curada** de lição durável para o `licoes-aprendidas.md` de cada
+  agente.
 - A regra de ouro recorrente: **"se divergir do código executável, o código vence"** — a doc nunca se
   acha dona da verdade.
 
 **Próximo:** [Capítulo 3 — Os Jogadores em Campo (`.claude/agents/`)](capitulo-03-agents-jogadores.md).
-</content>

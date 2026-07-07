@@ -3,10 +3,10 @@
 > **Posição em campo:** os agentes são os **jogadores de verdade**. Cada um tem cérebro próprio,
 > contexto isolado, um conjunto de ferramentas e uma função exclusiva. Eles entram em campo quando
 > convocados por uma skill (Cap. 4), jogam segundo o DNA (Cap. 1) consultando as jogadas ensaiadas
-> (Cap. 2), sob o olhar do árbitro (Cap. 5). São 22 — e o segredo não é o número, é a **divisão de
+> (Cap. 2), sob o olhar do árbitro (Cap. 5). São 20 — e o segredo não é o número, é a **divisão de
 > funções**: cada um faz uma coisa e a faz com rigor.
 
-> 🧑‍💼 **RESUMO EXECUTIVO.** Em vez de uma "IA genérica que faz tudo mais ou menos", temos **22
+> 🧑‍💼 **RESUMO EXECUTIVO.** Em vez de uma "IA genérica que faz tudo mais ou menos", temos **20
 > especialistas que fazem uma coisa muito bem**. Isso é exatamente o que uma empresa madura faz com
 > pessoas: ninguém é "faz-tudo"; há o investigador, o arquiteto, o desenvolvedor, o QA, o DBA. A
 > especialização é o que produz qualidade consistente e permite auditar quem fez o quê.
@@ -44,7 +44,9 @@ quase todo trabalho não-trivial.
   - **Zero alucinação:** proibido especular, presumir ou deduzir de nome/comentário; toda afirmação
     precisa de `read` com filepath e linhas.
   - **Escopo efetivo:** define no início o que é e o que não é o alvo.
-  - **Materialização obrigatória:** o relatório precisa existir como arquivo em `.sandbox/`, não só no chat.
+  - **Materialização obrigatória:** o relatório precisa existir como arquivo em
+    `docs/.interno/.planos/<nome>/` (`investigacao--<timestamp>--<nome>.md`) — "resposta apenas no
+    chat, sem arquivo materializado, é inválida".
 - **Problema que evita:** **alucinação de estado** (tratar código que "deveria existir" como existente)
   e **falsa confiança** (conclusão "alta" sem ter lido o código-chave).
 - **Valor:** evidência sobre suposição; rastreabilidade por path/linha.
@@ -111,6 +113,9 @@ quase todo trabalho não-trivial.
 > investigar não pode planejar, o planejar não pode executar, o validar não pode implementar. Essa
 > oposição é intencional — cria *checagem independente* em cada troca de pé. É o equivalente a
 > "segregação de funções" em controles internos de uma empresa: quem aprova não é quem executa.
+> E o passe entre eles é **arquivo, não memória de conversa**: investigação, plano e validação são
+> materializados em `docs/.interno/.planos/<nome>/` (`investigacao--*.md`, `plano--*.md`,
+> `validacao--*.md`) — o estado sobrevive à janela de contexto e é auditável amanhã.
 
 ---
 
@@ -191,9 +196,12 @@ Agentes que **provam que o time funciona** antes do jogo oficial.
   comprovado. Status **binário**: SUCESSO ou ERRO, sem "parcial".
 - **`testar-cancelamento-ingestao-dnit`:** testa **exclusivamente** a capacidade de **parar** quando
   pedido — prova no log que o processamento de fato cessou (não só que a UI disse "cancelado").
-- **`testar-webchat`, `testar-webchat-dnit`, `testar-nl2sql`, `testar-nl2yaml`, `testar-paginas-web-projeto`:**
-  validam interfaces reais (chat, geração de SQL/YAML, páginas), sempre capturando o `correlation_id`
-  da response real e corrigindo por log.
+
+> ⚠️ **Jogadas ensaiadas, não jogadores:** `testar-webchat`, `testar-webchat-dnit`, `testar-nl2sql`,
+> `testar-nl2yaml` e `testar-paginas-web-projeto` também validam interfaces reais (chat, geração de
+> SQL/YAML, páginas) com o mesmo rigor — capturam o `correlation_id` da response real e corrigem por
+> log — mas são **skills autocontidas**, não agentes: o procedimento delas é fixado no nível do
+> sistema como contrato imutável. O porquê dessa escolha está no [Cap. 4](capitulo-04-skills-convocacao.md).
 
 **Problema que todos evitam:** o "passou no meu computador". Estes agentes provam comportamento em
 **execução real**, com evidência de três fontes, não em simulação.
@@ -204,7 +212,7 @@ Agentes que **provam que o time funciona** antes do jogo oficial.
 
 ## 3.5 Comissão técnica e bastidores — governança e conhecimento
 
-Seis agentes que cuidam do conhecimento e da consistência institucional.
+Cinco agentes que cuidam do conhecimento e da consistência institucional.
 
 - **`documentar` (🎙️ imprensa/comunicação):** produz documentação profunda (técnica + executiva +
   comercial), lendo o **código como fonte de verdade**, nunca a doc existente. Proíbe documento raso e
@@ -212,15 +220,19 @@ Seis agentes que cuidam do conhecimento e da consistência institucional.
 - **`sincronizar-documentacao` (🧤 goleiro da doc):** mantém `docs/` sincronizado com o código real ao
   longo do tempo, evitando a "doc que mente". Gera FAQ de onboarding para o consultor júnior.
 - **`inventario-componentes-genericos` (🎯 meia construtor):** cataloga o que já existe e pode ser
-  reutilizado, alimentando `docs/README-TOOLS-LIB.md`. É o "olheiro do próprio elenco" — base do gate
-  de reuso.
+  reutilizado, alimentando `docs/tecnico/README-TOOLS-LIB.md`. É o "olheiro do próprio elenco" — base
+  do gate de reuso.
 - **`inventario-yaml` (🛡️ auditor):** caça **só problemas** de YAML × código — chaves órfãs, ausentes,
   duplicadas, desalinhamento com a AST, testes ausentes. Não lista o que está certo.
-- **`validar-instructions` (⚖️ ouvidoria do regulamento):** audita as próprias instruções em busca de
-  contradição, redundância, ambiguidade — consultando a doc oficial mais recente. Registra em
-  `bad-instructions.md`. **É o time se auto-corrigindo.**
 - **`analisar-produto` (🔭 scout de mercado):** investiga a solução sob a ótica técnica, comercial e
   competitiva; separa **documentado × implementado × não encontrado**; produz insumos comerciais.
+
+> 📌 **E a auditoria do próprio regulamento?** Não existe mais um jogador dedicado a auditar as
+> instruções. O que existe hoje é mais enxuto: o **validador de descrições de subagentes**
+> (`./validar_descricao_subagentes.sh`, com a regra arquitetural em
+> `subagentes-descricao-instructions.md` — Cap. 2) e a regra de ouro transversal **"se o contrato
+> divergir do código executável, o código vence"**, que impede o regulamento de se achar dono da
+> verdade.
 
 **Problema que todos evitam:** o apodrecimento do conhecimento — doc desatualizada, duplicação por
 desconhecimento do que existe, instruções contraditórias, promessa comercial que o produto não cumpre.
@@ -248,28 +260,53 @@ desconhecimento do que existe, instruções contraditórias, promessa comercial 
 | criar-testes | Atacante do treino | Amplia cobertura só onde reduz risco |
 | testar-ingestao-dnit | Atacante oficial | Prova a ingestão real por três fontes |
 | testar-cancelamento-ingestao-dnit | Atacante especialista | Prova que o sistema para quando mandado |
-| testar-webchat / -dnit | Pontas | Provam os chats reais por log |
-| testar-nl2sql / nl2yaml | Pontas | Provam geração de SQL/YAML revisável |
-| testar-paginas-web-projeto | Ponta | Prova páginas reais no navegador |
 | documentar | Imprensa | Documentação profunda a partir do código |
 | sincronizar-documentacao | Goleiro da doc | Mantém docs fiel ao código |
 | inventario-componentes-genericos | Meia construtor | Cataloga o reutilizável |
 | inventario-yaml | Auditor | Caça problemas de YAML × código |
-| validar-instructions | Ouvidoria | Audita as próprias instruções |
 | analisar-produto | Scout de mercado | Posiciona o produto com evidência |
+
+*(Os testes de webchat, NL2SQL, NL2YAML e páginas web são jogadas ensaiadas — skills, não jogadores;
+ver a nota da seção 3.4 e o Cap. 4.)*
 
 ---
 
-## 3.7 O que levar desta posição para a aula
+## 3.7 A folha salarial — modelo por risco
+
+Cada jogador tem um "salário" declarado no frontmatter (`model:`), governado pela jogada
+`regras_uso_subagentes.md` ([Cap. 2](capitulo-02-rules-playbook.md)): o modelo forte fica onde o erro
+é caro ou difícil de perceber; o barato, onde o principal percebe e corrige fácil.
+
+- **5 no modelo forte (`opus`):** `investigar`, `planejar`, `implementar`, `validar-entrega` e
+  `inventario-componentes-genericos` — o eixo central inteiro, mais o inventário, cuja entrega inclui
+  **afirmações de ausência** ("não existe componente pronto") — exatamente a Trava 1 do falso
+  negativo: busca para *afirmar que algo não existe* nunca roda no modelo barato.
+- **7 no modelo barato (`claude-sonnet-5`):** `analisar-log`, `documentar`,
+  `sincronizar-documentacao`, `inventario-yaml`, `testar-ingestao-dnit`,
+  `testar-cancelamento-ingestao-dnit`, `testar-cli-log-analyzer` — tarefas procedurais cujo resultado
+  é verificável por evidência (log, telemetria, código).
+- **8 herdam o default da sessão:** `analisar-produto`, `corrigir-erros-com-log`, `criar-testes`,
+  `executar-testes` e os 4 `gerenciar-*`.
+
+O detalhe fino da política: o custo está amarrado ao **tipo de conclusão** que o jogador entrega, não
+ao tipo de operação que executa. Ler arquivos é barato em qualquer posição; **concluir "não existe"**
+é caro em todas.
+
+---
+
+## 3.8 O que levar desta posição para a aula
 
 - Os agentes são **especialistas de função única e contexto isolado** — o oposto da "IA faz-tudo".
 - O **eixo central** (investigar → planejar → implementar → validar) tem **contratos de propósito
-  opostos** que criam checagem independente a cada passe — segregação de funções.
+  opostos** que criam checagem independente a cada passe — segregação de funções — e o passe é
+  **arquivo materializado** em `docs/.interno/.planos/`, não memória de conversa.
 - A **defesa de observabilidade** garante que o sistema seja diagnosticável; o **departamento de
   infra** garante operação real auditável; os **treinos** provam o fluxo na vida real; a **comissão
   técnica** mantém o conhecimento fiel.
 - O padrão transversal mais valioso: **snapshot/leitura antes de agir, dry-run antes de mutar, três
   fontes de prova, status binário ou explícito.**
+- A **folha salarial por risco**: o modelo caro fica onde a conclusão é cara de errar (eixo central e
+  afirmações de ausência), não onde a operação parece complexa.
 
 **Próximo:** [Capítulo 4 — A Convocação (`.claude/skills/`)](capitulo-04-skills-convocacao.md).
 </content>

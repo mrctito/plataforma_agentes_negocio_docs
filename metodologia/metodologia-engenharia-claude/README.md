@@ -37,6 +37,7 @@ higiene de "fonte única de verdade" aplicada à própria documentação.
 
 | Documento | Do que trata |
 |---|---|
+| [Mapa da Governança](base-conceitual/mapa-governanca.md) | O mapa fiel, arquivo a arquivo: as 7 camadas, o grafo de orquestração, os mecanismos e as decisões de engenharia por trás do conjunto |
 | [Operar a Metodologia](base-conceitual/operar-a-metodologia.md) | O manual de quem dirige: fórmula do bom pedido, acompanhar/corrigir a execução, quando não implementar, checklist de aceite |
 | [A Suíte como Prova](base-conceitual/suite-como-prova.md) | A suíte oficial como evidência auditável (artefatos, `run_id`, foco × fechamento) |
 | [Os Dois Loops](base-conceitual/os-dois-loops.md) | Auto-correção (dentro da tarefa) × auto-aperfeiçoamento (entre tarefas) |
@@ -47,7 +48,21 @@ higiene de "fonte única de verdade" aplicada à própria documentação.
 
 ---
 
-## 3. Os cinco valores que a metodologia inteira protege
+## 3. A camada de consultoria (decisão e implantação)
+
+Para levar a metodologia **para fora** — convencer a liderança com fatos e dados, e implantar em
+qualquer empresa de software — existe a camada [`consultoria/`](consultoria/README.md):
+
+| Documento | Pergunta que responde | Público |
+|---|---|---|
+| [Caso de Negócio](consultoria/caso-de-negocio-cto.md) | *Por que adotar?* — dados de indústria (DORA 2025, METR, Faros), mecanismo → ganho, custos e riscos honestos | CTO / liderança executiva |
+| [Guia de Implantação](consultoria/guia-implantacao.md) | *Como implantar?* — portável × específico, 4 fases com critério de saída, templates, anti-padrões, maturidade | Líder da implantação / consultor |
+| [Apresentação para CTO](consultoria/apresentacao-cto-marp.md) | O caso de negócio em formato de reunião (deck Marp) | CTO / diretoria técnica |
+| [Apresentação para Conselho](consultoria/apresentacao-conselho-marp.md) | A decisão estratégica em linguagem de negócio, sem jargão (deck Marp) | Conselho consultivo / board |
+
+---
+
+## 4. Os cinco valores que a metodologia inteira protege
 
 Independentemente da lente, todos os arquivos existem para forçar cinco valores de engenharia:
 
@@ -64,7 +79,7 @@ Independentemente da lente, todos os arquivos existem para forçar cinco valores
 
 ---
 
-## 4. Glossário rápido (para a plateia não-técnica)
+## 5. Glossário rápido (para a plateia não-técnica)
 
 - **Agente (subagente):** um especialista, com cérebro e contexto próprios, que recebe uma tarefa,
   trabalha isolado e devolve só o resultado.
@@ -81,12 +96,13 @@ Independentemente da lente, todos os arquivos existem para forçar cinco valores
 
 ---
 
-## 5. Estrutura desta pasta
+## 6. Estrutura desta pasta
 
 ```
 metodologia-engenharia-claude/
 ├── README.md                      ← você está aqui (índice-raiz)
-├── base-conceitual/               ← substância neutra, compartilhada
+├── base-conceitual/               ← substância neutra, compartilhada (inclui o Mapa da Governança)
+├── consultoria/                   ← decisão e implantação: caso de negócio, guia, decks CTO/conselho
 ├── lente-futebol/                 ← apresentação com metáfora de time de futebol
 └── lente-engenharia-software/     ← apresentação com metáfora de fábrica de software
 ```

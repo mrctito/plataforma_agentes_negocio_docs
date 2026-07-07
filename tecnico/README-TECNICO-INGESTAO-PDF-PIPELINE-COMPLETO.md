@@ -128,6 +128,29 @@ O resolvedor central de configuração de PDF lê o contrato canônico em `inges
 
 Isso significa que a origem de verdade do runtime PDF é o bloco tipado da ingestão, não um atalho espalhado no YAML.
 
+### 3.1.1. Significado exato de `vector_store.if_exists` no PDF
+
+`vector_store.if_exists` nao governa OCR, parsing nem chunking. No pipeline de PDF, a mesma chave e consumida em dois niveis e a ordem e obrigatoria.
+
+1. No bootstrap do lote, `prepare_batch_vector_store_bootstrap()` prepara o vector store e aplica `DatasetLifecycleOrchestrator.apply_if_exists_policy()` ao alvo fisico.
+2. Somente depois do bootstrap, cada PDF e avaliado no manifesto por `document_identity_key`.
+
+No primeiro nivel, se a collection/index ja existe:
+
+- `skip` lanca erro de lifecycle. A excecao impede o retorno e o agendamento dos work items e termina o job inteiro em erro;
+- `update` mantem o alvo fisico sem limpeza e permite que o lote continue;
+- `overwrite` remove e recria o alvo uma vez no bootstrap do lote e permite que o lote continue.
+
+No segundo nivel, o runtime resolve `document_identity_key`, prefere `pdf:sha256:<hash_binario_do_pdf>`, usa `canonical_source_key` como fallback e consulta o manifesto por `tenant_code + vectorstore_id + document_identity_key`. Se encontrar o documento, compara a versao por `pdf_binary_sha256` ou, na ausencia dele, `document_hash`.
+
+- `skip` pula somente o PDF encontrado no manifesto;
+- `update` pula o PDF inalterado e reprocessa o PDF cuja versao mudou;
+- `overwrite` reprocessa o PDF mesmo quando a versao e igual.
+
+O segundo comportamento de `skip` nao anula o primeiro. Em uma ingestao normal com collection existente, o job para no bootstrap e nunca alcanca o lookup documental. Assim, carga incremental sobre acervo existente exige `if_exists=update`.
+
+Dentro de cada nivel, `skip` e `update` consultam a mesma condicao de existencia: alvo fisico no primeiro e entrada de manifesto no segundo. O erro da interpretacao anterior era tratar apenas o lookup documental como se ele fosse toda a politica.
+
 ### 3.2. Defaults confirmados no código
 
 O resolvedor define uma base interna para PDF com blocos de:

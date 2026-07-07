@@ -39,9 +39,9 @@ A nossa abordagem é diferente. Tratamos a configuração do Claude como **um ti
 
 | No futebol | Na nossa engenharia |
 |---|---|
-| Filosofia do clube (o DNA, o jeito de jogar) | `CLAUDE.md` — lido em toda sessão, governa todo mundo |
-| Jogadas ensaiadas / manuais de posição | `.claude/rules/` — contratos profundos consultados sob demanda |
-| Jogadores em campo, cada um numa posição | `.claude/agents/` — 22 especialistas (investigar, implementar, validar…) |
+| Filosofia do clube (o DNA, o jeito de jogar) | `CLAUDE.md` — o raiz lido em toda sessão + 5 aninhados por setor, governa todo mundo |
+| Jogadas ensaiadas / manuais de posição | `.claude/rules/` — 20 contratos profundos consultados sob demanda |
+| Jogadores em campo, cada um numa posição | `.claude/agents/` — 20 especialistas (investigar, implementar, validar…) |
 | A convocação / o apito que chama o especialista | `.claude/skills/` — gatilhos `/comando` que colocam o jogador certo em campo |
 | O árbitro, as linhas do campo e o VAR | `.claude/hooks/` — automações que bloqueiam falta e levantam a bandeira |
 | A súmula oficial | `.claude/settings.json` — registra a escalação e amarra tudo |
@@ -57,15 +57,18 @@ resultado imprevisível em resultado confiável.
 Pense numa formação clássica. Cada grupo de arquivos ocupa um setor do campo:
 
 ```
-                          ┌─────────────────────────────┐
-                          │   FILOSOFIA DO CLUBE (DNA)   │
-                          │         CLAUDE.md            │
-                          │  lido em 100% das sessões    │
-                          └─────────────────────────────┘
+                          ┌──────────────────────────────────────────┐
+                          │        FILOSOFIA DO CLUBE (DNA)          │
+                          │  CLAUDE.md raiz (lido em 100% das        │
+                          │  sessões) + 5 por setor do campo:        │
+                          │  src/ · tests/ · docs/ · app/yaml/ · app/ui/ │
+                          └──────────────────────────────────────────┘
                                        │ rege
                                        ▼
   ÁRBITRO + VAR (hooks)  ░░░░░░░░ as linhas do campo, sempre ligadas ░░░░░░░░
-  bash-guard · write-guard · py-lint · logging-nudge · py-discipline · stop-loop
+  travas: bash-guard · worktree-guard · write-guard
+  bandeirinhas: py-lint · logging-nudge · py-discipline
+  (no banco de reservas: stop-loop-reminder — pronto, ainda sem wiring; ver Cap. 5)
 
       GOLEIRO              ZAGA              MEIO             ATAQUE
    validar-entrega     investigar        planejar        implementar
@@ -79,14 +82,17 @@ Pense numa formação clássica. Cada grupo de arquivos ocupa um setor do campo:
    gerenciar-postgresql · gerenciar-redis · gerenciar-job-core-ingestao · gerenciar-scheduler
 
    ── treinos e amistosos (testes de fluxo real) ──
-   executar-testes · criar-testes · testar-ingestao-dnit · testar-cancelamento · testar-webchat · testar-nl2sql · testar-nl2yaml · testar-paginas-web
+   executar-testes · criar-testes · testar-ingestao-dnit · testar-cancelamento-ingestao-dnit
 
    ── comissão técnica e bastidores (governança/conhecimento) ──
-   documentar · sincronizar-documentacao · inventario-componentes · inventario-yaml · validar-instructions · analisar-produto
+   documentar · sincronizar-documentacao · inventario-componentes · inventario-yaml · analisar-produto
 
-   ── jogadas ensaiadas (rules consultadas sob demanda) ──
-   log-instructions · reuso-instructions · suite-testes · definicao-de-pronto · estrategia-recomendacoes · python · large-repo · fidelidade-pedido
-   + caderno de aprendizado: lessons · error-backlog · regression-logs · bad-instructions
+   ── jogadas ensaiadas (20 rules consultadas sob demanda — Cap. 2) ──
+   log-instructions · reuso · suite-testes · definicao-de-pronto · loops-estrategicos ·
+   ferramentas-acesso-dados · regras_uso_subagentes · execucao-plano-resumivel · …
+   + jogadas de treino que NÃO são jogadores (skills — Cap. 4): testar-webchat ·
+     testar-webchat-dnit · testar-nl2sql · testar-nl2yaml · testar-paginas-web-projeto
+   + o caderno real do clube: licoes-aprendidas.md por agente + loops-estrategicos.md
 ```
 
 ---
@@ -147,9 +153,9 @@ jogo" do clube. Cada capítulo vai mostrar *como* cada arquivo materializa estes
 
 | Capítulo | Setor no campo | O que você vai entender |
 |---|---|---|
-| [Cap. 1 — A Filosofia do Clube](capitulo-01-filosofia-claude-md.md) | O DNA (`CLAUDE.md`) | Por que cada uma das 17 seções existe e que valor força |
-| [Cap. 2 — As Jogadas Ensaiadas](capitulo-02-rules-playbook.md) | Manuais de posição (`rules/`) | Os contratos profundos e o caderno de aprendizado |
-| [Cap. 3 — Os Jogadores em Campo](capitulo-03-agents-jogadores.md) | Os 22 agentes | Posição, papel e o problema que cada um evita |
+| [Cap. 1 — A Filosofia do Clube](capitulo-01-filosofia-claude-md.md) | O DNA (`CLAUDE.md`) | Os 6 CLAUDE.md (raiz + setores) e o que cada uma das 12 seções do raiz força |
+| [Cap. 2 — As Jogadas Ensaiadas](capitulo-02-rules-playbook.md) | Manuais de posição (`rules/`) | As 20 jogadas do playbook e o mecanismo real de aprendizado |
+| [Cap. 3 — Os Jogadores em Campo](capitulo-03-agents-jogadores.md) | Os 20 agentes | Posição, papel e o problema que cada um evita |
 | [Cap. 4 — A Convocação](capitulo-04-skills-convocacao.md) | As skills (`/comando`) | Por que separar o gatilho do cérebro |
 | [Cap. 5 — A Arbitragem](capitulo-05-hooks-arbitragem.md) | Hooks e nudges | Automação determinística: bloquear vs. cutucar |
 | [Cap. 6 — A Partida](capitulo-06-a-partida.md) | O jogo completo | Um exemplo real atravessando o time inteiro |

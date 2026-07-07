@@ -27,9 +27,9 @@
 | **4. Testes / QA** | `criar-testes`, `executar-testes`, `testar-*` | `suite-testes-instructions.md`, `tests/CLAUDE.md` | Comportamento **provado em execução real**, suíte verde de verdade |
 | **5. Verificação / Aceite** | `validar-entrega` | `definicao-de-pronto.md` | Entrega **ativa no runtime** (anti-falso-verde), com observabilidade |
 | **6. Operação / Deploy** | `gerenciar-postgresql/redis/job-core/scheduler` | DSNs canônicas, dry-run + `--execute` | Operação real **auditável**, mínimo impacto, nada de improviso |
-| **7. Manutenção / Evolução** | `corrigir-erros-com-log`, `implementar` | `definicao-de-pronto.md`, `error-backlog.md`, `regression-logs.md` | Bug corrigido **na causa raiz**, regressão registrada e protegida |
-| **8. Documentação** | `documentar`, `sincronizar-documentacao` | `CLAUDE.md §17` | Doc **fiel ao código**, nunca antecipando o que o runtime não entrega |
-| **9. Governança / Melhoria contínua** | `validar-instructions` + hooks | `lessons.md`, `bad-instructions.md`, `CLAUDE.md §15` | O **processo e o conhecimento** melhoram a cada rodada |
+| **7. Manutenção / Evolução** | `corrigir-erros-com-log`, `implementar` | `loops-estrategicos.md`, `definicao-de-pronto.md`, log por `correlation_id` | Bug corrigido **na causa raiz** provada pelo log; memória de rodada evita repetir hipótese falsificada |
+| **8. Documentação** | `documentar`, `sincronizar-documentacao` | `docs/CLAUDE.md` (regra aninhada de docs), `qualidade-texto.md` | Doc **fiel ao código**, nunca antecipando o que o runtime não entrega |
+| **9. Governança / Melhoria contínua** | *(curadoria humana)* + `./validar_descricao_subagentes.sh` + hooks | `licoes-aprendidas.md` dos agentes (gate "não promover ruído"), `subagentes-descricao-instructions.md` | O **processo e o conhecimento** melhoram a cada rodada |
 
 ---
 

@@ -23,7 +23,7 @@
   AUTO-CORREÇÃO                          AUTO-APERFEIÇOAMENTO
   "conserta ESTA tarefa"                 "melhora O SISTEMA para as próximas"
   escopo: uma tarefa/rodada              escopo: todas as tarefas futuras
-  vive: dentro do agente em execução     vive: na memória durável (rules/)
+  vive: dentro do agente em execução     vive: na memória durável (lições + contratos)
   termina: quando a tarefa fica certa    termina: nunca (é contínuo)
   pergunta: "já está correto?"           pergunta: "o que aprendemos para não repetir?"
 ```
@@ -40,6 +40,11 @@ Uma analogia do dia a dia fixa a diferença:
 
 **O que é:** um ciclo fechado de *executar → detectar falha → corrigir a causa raiz → revalidar*, que
 se repete até o resultado ficar comprovadamente certo — **com teto** para não rodar para sempre.
+
+**O contrato que o torna obrigatório:** `.claude/rules/loops-estrategicos.md` (Loop 1 — auto-correção
+por log). Erro real de backend em qualquer teste/validação exige capturar o `correlation_id`, abrir o
+log oficial (`python -m src.log_analyzer`) e confrontar log × código ("cara-crachá") até a causa raiz
+**provada** — é proibido rotular "ambiente / fora de escopo / credencial / dado faltando" por inferência.
 
 **Onde ele vive (evidência real no projeto):**
 
@@ -76,79 +81,81 @@ constante.
 
 ## A.3 O Loop de Auto-Aperfeiçoamento (o sistema fica melhor entre as tarefas)
 
-**O que é:** um ciclo que **atravessa sessões e tarefas** — o sistema lembra das lições passadas no
-começo e registra as novas no fim, fazendo o conhecimento se acumular na empresa.
+**O que é:** um ciclo que **atravessa rodadas e tarefas** — o que uma campanha aprendeu de forma
+comprovada é promovido para uma memória durável e versionada, que as rodadas seguintes releem antes de
+agir.
 
-**Onde ele vive (evidência real no projeto):**
+**Onde ele vive (evidência real no projeto):** a fonte única dos dois loops é o contrato
+**`.claude/rules/loops-estrategicos.md`**. Além do Loop 1 (a auto-correção da seção A.2), ele declara o
+**Loop 2 — memória de rodada**: dentro de uma mesma campanha, cada tentativa é registrada com evidência
+objetiva (erro dominante, hipótese, checagem discriminante, ação, resultado, próximo passo) e **relida
+antes de cada nova hipótese**. Essa memória é **local à campanha** — não vira registro global
+automaticamente.
+
+O salto do efêmero para o durável acontece pela **promoção com porteiro**, escrita no contrato do
+agente `corrigir-erros-com-log`: *"quando surgir regra preventiva durável comprovada, promover para os
+`licoes-aprendidas.md`"* — com o contrapeso explícito *"não promover ruído operacional local"*.
 
 ```
-   INÍCIO DA SESSÃO                                FIM DA SESSÃO
-   hook: session-start.sh                          hook: stop-loop-reminder.sh
-   ── lê e injeta lessons.md no contexto           ── cobra registrar lição/erro/regressão
-      (a sessão começa já relembrada)                 (a sessão termina tendo registrado)
-            │                                                    │
-            └──────────────── lado "LER" ── + ── lado "ESCREVER" ┘
-                                       │
-                          MEMÓRIA DURÁVEL (.claude/rules/)
-                  lessons.md · error-backlog.md · regression-logs.md · bad-instructions.md
+   DENTRO DA CAMPANHA (efêmero)               ENTRE CAMPANHAS (durável)
+   log-rodada.md                              licoes-aprendidas.md (por agente)
+   ── cada tentativa, com evidência           ── só regra preventiva COMPROVADA
+   ── relido antes de cada nova hipótese      ── relido no início da campanha seguinte
+           │                                                ▲
+           └──── "regra preventiva durável comprovada?" ────┘
+                (porteiro: não promover ruído operacional local)
 ```
 
-**Os quatro destinos do aprendizado (cada um com função distinta):**
+**As memórias duráveis existem e estão em uso real:**
 
-| Arquivo | Captura | Regra de qualidade |
-|---|---|---|
-| `lessons.md` | Lições com **valor preventivo transversal** | Só entra se "outro agente, amanhã, em outro slice, ainda evitaria erro com isso" |
-| `error-backlog.md` | Erro real de produto | Verifica duplicidade antes de registrar |
-| `regression-logs.md` | Erro que **voltou** | Tratado como regressão grave — investiga por que a correção anterior falhou |
-| `bad-instructions.md` | Defeito nas **próprias instruções** | Alimentado pelo agente `validar-instructions` |
+| Memória | O que guarda |
+|---|---|
+| `.claude/agents/corrigir-erros-com-log/licoes-aprendidas.md` | Lições preventivas comprovadas do loop forense (~22 KB de lições reais) |
+| `.claude/agents/testar-ingestao-dnit/licoes-aprendidas.md` | Lições da campanha de ingestão (~24 KB) |
+| `log-rodada.md` (ao lado de cada `licoes-aprendidas.md`) | A memória de rodada efêmera (Loop 2) |
+| `.claude/scripts/` | Script ad hoc que se provou reutilizável é promovido — deixa de ser recriado a cada rodada |
 
-**A trava de curadoria (por que o `lessons.md` não vira lixo):** existe uma **pergunta-porteiro**
-obrigatória antes de promover qualquer lição — *"se outro agente generalista atuar amanhã em outro
-slice, esta regra ainda reduziria chance real de erro?"*. Se a resposta é não, a lição fica na memória
-local da skill, não polui a memória global. Isso impede o problema clássico de "wiki que ninguém lê
-porque está cheia de detalhe irrelevante".
+**A trava de curadoria (por que a memória não vira lixo):** só é promovido o que é **preventivo,
+durável e comprovado**; detalhe operacional local fica no `log-rodada.md` e morre com a campanha. Isso
+impede o problema clássico da "wiki que ninguém lê porque está cheia de detalhe irrelevante".
 
-**Problema de engenharia que evita:** o sistema repetir o mesmo erro em slices diferentes; e o
-conhecimento morar na cabeça de poucos. É a **capitalização de conhecimento** automatizada.
+**Limite honesto (declarado, não escondido):** o aprendizado **não é disparado por hook de sessão** —
+depende do contrato do agente no momento da lição. Existe um hook `stop-loop-reminder.sh` em
+`.claude/hooks/`, mas ele **não está plugado** em nenhum settings (wiring pendente — lacuna conhecida),
+e seu conteúdo cobre apenas o nudge "editou `src/**.py` sem tocar `tests/`". Hoje, o lado "ler" do loop
+é garantido pelos próprios agentes (releem suas lições antes de nova hipótese) e o lado "escrever", pelo
+gate de promoção.
 
-**Valor:** melhoria contínua **institucional** — a empresa fica mais competente sozinha, por
-construção, sem depender de alguém lembrar de documentar.
+**Problema de engenharia que evita:** o sistema repetir o mesmo erro em campanhas diferentes; e o
+conhecimento morar só na janela de contexto, que morre com a sessão. É a **capitalização de
+conhecimento** com curadoria.
+
+**Valor:** melhoria contínua **institucional** — a lição comprovada vira patrimônio versionado do
+sistema, não lembrança de quem estava na sessão.
 
 ---
 
-## A.3.1 O quinto destino: o registro de encerramento (o rastro da tarefa)
+## A.3.1 O rastro da tarefa: os artefatos materializados
 
-Os quatro arquivos acima capturam **aprendizado**. Falta um destino que captura **a própria entrega**:
-o **registro de encerramento** (exigido pela [Definição de Pronto](../README.md), `§12`). Ele conecta
-pedido → alteração → raio de impacto → testes executados → resultado → status final (`SUCESSO` ou
-`BLOQUEADA`). Não é "mais um log" — é o que faz uma entrega **deixar de viver só no chat e virar
-evidência versionada**, ligando o trabalho de hoje ao histórico que os outros quatro arquivos consultam
-amanhã.
+As memórias acima capturam **aprendizado**. Falta o destino que captura **a própria entrega**: o eixo
+`investigar → planejar → validar-entrega` **materializa** cada etapa em arquivo auditável em
+`docs/.interno/.planos/<nome>/` (`investigacao--*.md`, `plano--*.md`, `validacao--*.md`), e toda
+execução real deixa seu log por `correlation_id`. Não é "mais um log" — é o que faz uma entrega
+**deixar de viver só no chat e virar evidência versionada**: uma regressão futura pode ser cruzada com
+a entrega que a introduziu, fechando o elo entre "o que mudou" e "o que voltou a quebrar".
 
-> 🛠️ Por que isto importa para o loop: sem o registro de encerramento, o loop de auto-aperfeiçoamento
-> fica cego sobre **o que já foi tentado e entregue**. Com ele, uma regressão futura pode ser cruzada
-> com a entrega que a introduziu — fechando o elo entre "o que mudou" e "o que voltou a quebrar".
+## A.3.2 Gatilho rápido: na dúvida, onde isso fica registrado?
 
-## A.3.2 Gatilho rápido: na dúvida, qual arquivo?
-
-| Aconteceu… | Registre em |
+| Aconteceu… | Fica em |
 |---|---|
-| O usuário corrigiu uma interpretação, ou surgiu um padrão que **pode voltar em outro slice** | `lessons.md` |
-| Um **erro real de runtime** (não falha de teste) afetou produto, API, worker, ingestão, RAG… | `error-backlog.md` |
-| O **mesmo** erro/sintoma/componente **voltou** | `regression-logs.md` |
-| Uma **instrução** se mostrou contraditória, ambígua, ampla demais ou sem critério de validação | `bad-instructions.md` |
-| Uma **tarefa fechou** (com ou sem bloqueio) | registro de encerramento |
+| Tentativa/hipótese testada **nesta campanha** de correção | `log-rodada.md` do agente (memória de rodada) |
+| Regra preventiva **durável e comprovada**, que evitaria erro em campanha futura | `licoes-aprendidas.md` do agente (promoção com porteiro) |
+| O que uma **execução real** fez, decidiu e onde errou | log por `correlation_id` (`python -m src.log_analyzer`) |
+| O que foi **investigado, planejado e validado** numa entrega | `docs/.interno/.planos/<nome>/` (relatórios materializados) |
 
-**Anti-exemplos (o erro × o certo):**
-
-- ❌ Corrigir um erro real e **não** registrar no backlog. ✅ Registrar erro, correção, evidência e validação.
-- ❌ Tratar um erro recorrente como **caso novo**. ✅ Registrar regressão e **questionar a abordagem anterior**.
-- ❌ Engolir uma instrução contraditória. ✅ Registrar em `bad-instructions` para revisão.
-- ❌ Encerrar a tarefa com um "feito" solto. ✅ Registrar encerramento com impacto, testes e status.
-
-> Regra anti-filler: registre **lição** apenas quando houver valor preventivo transversal; ajuste
-> trivial sem impacto sistêmico **não** vira lição. O loop melhora porque é **curado**, não porque
-> acumula tudo.
+> Regra anti-filler: promove-se **lição**, não diário. Ajuste trivial sem valor preventivo transversal
+> **não** sobe para o `licoes-aprendidas.md`. O loop melhora porque é **curado**, não porque acumula
+> tudo.
 
 ---
 
@@ -157,7 +164,8 @@ amanhã.
 Os dois loops não são ilhas. Há um ponto de contato deliberado:
 
 > Quando o **loop de auto-correção** de uma rodada descobre uma regra preventiva reaproveitável, essa
-> lição é **promovida** para o **loop de auto-aperfeiçoamento** (vai para o `lessons.md`).
+> lição é **promovida** para o **loop de auto-aperfeiçoamento** (vai para o `licoes-aprendidas.md` do
+> agente).
 
 Ou seja: o conserto de **um** problema de hoje pode virar a **prevenção** de uma família de problemas
 amanhã. O esforço de auto-correção não se perde quando a tarefa fecha — parte dele é capturada e vira
@@ -176,8 +184,8 @@ patrimônio do sistema.
 |---|---|---|
 | **Pergunta** | "Já está correto?" | "O que aprendemos para não repetir?" |
 | **Escopo** | Uma tarefa/rodada | Todas as tarefas futuras |
-| **Mora em** | O agente em execução | A memória durável (`rules/`) |
-| **Disparado por** | Falha detectada na própria tarefa | Hooks de início e fim de sessão |
+| **Mora em** | O agente em execução | A memória durável (`licoes-aprendidas.md` por agente + contratos curados) |
+| **Disparado por** | Falha detectada na própria tarefa | Lição preventiva durável **comprovada** na rodada (gate de promoção) |
 | **Termina** | Quando converge (com teto) | Nunca (é contínuo) |
 | **Mata o problema de** | Entrega "quase pronta", retrabalho infinito | Repetir erro, conhecimento que apodrece |
 | **Analogia neutra** | Refazer o trabalho ainda na mesa | Mudar o procedimento padrão |

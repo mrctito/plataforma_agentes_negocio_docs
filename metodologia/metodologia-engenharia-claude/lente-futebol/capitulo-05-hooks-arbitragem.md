@@ -29,20 +29,26 @@ Na nossa arbitragem, isso cria **dois tipos de intervenção**, e a distinção 
 **Por que ter os dois?** Porque nem tudo merece bloqueio. Bloquear demais engessa o trabalho e gera
 falsos positivos irritantes. Bloquear de menos deixa passar o que importa. A engenharia está em
 **escolher o instrumento certo para cada risco**: trava para o que é inegociável, cutucada para o que
-exige bom senso.
+exige bom senso. Na nossa escalação, só **3 dos 7 hooks bloqueiam** — o resto cutuca.
 
 ---
 
 ## 5.2 Quando cada hook dispara (os momentos do jogo)
 
-Os hooks estão amarrados no `settings.json` a quatro momentos do "jogo":
+A súmula (`settings.json`) amarra os hooks a **dois momentos**, e só a eles:
 
 ```
-  SessionStart   ──►  antes do jogo começar      ──►  session-start.sh        (preleção)
-  PreToolUse     ──►  antes de uma jogada (Bash/Write) ─► bash-guard / write-guard  (árbitro: pode apitar falta)
-  PostToolUse    ──►  depois de editar um arquivo ──►  py-lint / logging-nudge / py-discipline  (bandeirinhas)
-  Stop           ──►  no apito final              ──►  stop-loop-reminder      (cobrança pós-jogo)
+  PreToolUse (Bash)        ──► antes de um comando de terminal ──► bash-guard + worktree-guard  (árbitro: pode apitar)
+  PreToolUse (Write)       ──► antes de criar um arquivo       ──► write-guard                  (árbitro: pode apitar)
+  PostToolUse (Edit|Write) ──► depois de editar/criar          ──► py-lint + logging-nudge + py-discipline  (bandeirinhas)
 ```
+
+**E a honestidade importa aqui:** não existe hook de início nem de fim de sessão (nenhum evento
+`SessionStart`/`Stop` configurado). A "preleção antes do jogo" não é um hook — é o **carregamento
+automático do DNA**: o `CLAUDE.md` raiz entra em 100% das sessões e as jogadas ensaiadas entram por
+`paths:` quando a bola chega no setor ([Cap. 1](capitulo-01-filosofia-claude-md.md) e
+[Cap. 2](capitulo-02-rules-playbook.md)). Há ainda um sétimo hook escrito e pronto no vestiário que
+**não foi escalado** — falamos dele na [seção 5.5](#55-o-banco-de-reservas--um-hook-pronto-que-não-foi-escalado).
 
 ---
 
@@ -70,10 +76,36 @@ indevidamente. Segurança sem virar obstáculo.
 **Problema que evita:** dois acidentes clássicos de automação — **travar a sessão** com uma listagem
 gigante e **destruir dados** com um comando irreversível.
 
+### `worktree-guard.sh` — o cartão vermelho direto, sem VAR
+
+O guard mais duro do time, e o melhor material de metáfora da arbitragem. Contexto: o usuário trabalha
+com **várias janelas/agentes/worktrees em paralelo** ([Cap. 2](capitulo-02-rules-playbook.md),
+`worktree.md`), e os worktrees têm nome fixo (`worktree-codex`/`worktree-claude`) — o nome **não
+carrega** sessão nem UUID, então **é impossível provar pela máquina de quem é o worktree**.
+
+A resposta de engenharia: se não dá para provar posse, **nega sempre**. O hook intercepta
+`git worktree remove` e `git branch -d/-D` sobre esses nomes e bloqueia — mesmo que o agente "tenha
+certeza" de que o worktree é dele. A única válvula de escape é um **token nominal** que exige
+confirmação expressa do usuário para **aquele alvo exato**:
+
+```
+CONFIRMO_EXCLUSAO_WT_ALHEIA=<nome-exato-do-worktree> git worktree remove ...
+```
+
+O próprio hook avisa: "não existe bypass genérico ou em lote". É cartão vermelho direto, sem
+consulta ao VAR — porque apagar o worktree de **outra sessão** destrói trabalho alheio de forma
+irreversível.
+
+**O contraste que ensina:** o `bash-guard` **falha aberto** (na dúvida sobre si mesmo, deixa passar);
+o `worktree-guard` **falha fechado** (na dúvida sobre a posse, nega). A escolha não é gosto — é
+**assimetria de risco**: bloquear um comando legítimo custa um pedido de confirmação; deixar passar
+uma exclusão errada custa o trabalho de outra sessão. Falha aberta para não atrapalhar; falha fechada
+para não destruir.
+
 ### `write-guard.sh` — o árbitro do arquivo
 
 Impede a criação de testes pytest em diretórios proibidos (`tests/manual|disabled|temp`). É a aplicação
-automática do `CLAUDE.md §11` / `tests/CLAUDE.md`: teste tem que nascer no lugar coberto pela suíte
+automática do `CLAUDE.md §10` / `tests/CLAUDE.md`: teste tem que nascer no lugar coberto pela suíte
 oficial, com o marker de família correto.
 
 **Problema que evita:** teste "fantasma" criado num canto que a suíte oficial não roda — cobertura que
@@ -126,35 +158,39 @@ depois.
 
 ---
 
-## 5.5 Os hooks de início e fim — fechando o loop de aprendizado
+## 5.5 O banco de reservas — um hook pronto que não foi escalado
 
-### `session-start.sh` — a preleção antes do jogo
+Honestidade de inventário: existe um sétimo script no vestiário, o **`stop-loop-reminder.sh`**, escrito
+e funcional — mas **não registrado em nenhum `settings.json`**. Ele não dispara em nenhuma sessão.
+É uma **lacuna conhecida e declarada**, não um recurso.
 
-No começo de **toda sessão**, injeta automaticamente no contexto o conteúdo de `lessons.md` (as lições
-globais) e um resumo dos registros operacionais (quantos erros no backlog, quantas regressões). É o
-**lado "ler"** do loop de aprendizado: o time entra em campo já lembrado das lições passadas.
+O que ele faria, se escalado: no fim de uma rodada com edição real, se houve mudança em `src/**.py`
+**sem** mudança correspondente em `tests/`, injetaria o lembrete de cobertura de testes e
+observabilidade. Só isso — um nudge fino de fim de jogo, não um "cobrador de lições".
 
-### `stop-loop-reminder.sh` — a cobrança no vestiário
+Duas leituras de engenharia deste fato:
 
-No fim da rodada (`Stop`), se houve edição real, lembra o **lado "escrever"** do loop: registrar erro
-real em `error-backlog.md`, reincidência em `regression-logs.md`, promover lição transversal para
-`lessons.md`. E faz uma checagem fina: **se editou `src/**.py` mas não tocou em `tests/`**, levanta a
-bandeira sobre cobertura de testes e observabilidade.
-
-> 🧑‍💼 **RESUMO EXECUTIVO — o ciclo que se fecha sozinho.** O `session-start` *lembra* das lições no
-> começo; o `stop-loop` *cobra* o registro de novas lições no fim. Juntos, eles fazem o aprendizado da
-> empresa acontecer **automaticamente**, sem depender de alguém lembrar de documentar. É a máquina de
-> melhoria contínua ligada à tomada — o time fica mais inteligente a cada rodada, por construção.
+1. **A metáfora continua válida:** um clube pode ter jogador pronto no banco e optar por não escalá-lo.
+   O que não pode é a súmula dizer que ele jogou. Documentar o hook como ativo seria exatamente a
+   "doc que mente" que o time combate.
+2. **O aprendizado do time não depende dele.** O ciclo real de aprendizado não é um hook de fim de
+   sessão: são os **dois loops estratégicos** + a **promoção curada** para os `licoes-aprendidas.md`
+   dos agentes ([Cap. 2.2](capitulo-02-rules-playbook.md)) — contrato obrigatório, não lembrete
+   opcional.
 
 ---
 
 ## 5.6 `settings.json` e `settings.local.json` — a súmula oficial
 
-- **`settings.json`** é a **súmula**: amarra cada hook ao seu momento (`SessionStart`, `PreToolUse`,
-  `PostToolUse`, `Stop`). É o que faz a arbitragem existir.
+- **`settings.json`** é a **súmula**: amarra cada hook ao seu momento (`PreToolUse` para os guards,
+  `PostToolUse` para os nudges). É o que faz a arbitragem existir — e é por ele que se prova que o
+  `stop-loop-reminder` não está em campo.
 - **`settings.local.json`** é a lista de **permissões locais**: pré-autoriza comandos seguros e
-  repetitivos (rodar a suíte, `ruff`, `mypy`, `pytest`, `npm run test:*`) para não pedir confirmação a
-  cada vez. É produtividade sem abrir mão de segurança — só entra aqui o que é comprovadamente seguro.
+  repetitivos para não pedir confirmação a cada vez — hoje: a suíte oficial
+  (`python suite_de_testes_padrao.py`), `jest`, `ruff check`, a CLI de logs
+  (`python -m src.log_analyzer`) e o script canônico de consulta ao PostgreSQL
+  (`run_postgresql_query.py`). É produtividade sem abrir mão de segurança — só entra aqui o que é
+  comprovadamente seguro.
 
 ---
 
@@ -162,13 +198,13 @@ bandeira sobre cobertura de testes e observabilidade.
 
 | Hook | Momento | Tipo | Garante |
 |---|---|---|---|
-| session-start | início | injeção | Lições passadas presentes desde o 1º minuto |
-| bash-guard | antes de Bash | **guard** + nudge | Não trava a sessão, não destrói dados |
+| bash-guard | antes de Bash | **guard** (falha aberta) + nudge | Não trava a sessão, não destrói dados |
+| worktree-guard | antes de Bash | **guard** (falha fechada) | Não apaga worktree de outra sessão |
 | write-guard | antes de Write | **guard** | Teste nasce no lugar certo |
 | py-lint | após editar .py | nudge | Estilo limpo no momento da edição |
 | logging-nudge | após editar .py | nudge | Observabilidade canônica por radar |
 | py-discipline | após editar .py | nudge | Disciplina Python/testes |
-| stop-loop-reminder | fim | nudge | Aprendizado registrado + cobertura lembrada |
+| stop-loop-reminder | *(não wired)* | nudge **no banco** | Nada, hoje — lacuna declarada (§5.5) |
 
 ---
 
@@ -177,11 +213,12 @@ bandeira sobre cobertura de testes e observabilidade.
 - Hooks **não são a IA decidindo** — são regras **determinísticas** que disparam sozinhas. É o pilar
   que converte "intenção" em "garantia".
 - A distinção mestra: **guard (trava/`deny`)** para o risco inegociável; **nudge (cutucada/aviso)**
-  para o que exige julgamento. Escolher o instrumento certo é a engenharia.
+  para o que exige julgamento. E, dentro dos guards, a segunda distinção: **falha aberta** para não
+  atrapalhar (bash-guard) vs. **falha fechada** para não destruir (worktree-guard) — escolhida pela
+  assimetria de risco, com válvula de escape por **token nominal**, nunca genérico.
 - Os nudges transformam contratos densos (como o de logs) em **radares automáticos** que corrigem no
   momento mais barato — a hora da edição.
-- `session-start` + `stop-loop` **fecham o ciclo de aprendizado automaticamente** — a empresa aprende
-  por construção, não por disciplina individual.
+- Honestidade de súmula: **3 travas + 3 bandeirinhas em campo; 1 hook pronto no banco, sem wiring** —
+  e o aprendizado do time vive nos loops estratégicos (Cap. 2), não num hook de fim de sessão.
 
 **Próximo:** [Capítulo 6 — A Partida (o time inteiro em ação)](capitulo-06-a-partida.md).
-</content>
