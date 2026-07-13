@@ -63,8 +63,8 @@ O modo pode vir de:
 
 Esse resolvedor segue esta lógica prática:
 
-- `selected_supervisor` ou `multi_agents` sugerem `deepagent`;
-- `selected_workflow` ou `workflows` sugerem `workflow`;
+- `selected_entrypoint` ou `multi_agents` sugerem `deepagent`;
+- `selected_entrypoint` ou `workflows` sugerem `workflow`;
 - `mode` ou `execution.type` explícitos também podem influenciar;
 - se nada disso existir, o comportamento tende a permanecer no modo padrão da tela.
 

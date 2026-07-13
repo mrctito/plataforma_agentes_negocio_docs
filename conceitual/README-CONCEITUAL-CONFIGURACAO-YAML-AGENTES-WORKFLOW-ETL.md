@@ -74,11 +74,11 @@ YAML-first significa que a plataforma nasce de configuração declarativa. Não 
 
 Aqui, “sem programação” significa montar o comportamento usando capacidades que ja existem no produto. Isso inclui escolher WorkflowAgent, DeepAgent, tools e pipelines ETL ja implementados. Nao significa inventar uma nova capacidade do zero sem codigo.
 
-### 6.3. selected_workflow
+### 6.3. selected_entrypoint
 
 É a chave que escolhe qual workflow habilitado do documento será o ativo em runtime. Ela existe para evitar ambiguidade quando o YAML traz mais de um fluxo possível.
 
-### 6.4. selected_supervisor
+### 6.4. selected_entrypoint
 
 E a chave historica que escolhe qual entrada DeepAgent habilitada sera a ativa em runtime. Ela existe para evitar que o sistema “adivinhe” o orquestrador correto.
 
@@ -193,7 +193,7 @@ Os erros mais relevantes confirmados no código lido são estes.
 
 1. YAML top-level que não é objeto.
 2. Falta ou ambiguidade de workflow ativo.
-3. selected_supervisor incompatível com os DeepAgents disponíveis.
+3. selected_entrypoint incompatível com os DeepAgents disponíveis.
 4. tools_library ausente ou preenchida indevidamente quando o contrato agentic espera auto-injeção.
 5. extract_transform_load ausente, disabled ou sem subsistemas ativos.
 6. Target agentic inválido ou feature de AST desabilitada no endpoint administrativo.
@@ -207,7 +207,7 @@ Para investigar um problema nesse domínio, a primeira pergunta correta não é 
 A ordem mais segura de diagnóstico é esta.
 
 1. Confirmar o target da montagem, como workflow ou deepagent.
-2. Confirmar se selected_workflow ou selected_supervisor apontam para um item real e habilitado.
+2. Confirmar se selected_entrypoint apontam para um item real e habilitado.
 3. Confirmar se tools_library chegou no formato esperado.
 4. Confirmar se extract_transform_load.enabled e os subsistemas corretos estão ativos.
 5. Só depois investigar engine, provider externo ou runtime específico.
@@ -257,7 +257,7 @@ Pense na plataforma como uma fábrica com máquinas já instaladas. O YAML é o 
 1. “Sem programação” não significa “sem validação”.
 2. “Sem programação” não significa “capacidade ilimitada”.
 3. Tools builtin não devem ser declaradas manualmente no YAML recebido.
-4. selected_workflow e selected_supervisor evitam ambiguidade, não são enfeite opcional em todo cenário.
+4. selected_entrypoint evitam ambiguidade, não são enfeite opcional em todo cenário.
 5. ETL declarativo só cobre pipelines que já existem no código.
 6. AST governada é proteção, não burocracia extra.
 
@@ -273,7 +273,7 @@ Causa provável: extract_transform_load.enabled está falso ou nenhum subsistema
 
 ### 22.3. Sintoma: o supervisor errado entra em execução
 
-Causa provável: selected_supervisor ausente, incompatível ou ambíguo diante dos DeepAgents habilitados.
+Causa provável: selected_entrypoint ausente, incompatível ou ambíguo diante dos DeepAgents habilitados.
 
 ### 22.4. Sintoma: a configuração agentic não enxerga as tools esperadas
 
@@ -285,7 +285,7 @@ Causa provável: tools_library não chegou vazia para auto-injeção ou o catál
 - Entendi o que ainda exige programação.
 - Entendi a diferenca entre WorkflowAgent, DeepAgent e ETL.
 - Entendi por que tools_library é injetada e não preenchida manualmente.
-- Entendi como selected_workflow e selected_supervisor controlam a escolha ativa.
+- Entendi como selected_entrypoint controla a escolha ativa.
 - Entendi por que extract_transform_load governa o ETL.
 - Entendi por que AST e validadores existem.
 
@@ -301,7 +301,7 @@ Causa provável: tools_library não chegou vazia para auto-injeção ou o catál
 
 - src/config/agentic_assembly/target_scope_resolver.py
   - Motivo da leitura: confirmar escolha do workflow ativo e do membro ativo da familia supervisor.
-  - Comportamento confirmado: selected_workflow e selected_supervisor controlam trilhos diferentes do runtime agentic, com fallback restrito ao que está habilitado e compatível.
+  - Comportamento confirmado: selected_entrypoint resolve exatamente um Workflow ou DeepAgent habilitado, sem fallback.
 
 - src/config/agentic_assembly/validators/document_validator.py
   - Motivo da leitura: confirmar validação semântica por alvo.

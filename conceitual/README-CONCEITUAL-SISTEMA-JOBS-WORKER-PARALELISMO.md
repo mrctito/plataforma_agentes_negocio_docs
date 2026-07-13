@@ -635,7 +635,7 @@ Resposta esperada: validação do contrato de fila, ausência de handler e indis
   - Símbolos relevantes: `WorkerProcessRuntime.start`, `WorkerProcessRuntimeSnapshot`.
   - Comportamento confirmado: a prontidão final depende da combinação entre plano de controle multicanal e runtime assíncrono.
 
-- [../tests/integration/test_03-01-08_async_job_dramatiq_real_flow.py](../tests/integration/test_03-01-08_async_job_dramatiq_real_flow.py)
+- [../tests/integration/test_03-01-08_async_job_rabbitmq_real_flow.py](../tests/integration/test_03-01-08_async_job_rabbitmq_real_flow.py)
   - Motivo da leitura: confirmar evidência executável do fluxo real.
   - Símbolo relevante: `test_quando_runtime_real_executa_matriz_critica_entao_boundary_completo_passa_pelo_job_core_e_executor_canonico`.
   - Comportamento confirmado: o repositório testa RabbitMQ real no boundary completo para a matriz crítica de `route_kind + dispatch_mode`, incluindo ingestão, ETL, background execution e scheduler. (O nome do arquivo preserva "dramatiq" por histórico; o runtime exercitado é o de polling.)

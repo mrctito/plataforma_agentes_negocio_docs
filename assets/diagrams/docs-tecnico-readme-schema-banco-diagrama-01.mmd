@@ -1,0 +1,46 @@
+%% APLICADO: identidade e membership existem; entitlement SaaS ainda não deriva deles.
+erDiagram
+    user_accounts ||--o{ user_auth_identities : "possui login externo"
+    user_accounts ||--o{ user_password_credentials : "possui senha local"
+    user_accounts ||--o{ tenant_users : "membership aplicado; T10 não ligado"
+    tenants ||--o{ tenant_users : "possui membros"
+    user_accounts ||--o{ user_account_payment_cards : "possui métodos pessoais"
+    tenants ||--o{ tenant_payment_cards : "possui métodos organizacionais"
+
+    user_accounts {
+        uuid user_account_id PK
+        text account_status
+    }
+    tenants {
+        text tenant_id PK
+        text client_code
+        boolean is_active
+    }
+    tenant_users {
+        uuid tenant_user_id PK
+        text tenant_id FK
+        uuid user_account_id FK
+        text role
+        text status
+    }
+    user_auth_identities {
+        uuid user_auth_identity_id PK
+        uuid user_account_id FK
+        text provider_type
+    }
+    user_password_credentials {
+        uuid user_account_id PK,FK
+        text password_hash
+    }
+    user_account_payment_cards {
+        uuid user_account_payment_card_id PK
+        uuid user_account_id FK
+        text gateway_payment_method_id
+        text card_last4
+    }
+    tenant_payment_cards {
+        uuid tenant_payment_card_id PK
+        text tenant_id FK
+        text gateway_payment_method_id
+        text card_last4
+    }

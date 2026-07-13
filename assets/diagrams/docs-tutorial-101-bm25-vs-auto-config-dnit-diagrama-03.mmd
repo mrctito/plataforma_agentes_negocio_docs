@@ -25,8 +25,8 @@ flowchart LR
 
     subgraph Data["Camada de dados"]
         E1["bm25_indexes"]
-        E2["ingestion_domain_processors.auto_config"]
-        E3["ingestion manifests"]
+        E2["vector_dataset_master.metadata auto_config"]
+        E3["vector_active_documents"]
     end
 
     subgraph Contracts["Contratos"]

@@ -1,0 +1,38 @@
+%% APLICADO T7-T9: 5 projetos, 16 releases publicadas e 5 ponteiros ativos em prod.
+erDiagram
+    tenants ||--o{ saas_projects : "possui projetos"
+    saas_projects ||--o{ saas_project_releases : "possui releases imutáveis"
+    tenant_yaml ||--o{ saas_project_releases : "um YAML por release"
+    saas_projects ||--o{ saas_project_active_releases : "um ponteiro por ambiente"
+    saas_project_releases ||--o{ saas_project_active_releases : "release ativa"
+    user_accounts ||--o{ saas_project_active_releases : "ator opcional"
+
+    saas_projects {
+        uuid saas_project_id PK
+        text environment UK
+        text tenant_id FK,UK
+        text project_key UK
+        text display_name
+        text status
+    }
+    saas_project_releases {
+        uuid saas_project_release_id PK
+        text environment UK
+        text tenant_id UK
+        uuid saas_project_id FK,UK
+        uuid tenant_yaml_id FK
+        bigint release_number UK
+        text yaml_hash UK
+        jsonb manifest_json
+        text manifest_hash
+        text status
+        timestamptz published_at
+    }
+    saas_project_active_releases {
+        text environment PK,FK
+        text tenant_id PK,FK
+        uuid saas_project_id PK,FK
+        uuid saas_project_release_id FK
+        timestamptz activated_at
+        uuid activated_by_user_account_id FK
+    }

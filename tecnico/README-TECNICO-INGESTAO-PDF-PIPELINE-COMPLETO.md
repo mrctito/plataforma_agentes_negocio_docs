@@ -189,7 +189,7 @@ Quem decide se o filho ainda pode trabalhar é o plano de controle durável no P
 
 A gate consulta duas visões canônicas do pai antes de liberar o filho:
 
-- `fetch_run_record`, para ler o run pai em `ingestion_runs`.
+- `fetch_run_record`, para ler o run pai em `vector_ingestion_runs`.
 - `fetch_document_fanout_runtime_state`, para ler o estado agregado do fan-out.
 
 Se qualquer uma dessas consultas críticas falhar, o comportamento correto é falhar fechado. Em linguagem simples: se o sistema não consegue confirmar no banco que o pai ainda está executável, o filho não baixa PDF, não faz OCR, não parseia e não republica outro filho.
@@ -902,7 +902,7 @@ No caminho feliz, os sinais de sucesso técnico são:
 1. logs do boundary HTTP de `POST /rag/ingest`, para confirmar composição do YAML, `task_id` e `document_parallelism` efetivo;
 2. logs de `schedule_prepared_ingestion_worker_job` e da reserva de `worker_execution_correlation_id`, para confirmar que o job pai realmente foi publicado;
 3. logs do worker pai, para confirmar se o envelope caiu na fila correta e se houve decisão de fan-out;
-4. telemetria durável do run pai e de `ingestion_run_documents`, para confirmar quantos filhos foram inventariados, enfileirados e finalizados;
+4. telemetria durável do run pai e de `vector_ingestion_run_documents`, para confirmar quantos filhos foram inventariados, enfileirados e finalizados;
 5. logs do worker filho e da `DocumentFanoutExecutionGate`, para diferenciar execução autorizada, cancelamento cooperativo e mensagem atrasada do broker;
 6. só depois disso olhar os logs internos de `process_document`, OCR documental, parsing, `execution_manifest`, `multimodal_status_details` e chunking.
 
@@ -1095,7 +1095,7 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
   - Símbolo relevante: `DocumentFanoutChildExecutorService.execute`.
   - Comportamento confirmado: consulta gate canônica, respeita cancelamento cooperativo, executa um documento por vez e persiste estado terminal antes do ACK.
 
-- `tests/integration/test_03-01-08_async_job_dramatiq_real_flow.py`
+- `tests/integration/test_03-01-08_async_job_rabbitmq_real_flow.py`
   - Motivo da leitura: evidência executável do fluxo assíncrono.
   - Símbolo relevante: `test_runtime_real_consumes_parent_and_child_queues`.
   - Comportamento confirmado: valida consumo real de envelopes pai e filho em filas Dramatiq separadas.

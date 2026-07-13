@@ -67,7 +67,7 @@ AST, neste contexto, é a representação tipada e estruturada do pedaço agenti
 
 ### Escopo agentic governado
 
-É o subconjunto do documento YAML em que a AST vira a fonte de verdade de edição, parse, validação e compilação. No código lido, esse envelope inclui seleção de workflow, seleção histórica via selected_supervisor para DeepAgent, workflows, multi_agents, tools_library e alguns blocos auxiliares do documento.
+É o subconjunto do documento YAML em que a AST vira a fonte de verdade de edição, parse, validação e compilação. No código lido, esse envelope inclui seleção de workflow, seleção histórica via selected_entrypoint para DeepAgent, workflows, multi_agents, tools_library e alguns blocos auxiliares do documento.
 
 ### Target
 
@@ -124,7 +124,7 @@ O que é: a representação canônica do documento agentic completo.
 
 Por que existe: para concentrar em um objeto só os recortes relevantes para workflow e deepagent.
 
-Como funciona: AgenticDocumentAST carrega target, selected_workflow, selected_supervisor, workflows_defaults, workflows, multi_agents, deepagent_multi_agents, tools_library e alguns blocos auxiliares como local_tools_configuration, global_tools_configuration e memory.
+Como funciona: AgenticDocumentAST carrega target, selected_entrypoint, workflows_defaults, workflows, multi_agents, deepagent_multi_agents, tools_library e alguns blocos auxiliares como local_tools_configuration, global_tools_configuration e memory.
 
 O que entrega: um modelo único que depois pode ser convertido em fragmento YAML orientado ao target.
 
@@ -210,7 +210,7 @@ Na prática, isso quer dizer três coisas.
 
 1. `workflows[].ag_ui.ui_specs` é o único local governado para UISpec de Workflow.
 2. Cada item precisa ter `id` único dentro do próprio workflow e `spec` validada como `UISpec`, com falha fechada para conteúdo inseguro.
-3. O runtime AG-UI resolve `uiSpecId` apenas contra a UISpec declarada no workflow selecionado por `selected_workflow`, ou falha fechado quando o YAML estiver ambíguo.
+3. O runtime AG-UI resolve `uiSpecId` apenas contra a UISpec declarada no workflow selecionado por `selected_entrypoint`, ou falha fechado quando o YAML estiver ambíguo.
 
 O efeito prático é o mesmo do DeepAgent: YAML, AST, schema, validator e runtime usam o mesmo contrato. Isso evita duas formas diferentes de declarar a mesma tela gerada e impede que o browser receba uma UISpec inventada fora do YAML governado.
 
@@ -220,7 +220,7 @@ O que é: a etapa que transforma AST validada em YAML final sem destruir o resto
 
 Por que existe: para evitar reescrita integral e acoplamento entre slices independentes.
 
-Como funciona: DocumentCompiler atualiza apenas chaves do target governado. Para workflow, mexe em selected_workflow, workflows_defaults, workflows e tools_library. Para DeepAgent, trata selected_supervisor, faz merge seletivo de multi_agents e atualiza tools_library por id, preservando slices clássicos residuais apenas quando eles já existem fora do alvo governado.
+Como funciona: DocumentCompiler atualiza apenas chaves do target governado. Para workflow, mexe em selected_entrypoint, workflows_defaults, workflows e tools_library. Para DeepAgent, trata selected_entrypoint, faz merge seletivo de multi_agents e atualiza tools_library por id, preservando slices clássicos residuais apenas quando eles já existem fora do alvo governado.
 
 O que entrega: documento final coerente com o slice governado e preservação do restante do YAML.
 
@@ -523,7 +523,7 @@ Isso prepara o produto para:
 
 Cenário: o operador já tem um documento com workflows e quer editar apenas o fluxo ativo.
 
-O que acontece: o target workflow é resolvido, o documento vira AST, a validação foca no slice de workflow e o merge final atualiza apenas selected_workflow, workflows_defaults, workflows e tools_library do recorte.
+O que acontece: o target workflow é resolvido, o documento vira AST, a validação foca no slice de workflow e o merge final atualiza apenas selected_entrypoint, workflows_defaults, workflows e tools_library do recorte.
 
 Impacto prático: o restante do YAML não é reescrito desnecessariamente.
 

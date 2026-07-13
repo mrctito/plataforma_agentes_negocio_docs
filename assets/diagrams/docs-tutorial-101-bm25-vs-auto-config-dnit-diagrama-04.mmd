@@ -8,8 +8,8 @@ flowchart TB
     C7["domain_config_repository.py\nupdate_auto_config"]
     C8["domain_signal_processor.py\naggregate and persist"]
     D1["(bm25_indexes)"]
-    D2["(ingestion_domain_processors.auto_config)"]
-    D3["(ingestion manifests)"]
+    D2["(vector_dataset_master.metadata auto_config)"]
+    D3["(vector_active_documents)"]
     T1["test_02-58-06_gesdoc_query_expansion.py"]
 
     C8 --> D3

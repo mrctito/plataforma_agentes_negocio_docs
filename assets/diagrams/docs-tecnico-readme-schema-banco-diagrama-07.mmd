@@ -1,0 +1,9 @@
+%% APLICADO T8/T9: lifecycle e compare-and-set; adapters comerciais continuam futuros.
+stateDiagram-v2
+    [*] --> Draft: cria release sem publicar
+    Draft --> Published: valida YAML + manifesto + hashes
+    Published --> Active: troca ponteiro do projeto/ambiente
+    Active --> Published: outra release assume o ponteiro
+    Published --> Retired: encerra uso futuro
+    Active --> Rollback: operador escolhe release publicada anterior
+    Rollback --> Active: compare-and-set atômico

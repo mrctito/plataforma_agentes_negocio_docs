@@ -56,7 +56,7 @@ O método fingerprint_fragment monta este payload lógico:
 {
   "target": "deepagent_supervisor",
   "fragment": {
-    "selected_supervisor": "...",
+    "selected_entrypoint": "...",
     "multi_agents": [...],
     "tools_library": []
   }
@@ -78,14 +78,14 @@ Os conjuntos padrão confirmados no detector são:
 
 ### Workflow
 
-- selected_workflow;
+- selected_entrypoint;
 - workflows_defaults;
 - workflows;
 - tools_library.
 
 ### DeepAgent supervisor
 
-- selected_supervisor;
+- selected_entrypoint;
 - multi_agents;
 - tools_library.
 

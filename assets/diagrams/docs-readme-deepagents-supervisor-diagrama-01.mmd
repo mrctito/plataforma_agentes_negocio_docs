@@ -1,5 +1,5 @@
 flowchart TD
-    A["YAML com selected_supervisor e multi_agents"] --> B["Parser DeepAgent filtra execution.type deepagent"]
+    A["YAML com selected_entrypoint e multi_agents"] --> B["Parser DeepAgent filtra execution.type deepagent"]
     B --> C["AST DeepAgent + validação semântica"]
     C --> D["DeepAgentSupervisor carrega contexto e factories"]
     D --> E["Resolve cache, tools, modelo e prompt"]

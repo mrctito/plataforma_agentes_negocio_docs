@@ -941,7 +941,7 @@ O comando exato de operação em container não foi confirmado integralmente nos
   - Símbolos relevantes: `WorkerProcessRuntime.start`, `WorkerProcessRuntimeSnapshot.ready`.
   - Comportamento confirmado: `WORKER_RUNTIME_READY` só nasce quando plano de controle e runtime assíncrono estão prontos em conjunto.
 
-- [../tests/integration/test_03-01-08_async_job_dramatiq_real_flow.py](../tests/integration/test_03-01-08_async_job_dramatiq_real_flow.py)
+- [../tests/integration/test_03-01-08_async_job_rabbitmq_real_flow.py](../tests/integration/test_03-01-08_async_job_rabbitmq_real_flow.py)
   - Motivo da leitura: confirmar evidência executável do fluxo físico real.
   - Símbolo relevante: `test_quando_runtime_real_executa_matriz_critica_entao_boundary_completo_passa_pelo_job_core_e_executor_canonico`.
   - Comportamento confirmado: o transporte RabbitMQ real (o nome do arquivo preserva "dramatiq" por histórico; o runtime exercitado é o de polling) atravessa o executor de payload, o Job Core e o executor canônico para a matriz crítica de `route_kind + dispatch_mode`.

@@ -76,10 +76,10 @@ Estas são as chaves top-level mais decisivas para o tema pedido, confirmadas no
 1. user_session.
 2. security_keys.
 3. tools_library.
-4. selected_workflow.
+4. selected_entrypoint.
 5. workflows_defaults.
 6. workflows.
-7. selected_supervisor.
+7. selected_entrypoint.
 8. multi_agents.
 9. extract_transform_load.
 
@@ -91,7 +91,7 @@ No recorte técnico desta documentação, essas chaves são as que mais importam
 
 No escopo de workflow, os campos mais importantes são.
 
-1. selected_workflow.
+1. selected_entrypoint.
 2. workflows_defaults.
 3. workflows.
 4. tools_library.
@@ -100,7 +100,7 @@ No escopo de workflow, os campos mais importantes são.
 
 O TargetScopeResolver resolve o workflow efetivo nesta ordem.
 
-1. Se selected_workflow estiver preenchido e corresponder a um workflow real, ele é escolhido.
+1. Se selected_entrypoint estiver preenchido e corresponder a um workflow real, ele é escolhido.
 2. Se não houver seleção explícita, o resolver usa o primeiro workflow habilitado.
 3. Se não houver workflow utilizável, o resultado é nulo e o fluxo de validação posterior deve tratar isso como documento inválido ou incompleto.
 
@@ -123,7 +123,7 @@ Não permite criar um modo de node que o runtime ainda não conhece. Essa parte 
 
 No escopo de agentes, os campos mais importantes são.
 
-1. selected_supervisor.
+1. selected_entrypoint.
 2. multi_agents.
 3. tools_library.
 
@@ -133,7 +133,7 @@ O TargetScopeResolver olha multi_agents e identifica o DeepAgent ativo pelo camp
 
 O fluxo observado no código é este.
 
-1. Se selected_supervisor existir, ele tenta localizar o id compatível com o target.
+1. Se selected_entrypoint existir, ele tenta localizar o id compatível com o target.
 2. Se não encontrar, procura o primeiro supervisor habilitado com execution.type compatível.
 3. Se ainda assim não encontrar um item compatível, o resultado é nulo.
 
@@ -206,13 +206,13 @@ O comportamento real observado no código pode ser resumido assim.
 
 ### 11.1. Workflow
 
-1. selected_workflow preenchido e válido prioriza o item correspondente.
+1. selected_entrypoint preenchido e válido prioriza o item correspondente.
 2. Sem seleção explícita, o primeiro workflow habilitado pode ser escolhido pelo resolvedor local.
 3. A validação semântica decide se esse cenário é aceitável ou se há ambiguidade para o alvo.
 
 ### 11.2. DeepAgent
 
-1. selected_supervisor preenchido e compatível prioriza o item correspondente.
+1. selected_entrypoint preenchido e compatível prioriza o item correspondente.
 2. Sem seleção explícita, o resolver tenta o primeiro item habilitado e compatível.
 3. A validação semântica continua sendo a proteção principal contra documento ambíguo ou incoerente.
 
@@ -262,8 +262,8 @@ Os principais cenários confirmados no código são estes.
 
 1. YAML que não é objeto top-level.
 2. tools_library ausente ou em formato incompatível com o fluxo esperado.
-3. selected_workflow apontando para item inexistente ou inválido.
-4. selected_supervisor sem supervisor compatível.
+3. selected_entrypoint apontando para item inexistente ou inválido.
+4. selected_entrypoint sem supervisor compatível.
 5. FEATURE_AGENTIC_AST_ENABLED desligada nos endpoints de assembly.
 6. extract_transform_load ausente, disabled ou sem subsistemas habilitados.
 
@@ -272,7 +272,7 @@ Os principais cenários confirmados no código são estes.
 Para investigar, siga esta ordem.
 
 1. Descubra qual domínio falhou, como workflow, deepagent ou ETL.
-2. Descubra qual seletor ativo deveria governar o caso, como selected_workflow ou selected_supervisor.
+2. Descubra qual seletor ativo deveria governar o caso, como selected_entrypoint.
 3. Confirme se tools_library entrou pela trilha esperada.
 4. Confirme se o target e a feature flag estavam coerentes no fluxo de assembly.
 5. No ETL, confirme primeiro extract_transform_load.enabled e só depois o pipeline específico.
@@ -285,7 +285,7 @@ O caminho mínimo confirmado é.
 
 1. YAML base carregável.
 2. workflows presente.
-3. selected_workflow coerente quando necessário.
+3. selected_entrypoint coerente quando necessário.
 4. tools_library disponível para o runtime agentic.
 
 ### 18.2. Configuração declarativa de DeepAgent
@@ -294,7 +294,7 @@ O caminho mínimo confirmado é.
 
 1. multi_agents presente.
 2. execution.type coerente com o alvo.
-3. selected_supervisor coerente quando necessário.
+3. selected_entrypoint coerente quando necessário.
 4. fluxo de assembly habilitado quando houver validação governada.
 
 ### 18.3. Configuração declarativa de ETL
@@ -386,7 +386,7 @@ Causa provável: extract_transform_load não está pronto para execução segund
 
 - src/config/agentic_assembly/target_scope_resolver.py
   - Motivo da leitura: confirmar como workflow e supervisor ativos são escolhidos.
-  - Comportamento confirmado: selected_workflow e selected_supervisor governam o alvo ativo, com regras restritas de fallback.
+  - Comportamento confirmado: selected_entrypoint governa o alvo ativo e falha fechado sem fallback.
 
 - src/services/etl_service.py
   - Motivo da leitura: confirmar pré-condições do ETL declarativo.

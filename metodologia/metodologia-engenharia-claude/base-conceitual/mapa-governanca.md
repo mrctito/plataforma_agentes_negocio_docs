@@ -124,23 +124,7 @@ ferramenta.
   por proxy ("o grep não achou, logo não existe"). Com eles, a regra de ouro do raiz §1 — tocar a
   fonte de verdade real antes de afirmar ausência — tem um caminho executável e auditável.
 
-```mermaid
-flowchart TB
-    R["1. CLAUDE.md raiz - 180 ln<br>sempre em contexto"]
-    N["2. CLAUDE.md aninhados - 5 arquivos<br>entram pela pasta tocada"]
-    RU["3. Rules - 20 arquivos<br>19 com paths: (escopo por caminho)"]
-    SK["4. Skills - 17<br>gatilho fino pelo pedido do usuario"]
-    AG["5. Agents - 20<br>procedimento completo, roda isolado"]
-    HK["6. Hooks - 7 scripts<br>deterministicos, fora do LLM"]
-    SC["7. Scripts de dados - 46 em 8 subpastas<br>fonte de verdade real"]
-    R --> N
-    R --> RU
-    R --> SK
-    SK --> AG
-    RU -. "paths: casam os proprios agents" .-> AG
-    AG --> SC
-    HK -. "bloqueiam ou avisam em qualquer camada" .-> AG
-```
+![Camada 7 — Scripts de dados (.claude/scripts/): o braço determinístico da "fonte de verdade real"](../../../assets/diagrams/docs-metodologia-metodologia-engenharia-claude-base-conceitual-mapa-governanca-diagrama-01.svg)
 
 ---
 
@@ -151,29 +135,7 @@ flowchart TB
 O caminho oficial de qualquer mudança relevante é uma cadeia de 4 fases, e o **handoff entre fases é
 um arquivo materializado** em `docs/.interno/.planos/<nome>/` — nunca só uma conversa:
 
-```mermaid
-flowchart TB
-    subgraph F1["Fase 1 - Investigar"]
-        S1["skill /investigar"] --> A1["agente investigar (opus)"]
-        A1 --> D1["investigacao--ts--nome.md"]
-    end
-    subgraph F2["Fase 2 - Planejar"]
-        S2["skill /planejar"] --> A2["agente planejar (opus)"]
-        A2 --> D2["plano--ts--nome.md<br>com secao Estrategia/Recomendacoes"]
-    end
-    subgraph F3["Fase 3 - Implementar"]
-        S3["skill /implementar<br>orquestrador na janela quente"] --> A3["agente implementar por fase (opus)"]
-        A3 --> D3["diario write-ahead por tarefa<br>no arquivo do plano"]
-    end
-    subgraph F4["Fase 4 - Validar"]
-        S4["skill /validar-entrega"] --> A4["agente validar-entrega (opus)"]
-        A4 --> D4["validacao--ts--nome.md<br>4 status possiveis"]
-    end
-    D1 --> S2
-    D2 --> S3
-    D3 --> S4
-    D4 -- "nao-entrega: volta ao planejar" --> S2
-```
+![3.1 O pipeline principal](../../../assets/diagrams/docs-metodologia-metodologia-engenharia-claude-base-conceitual-mapa-governanca-diagrama-02.svg)
 
 Por que **"resposta só no chat é inválida"**: o agente `investigar` declara literalmente *"Resposta
 apenas no chat, sem arquivo materializado, e invalida"*

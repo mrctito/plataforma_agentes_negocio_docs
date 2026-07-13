@@ -51,7 +51,7 @@ Apesar das variacoes de negocio, os YAMLs reais lidos repetem o mesmo desenho ma
 ```yaml
 tools_library: []
 
-selected_supervisor: "algum_supervisor"  # quando o YAML quer evitar ambiguidade
+selected_entrypoint: "algum_supervisor"  # quando o YAML quer evitar ambiguidade
 
 multi_agents:
   - id: "supervisor_x"
@@ -176,12 +176,12 @@ multi_agents:
 
 Troque os endpoint_id e o bloco api_dynamic sem mexer no esqueleto DeepAgent. Esse e o principal ganho arquitetural.
 
-## 6. Exemplo 3: AG-UI PDV com selected_supervisor explicito
+## 6. Exemplo 3: AG-UI PDV com selected_entrypoint explicito
 
 O arquivo rag-config-pdv-vendas-demo.yaml mostra um caso mais moderno e mais seguro para UI generativa. Aqui o YAML declara explicitamente qual supervisor deve ser o ativo.
 
 ```yaml
-selected_supervisor: "ag_ui_pdv_vendas_supervisor"
+selected_entrypoint: "ag_ui_pdv_vendas_supervisor"
 
 multi_agents:
   - id: "ag_ui_pdv_vendas_supervisor"
@@ -316,7 +316,7 @@ Nao deixe o agente inventar payload visual aberto quando a UI espera contrato fi
 | Aspecto                       | Template e Food/Retail          | Cockpit PRD                     | AG-UI PDV                |
 | ----------------------------- | ------------------------------- | ------------------------------- | ------------------------ |
 | Tipo de ferramenta dominante  | dyn_sql e dyn_api mistos        | dyn_api                         | dyn_sql                  |
-| selected_supervisor explicito | nao observado nesses trechos    | nao observado nesses trechos    | sim                      |
+| selected_entrypoint explicito | nao observado nesses trechos    | nao observado nesses trechos    | sim                      |
 | response_format estruturado   | nao relevante                   | nao observado                   | sim, fortemente restrito |
 | filesystem                    | habilitado com leitura restrita | habilitado com leitura restrita | desabilitado             |
 | foco de negocio               | ERP ampliado                    | operacao e fiscal               | analytics e dashboard    |
@@ -369,7 +369,7 @@ Comece por rag-config-pdv-vendas-demo.yaml.
 
 Olhe nesta ordem.
 
-1. selected_supervisor.
+1. selected_entrypoint.
 2. subdominio_dashboard_dinamico.
 3. response_format.
 4. tools dyn_sql permitidas.
@@ -396,7 +396,7 @@ Em ERP, isso faz toda a diferenca. O sistema deixa de ser um chat genérico e pa
 ## 16. Checklist tecnico de leitura
 
 - Entendi como identificar um supervisor DeepAgent no YAML.
-- Entendi quando selected_supervisor aparece e por que ele ajuda.
+- Entendi quando selected_entrypoint aparece e por que ele ajuda.
 - Entendi o papel de memory e backend persistente.
 - Entendi como dyn_sql e dyn_api entram nos exemplos.
 - Entendi por que o exemplo de AG-UI usa response_format fechado.
@@ -418,4 +418,4 @@ Em ERP, isso faz toda a diferenca. O sistema deixa de ser um chat genérico e pa
   - Comportamento confirmado: especialistas em lojas e fiscal, ambos presos a dyn_api especificas.
 - app/yaml/rag-config-pdv-vendas-demo.yaml
   - Motivo da leitura: confirmar DeepAgent para AG-UI em contexto PDV.
-  - Comportamento confirmado: selected_supervisor explicito, subdominios de negocio, backend com escopo user e response_format estruturado.
+  - Comportamento confirmado: selected_entrypoint explicito, subdominios de negocio, backend com escopo user e response_format estruturado.

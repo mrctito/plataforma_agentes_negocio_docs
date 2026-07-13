@@ -1,0 +1,8 @@
+flowchart LR
+    B["TenantYamlBindingResolver<br/>boundary aplicado"] --> C["bindings tenant_yaml<br/>legado ainda aplicado"]
+    B --> P["resolve_project T9<br/>project + release + hashes + operação"]
+    P -. "adapter FUTURO T13+" .-> J["job_core.job_runs<br/>sem coluna/FK SaaS"]
+    P -. "adapter FUTURO T13+" .-> U["ag_ui.run_events<br/>sem coluna/FK SaaS"]
+    P -. "adapter FUTURO T13+" .-> H["chat.conversations<br/>sem coluna/FK SaaS"]
+    J --> JE["job_core.job_run_events"]
+    H --> HM["chat.messages"]

@@ -3,14 +3,14 @@
 ## Manual do Esquema de Banco de Dados
 
 Guia de referência do schema PostgreSQL utilizado pela Plataforma de Agentes de IA Generic RAG.
-Este documento descreve o schema público com base no DDL atual informado para o ambiente.
+Este documento separa o modelo SaaS **aplicado em produção** do que permanece futuro no plano.
 Ao final, ele tambem documenta o schema implementado da solucao de integracoes, para que a modelagem persistente do modulo nao fique solta fora do manual oficial.
 
 ## Visão Geral
 
 - Banco suportado: PostgreSQL.
 - Tabelas que usam `gen_random_uuid()` dependem de suporte a `pgcrypto`.
-- O schema atual está organizado, na prática, em nove grupos:
+- O schema atual está organizado, na prática, em dez grupos:
 - estado e checkpoints,
 - job core e ledger operacional de jobs,
 - autenticação e login,
@@ -18,10 +18,472 @@ Ao final, ele tambem documenta o schema implementado da solucao de integracoes, 
 - interações, eventos e aprovações humanas,
 - execução agentic em background,
 - tenants e segurança,
+- YAML governado e bindings externos por tenant,
 - memória de usuário,
 - chat embutível (schema `chat`).
 
-### Estado do modelo de ingestão vetorial `vector_*` (comprovado em runtime — 2026-06-09)
+## Estado aplicado do módulo SaaS
+
+> [!IMPORTANT]
+> O DDL SaaS de 2026-07-11 e a materialização T7 foram aplicados no banco real
+> `prometeu_generic_rag`. A introspecção canônica read-only atualizada em 2026-07-12 comprovou
+> oito tabelas `saas_*`, sete projetos — cinco de catálogo e dois de validação arquivados —,
+> dezessete releases e seis ponteiros. T8/T9 fornecem lifecycle e resolução projeto → release →
+> YAML/hash/operação; T11/T12/T13 ligaram assinatura, billing simulado, entitlement e os
+> boundaries HTTP/UI. O runtime interativo já resolve `projectKey` pela sessão assinante:
+> Vendas usa AG-UI/agent, DNIT usa Q&A/RAG e Casa Moderna permanece no canal WhatsApp RAG.
+
+### Legenda de status
+
+| Rótulo | Significado |
+|---|---|
+| **APLICADO** | Estrutura já existente no schema atual documentado e usada pelo runtime atual. |
+| **APLICADO, COM PROVA SIMULADA** | Estrutura e runtime simulado foram exercitados; registros cancelados/revogados permanecem como trilha auditável, sem cobrança real. |
+| **FUTURO DE RUNTIME** | Comportamento previsto no plano; não implica coluna, tabela ou wiring já implantado. |
+
+Fontes do estado comprovado:
+
+- [forward manual aplicado](../../scripts/sql/20260711_expand_saas_project_release_model.sql) — criou sete tabelas e dois guards de imutabilidade;
+- [materialização T7](../../scripts/sql/20260711_materialize_saas_project_releases.sql) — publicou 16 snapshots imutáveis em cinco projetos;
+- [rollback antes do backfill](../../scripts/sql/20260711_rollback_saas_project_release_model.sql) — bloqueia se houver dados;
+- [postcheck read-only](../../scripts/sql/20260711_postcheck_saas_project_release_model.sql) — audita escopo, ponteiro ativo e hash do manifesto;
+- plano SaaS/YAML — tarefas posteriores de aplicação, runtime e contração;
+- investigação de origem — evidências do estado atual e lacunas que motivaram o alvo.
+
+### 1. Identidade, tenant e usuários — APLICADO
+
+![1. Identidade, tenant e usuários — APLICADO](../assets/diagrams/docs-tecnico-readme-schema-banco-diagrama-01.svg)
+
+Leitura 101: conta pessoal, membership e cartão são conceitos diferentes. `tenant_users`
+responde “de qual organização esta conta participa?”. Cartão responde apenas “qual método
+tokenizado pode ser cobrado?”. Nenhum dos dois concede acesso a um projeto SaaS por si só.
+
+### 2. Catálogo YAML, canais e API keys — APLICADO
+
+![2. Catálogo YAML, canais e API keys — APLICADO](../assets/diagrams/docs-tecnico-readme-schema-banco-diagrama-02.svg)
+
+Invariantes aplicados hoje:
+
+- API key/canal chegam a `tenant_yaml.yaml_content` por binding explícito;
+- FKs compostas com `environment + tenant_id + tenant_yaml_id` impedem cruzar tenant/ambiente;
+- `yaml_path` é proveniência, não fonte de runtime;
+- `tenant_user_yaml.agent_instructions_md` ainda existe fisicamente até a contração T21, mas
+  T17 removeu todos os leitores/escritores runtime; a única fonte é `agent-instructions-md`
+  no YAML imutável da release.
+
+### 3. Projeto SaaS, release e manifesto — APLICADO
+
+![3. Projeto SaaS, release e manifesto — APLICADO](../assets/diagrams/docs-tecnico-readme-schema-banco-diagrama-03.svg)
+
+Regras aplicadas e usadas por T8/T9:
+
+- tenant 1:N projetos; projeto 1:N releases;
+- cada release referencia **exatamente um** `tenant_yaml` do mesmo ambiente e tenant;
+- `yaml_hash`, `manifest_json` e `manifest_hash` ficam congelados após `published`/`retired`;
+- `tenant_yaml` referenciado por release publicada/retirada também não pode sofrer update/delete;
+- a PK de `saas_project_active_releases` garante exatamente um ponteiro por projeto materializado e, estruturalmente, no máximo um por projeto/ambiente;
+- o postcheck exige `manifest_json->>'yaml_hash' = saas_project_releases.yaml_hash`.
+
+Estado atual sem segredos: sete projetos `prod`, 17 releases, seis ponteiros, 14 releases com
+operação `agent`, 17 com `rag`, 13 com `ingest` e 11 com `etl`. O catálogo-base continua sendo
+Apify (1 release), Casa Moderna (1), DNIT (6), Linx Demo (3) e PDV Vendas (5); os outros dois
+projetos são provas T13 arquivadas, sendo apenas uma delas com release publicada/ativa.
+
+Para a V1 comercial, o exemplo agentic funcional é **PDV Vendas**: release 3 publicada,
+entrypoint `deepagent:ag_ui_pdv_operacoes_supervisor` e oferta restrita a `agent` + `rag`.
+Casa Moderna e Engenharia DNIT são projetos de conteúdo (`rag` + `ingest`) e não oferecem
+agente. DNIT abre chat RAG no browser; Casa Moderna orienta o assinante para o canal WhatsApp
+RAG ativo. Um YAML pode continuar contendo outras espinhas dorsais, mas somente as operações
+publicadas no manifesto e oferecidas pelo plano viram produto.
+
+### 4. Planos, assinaturas, billing, entitlements e preferências — APLICADO
+
+![4. Planos, assinaturas e entitlements — APLICADO](../assets/diagrams/docs-tecnico-readme-schema-banco-diagrama-04.svg)
+
+O entitlement físico é por projeto e operação: `agent`, `rag`, `ingest` ou `etl`.
+Não existe `agent_id`, `workflow_id`, supervisor ou subagente nessas tabelas. O plano não
+define preço/moeda/gateway final; `provider_config_json` mantém o DDL provider-neutral até a
+decisão comercial. Preferências aceitam apenas escalares JSON e não podem virar prompt livre.
+Em produção existe o catálogo-base de cinco planos `simulated-free`. As jornadas reais também
+deixaram registros auditáveis de prova: projetos arquivados, assinaturas canceladas,
+entitlements revogados e eventos do provider. O estado inspecionado após a rodada funcional de
+2026-07-12 contém nove assinaturas, quatro ativas, 22 eventos e 24 entitlements, dos quais dez
+ativos. Esses registros não
+são ofertas com cobrança real. O provider T12 é somente `simulated`, R$ 0,00, sem rede,
+cobrança ou dado de cartão.
+
+O tenant `pdv-vendas` possui exatamente uma linha em `tenant_security_keys`, identificada por
+`pdv-vendas-agentic-v1`. Seu `keys_json` contém somente sete referências `${ENV}`; nenhum valor
+de segredo é persistido ali. O runtime resolve as referências no boundary da requisição. O
+payload público envia somente `project_key`, identidade da conversa e texto do usuário — nunca
+YAML, API key ou seletor de agente.
+
+Prova executável local de 2026-07-12, com `ENVIRONMENT=prod` e API + Worker + Scheduler:
+
+- DNIT, publicado com `rag-config-mrctito-dnit-ingest-producao-600.yaml`, respondeu no chat do
+  projeto assinado usando apenas sessão + `projectKey`; a API key continua obrigatória para
+  integrações que não possuem assinatura autenticada;
+- Casa Moderna respondeu pelo RAG do YAML e o Worker iniciou o único `tenant_channel` ativo,
+  `casa_moderna_whatsapp`, ligado à operação `rag`;
+- PDV Vendas abriu o transporte AG-UI e persistiu eventos em `ag_ui.run_events`. Uma consulta
+  analítica longa ficou mais de cinco minutos entre eventos do supervisor e foi cancelada no
+  cliente; portanto, esse cenário específico permanece um risco de latência e não é registrado
+  como gate verde.
+
+Não existe canal Instagram ativo no estado inspecionado. O suporte de código e os contratos de
+webhook não substituem o provisionamento de uma conta Meta e um smoke externo autorizado.
+
+#### Catálogo físico resumido aplicado
+
+Esta lista foi reconciliada com `information_schema`, `pg_constraint` e `pg_indexes` em produção:
+
+| Tabela aplicada | PK | Linhas | Relações/invariantes principais |
+|---|---|---|---|
+| `saas_projects` | `saas_project_id` | 7 | Cinco projetos de catálogo e duas provas T13 arquivadas; FK `tenant_id→tenants`; unique ambiente+tenant+project key. |
+| `saas_project_releases` | `saas_project_release_id` | 17 | FKs compostas para projeto/YAML; número e YAML hash únicos por projeto; guard de imutabilidade. |
+| `saas_project_active_releases` | `environment + tenant_id + saas_project_id` | 6 | FK composta garante que o ponteiro pertença ao mesmo projeto; troca por CAS em T8. |
+| `saas_plans` | `saas_plan_id` | 6 | Cinco seeds e um plano de prova arquivado; todos `simulated-free` e de valor zero. |
+| `saas_subscriptions` | `saas_subscription_id` | 9 | Quatro ativas; referência externa única e no máximo uma assinatura viva por usuário+plano. Os demais estados preservam a trilha das simulações. |
+| `saas_billing_events` | `saas_billing_event_id` | 22 | Ledger append-only/idempotente do provider `simulated`; sem payload bruto. |
+| `saas_entitlements` | `saas_entitlement_id` | 24 | Direitos por assinatura+projeto+operação; dez ativos; grant/revoke atômico. |
+| `saas_user_preferences` | `saas_user_preference_id` | 0 | Preferência escalar por conta+projeto; não é prompt. |
+
+#### Dicionário coluna a coluna das tabelas `saas_*`
+
+Como ler: `N` significa `NOT NULL`; `S` significa nullable. Exemplos são fictícios e não
+reproduzem UUIDs, e-mails, referências de gateway, hashes ou conteúdo reais. T7 materializou
+projetos/releases/ponteiros; T8 é o owner do lifecycle de release e do compare-and-set do
+ponteiro; T9 é o reader do snapshot ativo. T8/T9 passam pelo executor SQL central em
+`src/saas_project/`. As quatro tabelas comerciais possuem writer/reader no boundary SaaS:
+checkout simulado, confirmação/cancelamento, concessão/revogação de entitlements e listagem dos
+projetos do assinante.
+
+##### `saas_projects`
+
+Finalidade 101: produto SaaS publicável dentro de um tenant. Cardinalidade: tenant 1:N projetos;
+projeto 1:N releases/planos/entitlements/preferências. Lifecycle `active → inactive/archived`.
+Invariantes: PK UUID; FK restritiva para `tenants`; unique por
+`environment+tenant_id+project_key`; chave de 3–64 caracteres minúsculos; status fechado.
+
+| Coluna | Tipo; nulo/default | Semântica e relação | Escrita/leitura | Exemplo seguro |
+|---|---|---|---|---|
+| `saas_project_id` | `uuid`; N/`gen_random_uuid()` | PK e identidade interna. | T8/T9 | `00000000-...-0101` |
+| `environment` | `text`; N/— | Segregador; não vazio. | T7/T8/T9 | `prod` |
+| `tenant_id` | `text`; N/— | FK `tenants`; owner do projeto. | T7/T8/T9 | `engenharia_dnit` |
+| `project_key` | `text`; N/— | Chave pública única no escopo. | T7/T9 | `dnit` |
+| `display_name` | `text`; N/— | Nome de exibição. | T7/T8 | `Engenharia DNIT` |
+| `status` | `text`; N/`active` | `active/inactive/archived`. | T8/T9 | `active` |
+| `created_at` | `timestamptz`; N/`now()` | Criação. | banco/T8 | `2026-07-11T20:00:00Z` |
+| `updated_at` | `timestamptz`; N/`now()` | Última atualização administrativa. | T8 | `2026-07-11T20:00:00Z` |
+
+##### `saas_project_releases`
+
+Finalidade 101: snapshot publicável e imutável de exatamente um YAML. Cardinalidade: projeto
+1:N releases; release N:1 `tenant_yaml`. Lifecycle `draft → published → retired`; uma linha
+publicada/retirada não aceita `UPDATE` nem `DELETE`. Uniques protegem número e `yaml_hash` por
+projeto. Checks exigem SHA-256 hexadecimal, manifesto objeto e coerência de publicação.
+
+| Coluna | Tipo; nulo/default | Semântica e relação | Escrita/leitura | Exemplo seguro |
+|---|---|---|---|---|
+| `saas_project_release_id` | `uuid`; N/`gen_random_uuid()` | PK da release. | T7/T8/T9 | `00000000-...-0201` |
+| `environment` | `text`; N/— | Parte das FKs de escopo. | T7/T8/T9 | `prod` |
+| `tenant_id` | `text`; N/— | Parte das FKs de escopo. | T7/T8/T9 | `pdv-vendas` |
+| `saas_project_id` | `uuid`; N/— | FK composta para projeto. | T7/T8/T9 | `00000000-...-0102` |
+| `tenant_yaml_id` | `uuid`; N/— | FK composta para o único artefato. | T7/T9 | `00000000-...-0301` |
+| `release_number` | `bigint`; N/— | Sequência positiva por projeto. | T7/T8 | `2` |
+| `yaml_hash` | `text`; N/— | SHA-256 do `yaml_content`; unique por projeto. | compilador/T8/T9 | `aaaa…` (64 hex) |
+| `manifest_json` | `jsonb`; N/— | Snapshot derivado: hashes, entrypoint e operações. | compilador/T8/T9 | `{"operations":["rag"]}` |
+| `manifest_hash` | `text`; N/— | SHA-256 canônico do manifesto. | compilador/T8/T9 | `bbbb…` (64 hex) |
+| `status` | `text`; N/`draft` | `draft/published/retired`. | T8/T9 | `published` |
+| `published_at` | `timestamptz`; S/— | Obrigatório após publicação; nulo em draft. | T8 | `2026-07-11T20:10:00Z` |
+| `created_at` | `timestamptz`; N/`now()` | Criação da identidade. | banco/T8 | `2026-07-11T20:05:00Z` |
+
+##### `saas_project_active_releases`
+
+Finalidade 101: ponteiro mutável para a release publicada usada em novas resoluções. A PK
+`environment+tenant_id+saas_project_id` permite uma linha por projeto/ambiente. A FK composta
+impede apontar para release de outro projeto. T8 troca o ponteiro por compare-and-set; rollback
+é outra troca atômica, sem regravar release, assinatura ou entitlement.
+
+| Coluna | Tipo; nulo/default | Semântica e relação | Escrita/leitura | Exemplo seguro |
+|---|---|---|---|---|
+| `environment` | `text`; N/— | PK/FK de escopo. | T8/T9 | `prod` |
+| `tenant_id` | `text`; N/— | PK/FK de escopo. | T8/T9 | `linx-demo` |
+| `saas_project_id` | `uuid`; N/— | PK/FK do projeto. | T8/T9 | `00000000-...-0103` |
+| `saas_project_release_id` | `uuid`; N/— | FK para release do mesmo projeto. | T8/T9 | `00000000-...-0203` |
+| `activated_at` | `timestamptz`; N/`now()` | Versão do ponteiro e chave de cache. | T8/T9 | `2026-07-11T20:20:00Z` |
+| `activated_by_user_account_id` | `uuid`; S/— | FK opcional para ator; `SET NULL` se removido. | T8 | `00000000-...-0401` |
+
+##### `saas_plans`
+
+Finalidade 101: oferta comercial de um projeto. Projeto 1:N planos; plano 1:N assinaturas.
+Lifecycle `active/inactive/archived`. Unique por projeto+`plan_key`; configuração precisa ser
+objeto JSON. Owner de runtime: administração SaaS T13; existem seis planos `simulated-free`.
+
+| Coluna | Tipo; nulo/default | Semântica e relação | Escrita/leitura | Exemplo seguro |
+|---|---|---|---|---|
+| `saas_plan_id` | `uuid`; N/`gen_random_uuid()` | PK do plano. | T11/T13 | `00000000-...-0501` |
+| `environment` | `text`; N/— | Parte da FK/unique de escopo. | T11/T13 | `prod` |
+| `tenant_id` | `text`; N/— | Parte da FK/unique de escopo. | T11/T13 | `apify` |
+| `saas_project_id` | `uuid`; N/— | FK composta para projeto. | T11/T13 | `00000000-...-0104` |
+| `plan_key` | `text`; N/— | Chave única dentro do projeto. | T11/T13 | `simulated-free` |
+| `display_name` | `text`; N/— | Nome comercial. | T11/T13 | `Demonstração gratuita` |
+| `status` | `text`; N/`active` | `active/inactive/archived`. | T11/T13 | `active` |
+| `provider_config_json` | `jsonb`; N/`{}` | Configuração provider-neutral; objeto. | T11/T13 | `{"provider":"simulated"}` |
+| `created_at` | `timestamptz`; N/`now()` | Criação. | banco/T11/T13 | `2026-07-12T12:00:00Z` |
+| `updated_at` | `timestamptz`; N/`now()` | Última atualização. | T11/T13 | `2026-07-12T12:00:00Z` |
+
+##### `saas_subscriptions`
+
+Finalidade 101: vínculo contratual de uma conta com um plano. Conta 1:N assinaturas; plano
+1:N assinaturas; assinatura 1:N entitlements. Status e período possuem checks; `version > 0`
+prepara concorrência otimista. A unique `NULLS NOT DISTINCT` protege a referência externa por
+ambiente/provider. O índice parcial `uq_saas_subscriptions_single_live_plan` impede duas
+assinaturas vivas (`pending/trialing/active/past_due/paused`) para a mesma conta e plano. Owner:
+runtime comercial T11/T12 e boundaries T13; existem seis linhas preservadas para auditoria.
+
+| Coluna | Tipo; nulo/default | Semântica e relação | Escrita/leitura | Exemplo seguro |
+|---|---|---|---|---|
+| `saas_subscription_id` | `uuid`; N/`gen_random_uuid()` | PK da assinatura. | T11/T12/T13 | `00000000-...-0601` |
+| `environment` | `text`; N/— | Segregador/FK composta. | T11/T12/T13 | `prod` |
+| `tenant_id` | `text`; N/— | Tenant do plano/FK composta. | T11/T12/T13 | `linx-demo` |
+| `user_account_id` | `uuid`; N/— | FK restritiva para assinante. | T11/T12/T13 | `00000000-...-0402` |
+| `saas_plan_id` | `uuid`; N/— | FK composta para plano. | T11/T12/T13 | `00000000-...-0502` |
+| `status` | `text`; N/— | `pending/trialing/active/past_due/paused/cancelled/expired`. | T11/T12/T13 | `cancelled` |
+| `provider_name` | `text`; S/— | Gateway/provedor. | T12/T13 | `simulated` |
+| `provider_customer_ref` | `text`; S/— | Referência opaca do cliente. | T12/T13 | `cus_redacted` |
+| `provider_subscription_ref` | `text`; S/— | Referência opaca e única da assinatura. | T12/T13 | `sub_redacted` |
+| `current_period_start` | `timestamptz`; S/— | Início do período. | T11/T12 | `2026-07-12T00:00:00Z` |
+| `current_period_end` | `timestamptz`; S/— | Fim, quando informado, maior que início. | T11/T12 | `2026-08-12T00:00:00Z` |
+| `version` | `bigint`; N/`1` | Versão otimista positiva. | T11/T12 | `3` |
+| `created_at` | `timestamptz`; N/`now()` | Criação. | banco/T11/T12 | `2026-07-12T00:00:00Z` |
+| `updated_at` | `timestamptz`; N/`now()` | Última atualização. | T11/T12 | `2026-07-12T00:00:00Z` |
+
+##### `saas_billing_events`
+
+Ledger append-only do provider interno `simulated`. Checkout admite
+`saas_subscription_id` nulo porque o evento precede a criação da assinatura; depois disso a FK
+composta protege ambiente e tenant. O runtime só insere resultados finais `processed/rejected`.
+Persistem escopo (`environment`, `tenant_id`, projeto, plano e conta), IDs opacos de evento,
+hashes SHA-256 de idempotência/payload, tipo/status alvo, tempo/sequência, versão CAS,
+`correlation_id`, resultado e timestamps. Não há payload bruto, cartão, token, PAN ou CVV.
+
+#### Bridges diretas do módulo aplicado
+
+A introspecção de FKs e a leitura de T8/T9 provaram somente três tabelas públicas externas ao
+prefixo `saas_` como bridges diretas: `tenants`, `user_accounts` e `tenant_yaml`. Memberships,
+bindings, canais, API keys, cartões, jobs, AG-UI e chat são adjacentes existentes, porém ainda
+não se ligam ao núcleo comercial por FK nem pelo resolver T9.
+
+##### `tenants` — owner organizacional
+
+Finalidade no módulo: owner 1:N de projetos. A FK `saas_projects.tenant_id` é restritiva.
+`owner_user_account_id` é somente o owner administrativo do tenant; não concede assinatura ou
+entitlement. Escrita/leitura pertence ao diretório/autenticação; T7/T9 apenas referenciam/lêem
+`tenant_id`. PK em `tenant_id`; uniques em `client_code`, CNPJ, e-mail e telefone; índice único
+parcial em `lower(billing_email)`.
+
+| Coluna | Tipo; nulo/default | Semântica | Escrita/leitura | Exemplo seguro |
+|---|---|---|---|---|
+| `tenant_id` | `text`; N/— | PK e owner dos projetos. | cadastro/T7/T9 | `engenharia_dnit` |
+| `client_code` | `text`; N/— | Código único do cliente. | cadastro/diretório | `DNIT` |
+| `display_name` | `text`; N/— | Nome da organização. | cadastro/UI | `Engenharia DNIT` |
+| `domain` | `text`; S/— | Domínio opcional. | cadastro/auth | `exemplo.invalid` |
+| `tier` | `text`; S/— | Classificação administrativa atual. | cadastro | `standard` |
+| `is_anonymous_flow` | `boolean`; N/`false` | Habilita fluxo anônimo legado. | cadastro/runtime legado | `false` |
+| `is_active` | `boolean`; N/`true` | Tenant operacional. | administração/diretório | `true` |
+| `metadata_json` | `jsonb`; N/`{}` | Metadados organizacionais. | administração/diretório | `{}` |
+| `default_user_email` | `text`; S/— | E-mail default legado; não é membership. | administração | `user@example.invalid` |
+| `created_at` | `timestamptz`; N/`now()` | Criação. | banco | `2026-07-11T00:00:00Z` |
+| `updated_at` | `timestamptz`; N/`now()` | Última atualização. | administração | `2026-07-11T00:00:00Z` |
+| `cnpj` | `text`; N/— | Identificador fiscal único. | cadastro/billing futuro | `00.000.000/0000-00` |
+| `website` | `text`; N/— | Site institucional. | cadastro/UI | `https://example.invalid` |
+| `email_comercial` | `text`; N/— | Contato comercial único. | cadastro | `sales@example.invalid` |
+| `telefone_contato` | `text`; N/— | Contato único. | cadastro | `+5500000000000` |
+| `meta_app_id` | `text`; S/— | Identificador Meta; não é SaaS project. | integração Meta | `app_redacted` |
+| `meta_access_token` | `text`; S/— | Segredo Meta; nunca expor em docs/log. | integração Meta | `<redacted>` |
+| `meta_whatsapp_business_account_id` | `text`; S/— | Conta WABA. | integração Meta | `waba_redacted` |
+| `meta_graph_api_version` | `text`; S/— | Versão Graph API. | integração Meta | `vNN.0` |
+| `meta_webhook_callback_url` | `text`; S/— | Callback Meta. | integração Meta | `https://example.invalid/hook` |
+| `meta_webhook_verify_token` | `text`; S/— | Segredo de verificação. | integração Meta | `<redacted>` |
+| `owner_user_account_id` | `uuid`; S/— | FK `user_accounts`, `SET NULL`. | cadastro/membership | `00000000-...-0401` |
+| `billing_email` | `text`; S/— | Contato de cobrança único case-insensitive. | cadastro/billing futuro | `billing@example.invalid` |
+
+##### `user_accounts` — identidade pessoal
+
+Finalidade no módulo: ator opcional de ativação, assinante futuro e owner de preferência futura.
+Não representa membership nem direito de uso. PK UUID, status fechado e e-mail único por
+`lower(primary_email)`. Owner: autenticação/cadastro; T8 lê apenas o ator quando informado.
+
+| Coluna | Tipo; nulo/default | Semântica | Escrita/leitura | Exemplo seguro |
+|---|---|---|---|---|
+| `user_account_id` | `uuid`; N/`gen_random_uuid()` | PK pessoal. | auth/T8/T10+ | `00000000-...-0401` |
+| `primary_email` | `text`; N/— | Login principal único case-insensitive. | auth | `user@example.invalid` |
+| `email_verified_at` | `timestamptz`; S/— | Verificação de e-mail. | auth | `2026-07-11T00:00:00Z` |
+| `account_status` | `text`; N/`active` | `active/pending_verification/locked/disabled`. | auth | `active` |
+| `display_name` | `text`; S/— | Nome de exibição. | perfil/UI | `Usuário Exemplo` |
+| `picture_url` | `text`; S/— | Avatar. | perfil/UI | `https://example.invalid/avatar` |
+| `last_login_at` | `timestamptz`; S/— | Último login. | auth | `2026-07-11T00:00:00Z` |
+| `metadata_json` | `jsonb`; N/`{}` | Metadados de conta. | auth/perfil | `{}` |
+| `created_at` | `timestamptz`; N/`now()` | Criação. | banco | `2026-07-11T00:00:00Z` |
+| `updated_at` | `timestamptz`; N/`now()` | Última atualização. | auth/perfil | `2026-07-11T00:00:00Z` |
+
+##### `tenant_yaml` — artefato imutável de release
+
+Finalidade no módulo: armazenar o único bundle materializado de cada release. T9 lê
+`yaml_content` no banco, nunca o arquivo de `yaml_path`. A unique composta
+`environment+tenant_id+tenant_yaml_id` sustenta a FK anti-cross-scope; há unique por caminho e
+unique parcial de default ativo. O guard `trg_released_tenant_yaml_immutable` rejeita
+`UPDATE/DELETE` quando uma release publicada/retirada referencia a linha.
+
+| Coluna | Tipo; nulo/default | Semântica | Escrita/leitura | Exemplo seguro |
+|---|---|---|---|---|
+| `tenant_yaml_id` | `uuid`; N/`gen_random_uuid()` | PK do artefato. | publicação/T7/T9 | `00000000-...-0301` |
+| `tenant_id` | `text`; N/— | FK para tenant owner. | publicação/T9 | `pdv-vendas` |
+| `yaml_path` | `text`; N/— | Proveniência; não é fonte de runtime. | publicação/admin | `app/yaml/exemplo.yaml` |
+| `yaml_content` | `text`; S/— | Bundle materializado; obrigatório na prática para release. | publicação/T9 | `<yaml omitido>` |
+| `warmup_on_boot` | `boolean`; N/`true` | Elegibilidade de warmup legado. | administração/diretório | `false` |
+| `is_default` | `boolean`; N/`false` | Default legado por tenant/ambiente; T9 usa ponteiro SaaS. | administração/runtime legado | `false` |
+| `status` | `text`; N/`active` | T9 exige `active`. | publicação/T9 | `active` |
+| `execution_mode` | `text`; S/— | Metadado legado de modo. | administração/runtime legado | `deepagent` |
+| `descricao` | `text`; S/— | Descrição administrativa. | publicação/UI | `Release SaaS imutável` |
+| `metadata_json` | `jsonb`; N/`{}` | Proveniência/metadados. | publicação/admin | `{"source_path":"…"}` |
+| `created_at` | `timestamptz`; N/`now()` | Criação da identidade. | banco | `2026-07-11T00:00:00Z` |
+| `updated_at` | `timestamptz`; N/`now()` | Última atualização antes da imutabilidade. | publicação | `2026-07-11T00:00:00Z` |
+| `version` | `integer`; N/`1` | Versão administrativa do artefato. | publicação | `2` |
+| `published_at` | `timestamptz`; S/— | Publicação do YAML. | publicação/runtime legado | `2026-07-11T00:00:00Z` |
+| `deactivated_at` | `timestamptz`; S/— | Desativação administrativa. | administração | `null` |
+| `yaml_hash` | `text`; S/— | SHA-256; release exige igualdade. | publicação/T9 | `aaaa…` (64 hex) |
+| `source_kind` | `text`; N/`database` | Origem administrativa. | publicação | `database` |
+| `environment` | `text`; N/— | Segregador/FK composta. | publicação/T9 | `prod` |
+| `created_by_user_account_id` | `uuid`; S/— | Ator de criação opcional. | publicação/admin | `00000000-...-0401` |
+| `updated_by_user_account_id` | `uuid`; S/— | Ator de atualização opcional. | administração | `00000000-...-0401` |
+
+#### Tabelas adjacentes: o que está ligado e o que ainda não está
+
+| Grupo | Estado real e contagem | Vínculo comprovado com o módulo SaaS |
+|---|---|---|
+| `tenant_users` (24) e `tenant_user_yaml` (0) | Membership existe; associação técnica está vazia. | Nenhuma FK para `saas_*`; T13 comprovou que membership administrativa e assinatura são independentes. |
+| `tenant_access_keys` (4), `tenant_channels` (1), `tenant_channel_end_users` (0) | As colunas SaaS de projeto/operação foram aplicadas; o único canal ativo foi reconciliado como `rag`. Os bindings antigos de `tenant_yaml` permanecem somente para rollback até T17/T21. | T14 resolve canal/API key por projeto → release ativa → YAML/hash. As quatro API keys atuais não tinham binding YAML e não receberam operação presumida. |
+| `user_account_payment_cards` (0), `tenant_payment_cards` (0) | Tabelas tokenizadas existem e seguem vinculadas a conta/tenant. | Nenhuma FK para plano/assinatura; cartão sozinho nunca concede acesso. T12/T13 usam somente simulação sem cartão. |
+| `job_core.job_runs/events`, `ag_ui.run_events`, `chat.conversations/messages` | Ledgers/sessões existem. | Não há coluna/FK comercial nessas tabelas. O boundary resolve e valida o projeto antes de montar o request do runtime; o replay AG-UI persiste em `ag_ui.run_events`. |
+
+Não se replica aqui o dicionário integral dessas tabelas adjacentes porque elas não são bridges
+do módulo T9. Seus dicionários canônicos permanecem nas seções próprias deste manual. Essa
+delimitação evita declarar um vínculo comercial que o banco e o runtime ainda não entregam.
+
+#### Continuação do dicionário `saas_*`: entitlement e preferência
+
+##### `saas_entitlements`
+
+Finalidade 101: direito granular concedido pela assinatura a uma operação do projeto. Unique
+por assinatura+projeto+operação. Operações válidas: `agent/rag/ingest/etl`; status
+`active/suspended/revoked/expired`; validade final precisa ser posterior à inicial; limits é
+objeto JSON. Owner: runtime comercial T11/T12; existem oito direitos de prova, todos revogados.
+
+| Coluna | Tipo; nulo/default | Semântica e relação | Escrita/leitura | Exemplo seguro |
+|---|---|---|---|---|
+| `saas_entitlement_id` | `uuid`; N/`gen_random_uuid()` | PK do direito. | T11/T12 | `00000000-...-0701` |
+| `environment` | `text`; N/— | Segregador/FK composta. | T11/T12 | `prod` |
+| `tenant_id` | `text`; N/— | Tenant das duas FKs. | T11/T12 | `linx-demo` |
+| `saas_subscription_id` | `uuid`; N/— | FK para assinatura; `CASCADE`. | T11/T12 | `00000000-...-0601` |
+| `saas_project_id` | `uuid`; N/— | FK restritiva para projeto. | T11/T12 | `00000000-...-0102` |
+| `operation` | `text`; N/— | Capability fechada; não é agente. | T11/T12 | `rag` |
+| `status` | `text`; N/`active` | Estado do direito. | T11/T12 | `revoked` |
+| `limits_json` | `jsonb`; N/`{}` | Limites provider-neutral; objeto. | T11/T12 | `{"requests_month":1000}` |
+| `valid_from` | `timestamptz`; N/`now()` | Início da validade. | T11/T12 | `2026-07-12T00:00:00Z` |
+| `valid_until` | `timestamptz`; S/— | Fim opcional, posterior ao início. | T11/T12 | `2026-08-12T00:00:00Z` |
+| `created_at` | `timestamptz`; N/`now()` | Criação. | banco/T11/T12 | `2026-07-12T00:00:00Z` |
+| `updated_at` | `timestamptz`; N/`now()` | Última atualização. | T11/T12 | `2026-07-12T00:00:00Z` |
+
+#### Constraints, índices e guards aplicados do recorte SaaS
+
+PKs e uniques também materializam índices B-tree automáticos com o mesmo nome da constraint.
+O ledger T12 possui índices manuais por status/criação e por assinatura/ordem.
+
+| Tabela | Constraints/índices físicos relevantes | Guard/lifecycle |
+|---|---|---|
+| `saas_projects` | PK; uniques `saas_projects_environment_tenant_id_project_id_key` e `...project_key_key`; FK `saas_projects_tenant_fk`; checks `environment`, `project_key`, `status`. | Sem trigger; delete restrito pelas FKs filhas. |
+| `saas_project_releases` | PK; uniques de release ID/escopo, número e YAML hash; FKs `...project_fk` e `...yaml_fk`; checks de número, hashes, objeto, status/publicação. | `trg_saas_published_release_immutable` bloqueia update/delete de `published/retired`. |
+| `saas_project_active_releases` | PK composta; FKs `...project_fk`, `...release_fk`, `...actor_fk`. | Ponteiro mutável por CAS; projeto apaga ponteiro em cascata, release é restritiva. |
+| `saas_plans` | PK; uniques `...environment_tenant_id_plan_id_key` e `...project_plan_key_key`; FK de projeto; checks de status/objeto provider. | Lifecycle administrativo/comercial T11/T13. |
+| `saas_subscriptions` | PK; unique de escopo; `saas_subscriptions_provider_ref_key` com `NULLS NOT DISTINCT`; índice parcial `uq_saas_subscriptions_single_live_plan`; FKs de conta/plano; checks status/período/version. | Lifecycle comercial T11/T12/T13 com concorrência otimista e uma assinatura viva por conta+plano. |
+| `saas_billing_events` | PK; uniques por evento e hash idempotente; FKs projeto/plano/conta/assinatura; checks provider/tipo/status/hashes/ordem; dois índices operacionais. | Append-only no runtime; somente `simulated`. |
+| `saas_entitlements` | PK; unique `...subscription_project_operation_key`; FKs assinatura/projeto; checks operação/status/objeto/validade. | Assinatura remove direitos em cascata; projeto é restritivo. |
+| `saas_user_preferences` | PK; unique `...user_project_key_key`; FKs conta/projeto; check de escalar JSON. | Conta/projeto removem preferência em cascata. |
+| `tenant_yaml` | PK `pk_tenant_yaml`; FK `fk_tenant_yaml_tenant`; uniques `uq_tenant_yaml_environment_tenant_id_yaml_id`, `uq_ty_env_tenant_yaml_path` e parcial `uq_tenant_yaml_default_active`. | `trg_released_tenant_yaml_immutable` bloqueia update/delete quando referenciado por release publicada/retirada. |
+| `tenants` | PK; uniques de `client_code`, CNPJ, e-mail, telefone e parcial `ux_tenants_billing_email`; FK opcional do owner. | Projeto usa `ON DELETE RESTRICT`. |
+| `user_accounts` | PK; unique `uq_user_accounts_primary_email`; check `user_accounts_status_check`. | Ator ativo usa `SET NULL`; assinatura é restritiva; preferência usa cascata. |
+
+##### `saas_user_preferences`
+
+Finalidade 101: escolha pessoal segura por projeto, sem alterar YAML/prompt. Unique por
+conta+projeto+chave. O valor aceita apenas string, número, booleano ou `null`; objeto/array é
+rejeitado. FKs usam `CASCADE`. Owner: **FUTURO T10+**; hoje zero linhas.
+
+| Coluna | Tipo; nulo/default | Semântica e relação | Escrita/leitura | Exemplo seguro |
+|---|---|---|---|---|
+| `saas_user_preference_id` | `uuid`; N/`gen_random_uuid()` | PK da preferência. | T10+ | `00000000-...-0801` |
+| `environment` | `text`; N/— | Segregador/FK composta. | T10+ | `prod` |
+| `tenant_id` | `text`; N/— | Tenant do projeto. | T10+ | `linx-demo` |
+| `user_account_id` | `uuid`; N/— | FK para conta. | T10+ | `00000000-...-0403` |
+| `saas_project_id` | `uuid`; N/— | FK para projeto. | T10+ | `00000000-...-0103` |
+| `preference_key` | `text`; N/— | Chave única no escopo conta/projeto. | T10+ | `response_detail` |
+| `preference_value_json` | `jsonb`; N/— | Escalar, nunca instrução livre. | T10+ | `"concise"` |
+| `created_at` | `timestamptz`; N/`now()` | Criação. | banco/T10+ | `2026-08-01T00:00:00Z` |
+| `updated_at` | `timestamptz`; N/`now()` | Última atualização. | T10+ | `2026-08-01T00:00:00Z` |
+
+### 5. Execução agentic e conteúdo do YAML — CONTRATO YAML, NÃO COLUNAS DB
+
+![5. Execução agentic e conteúdo do YAML — CONTRATO YAML, NÃO COLUNAS DB](../assets/diagrams/docs-tecnico-readme-schema-banco-diagrama-05.svg)
+
+`selected_entrypoint` e `agent-instructions-md` vivem dentro de `yaml_content`; o DDL SaaS
+não cria colunas com esses nomes. `tenant_user_yaml.agent_instructions_md` permanece apenas
+como coluna física de rollback até T21 e não possui call site runtime. O manifesto é derivado
+do YAML e hash-bound à release. Um
+bundle pode conter vários candidatos, mas o boundary agentic exige que `selected_entrypoint`
+resolva exatamente um Workflow ou DeepAgent habilitado. ETL/ingestão podem coexistir e podem
+ser executados sem entrypoint agentic quando o fluxo não invoca agente.
+
+Também não existe seletor externo por `agent_id`: cliente escolhe projeto/operação; a release
+fixa o YAML, e o YAML fixa seu entrypoint. Subagentes são topologia interna, nunca entitlement.
+
+O `manifest_json` aplicado contém `schema_version`, `yaml_hash`, `instructions_hash`,
+`entrypoint` (`kind/ref` ou `null`), `operations` e `manifest_hash`. Ele não copia o prompt e
+não contém `agent_id`. T9 valida hash/operação e devolve o entrypoint interno. O boundary de
+projeto já usa esse snapshot no Agent/AG-UI e no Q&A/RAG sem expor YAML ou API key ao assinante.
+
+### 6. Jobs, sessão e pin de release — BOUNDARY INTERATIVO APLICADO
+
+![6. Jobs, sessão e pin de release — APLICADO versus FUTURO](../assets/diagrams/docs-tecnico-readme-schema-banco-diagrama-06.svg)
+
+As tabelas operacionais acima já existem, mas o DDL SaaS de 2026-07-11 **não adicionou** nelas
+colunas de projeto/release. Isso é intencional: o boundary autenticado valida assinatura,
+entitlement, release e operação antes de montar o request do runtime. `projectKey` leva Agent
+para `/ag-ui/runs` e RAG para `/rag/execute`; a identidade comercial não é duplicada em cada
+ledger. Jobs assíncronos e canais precisam continuar resolvendo o snapshot pelo mesmo boundary
+canônico; qualquer coluna futura exige DDL manual.
+
+### Lifecycle aplicado: publicar, ativar e fazer rollback
+
+![Lifecycle aplicado: publicar, ativar e fazer rollback](../assets/diagrams/docs-tecnico-readme-schema-banco-diagrama-07.svg)
+
+Passo a passo 101 do lifecycle implementado em T8/T9:
+
+1. publicar novo `tenant_yaml` sem alterar um artefato já usado;
+2. compilar manifesto e hashes; criar `saas_project_releases` como `draft`;
+3. validar e promover para `published`;
+4. trocar uma linha em `saas_project_active_releases` para ativar;
+5. o resolvedor T9 lê a ativa no banco e pina release, YAML, hashes, manifesto e operação;
+6. rollback aponta novamente para uma release anterior ainda `published`, sem regravar assinatura;
+7. os boundaries interativos e de canal resolvem o ponteiro ativo a cada request.
+
+Exemplo: Ana assina o plano do projeto DNIT. Os entitlements permitem `rag` e `ingest`, nunca
+`agent`. A página assinada envia somente `projectKey`, e-mail da sessão e pergunta; o boundary
+resolve a release ativa e executa Q&A. Publicar release 2 não muda a assinatura de Ana; rollback
+para release 1 troca apenas o ponteiro ativo.
+
+### Estado do modelo de ingestão vetorial `vector_*` (comprovado em runtime — 2026-07-10)
 
 Existe um **modelo novo de ingestão vetorial** (família `vector_*`: `vector_dataset_master`,
 `vector_ingestion_runs`, `vector_ingestion_run_documents`, `vector_active_documents` e tabelas
@@ -37,19 +499,16 @@ filhas de chunks/páginas). Após a migração `migracao-modelo-vetorial-ingesta
   (histórico de runs, documentos do lote, acervo vivo, resumo) e o guard de documento vivo do
   RAG (`ActiveDocumentVersionGuard`) consomem o modelo novo via `VectorActiveArchiveRepository`.
   A leitura legada de `ingestion_*` no caminho da tela foi cortada (sem fallback).
-- **Corte PARCIAL por dado, não por código:** o modelo novo está POPULADO apenas para o dataset
-  de teste. PRODUÇÃO (`dnit_producao`) ainda **não** foi reconstruída (rebuild), então seu
-  acervo novo está vazio (`vector_active_documents`=0, ponteiros do master nulos). Por isso o
-  guard do RAG é ESTRITO só onde o acervo novo está populado e TOLERANTE onde está vazio,
-  evitando RAG vazio em silêncio na produção.
-- **Separação atual confirmada:** `vector_*` é o modelo de NEGÓCIO do acervo
-  (histórico do lote, documento publicado, chunks/páginas/imagens vivas e master do dataset).
-  `ingestion_runs` / `ingestion_run_documents` / `ingestion_run_slot_leases` permanecem como
-  CONTROL PLANE operacional da ingestão assíncrona (enqueue, cancelamento, heartbeat,
-  reconciliação, fan-out e status ao vivo). Já `ingestion_datasets` /
-  `ingestion_dataset_generations` ficaram como legado de transição e **não** são mais o
-  caminho oficial de runtime do acervo vetorial. A remoção destrutiva dessas tabelas já possui
-  migration dedicada no repositório (`scripts/sql/20260617_drop_ingestion_dataset_lifecycle_legacy.sql`).
+- **Produção materializada:** `dnit_producao` possui 510 documentos ativos no modelo novo.
+  A fonte de verdade do acervo é `vector_active_documents`; páginas, chunks e imagens usam as
+  respectivas filhas `vector_active_document_*`.
+- **Separação atual confirmada:** `vector_*` concentra o modelo de negócio e o controle do
+  fan-out. O lease de execução vive de forma compacta em
+  `vector_ingestion_run_documents.metadata.document_fanout_execution_lease`; a aquisição é
+  serializada por uma trava transacional curta no respectivo `vector_ingestion_runs`.
+  Os fluxos operacionais de run e documento já foram cortados integralmente para essas tabelas.
+  Configuração manual de domínio permanece no YAML; somente `auto_config` específico do dataset
+  é persistido em `vector_dataset_master.metadata.domain_specific_processing`.
 
 ## Que problema este manual resolve
 
@@ -89,7 +548,7 @@ contratos espalhados.
 - O tipo `public.ingestion_document_type` é uma dependência obrigatória para as tabelas de ingestão que o utilizam.
 - Há colunas geradas automaticamente pelo banco:
 - `ingestion_document_manifest.status` espelha `ingestion_status`.
-- `ingestion_document_chunks.fts_content` gera o índice textual a partir de `text_content`.
+- `vector_active_document_chunks.fts_content` gera o índice textual a partir de `chunk_text`.
 - `interaction_runs.total_tokens` soma `input_tokens` e `output_tokens`.
 
 ## Regra de Integridade do Dataset de Ingestão
@@ -105,22 +564,27 @@ contratos espalhados.
 - Regra prática de runtime: o caminho canônico não pode deduzir `index_name` do Azure a partir de `vector_store.id` por conveniência. O `index_name` físico precisa vir do lifecycle por meio de `physical_vector_target`.
 - Regra de compatibilidade: target físico legado já persistido continua válido enquanto estiver ativo no lifecycle. O runtime não pode recalcular o nome físico por conveniência nem substituir silenciosamente o valor salvo no banco.
 - Em termos práticos, `overwrite`, `update` e `skip` precisam produzir o mesmo efeito semântico sobre:
-- manifesto e tabelas derivadas do documento no PostgreSQL,
+- projeção ativa `vector_active_documents` e suas tabelas filhas,
 - índice BM25 persistido,
 - banco vetorial ativo, seja Qdrant ou Azure Search.
-- Regra operacional de `overwrite`: no modelo ativo, a limpeza destrutiva do dataset vivo remove o acervo `vector_*` publicado (`vector_active_documents` e filhas) e o BM25 materializado. O subsistema ACL/manifesto (`ingestion_document_manifest` e correlatas) pode precisar ser limpo em paralelo para não deixar documento lógico fantasma, mas ele já não é mais a régua principal do acervo vivo.
+- Regra operacional de `overwrite`: a limpeza destrutiva do dataset vivo remove o acervo `vector_*` publicado (`vector_active_documents` e filhas) e o BM25 materializado.
 - Histórico operacional, auditoria, runs e evidências de execução não fazem parte da limpeza destrutiva do dataset vivo e devem seguir política própria de retenção.
-- Consequência prática de `overwrite`: `ingestion_runs` e `ingestion_run_documents` permanecem preservados como trilha operacional. Quando o manifesto ACL antigo é removido, `ingestion_run_documents.manifest_id` pode ficar nulo para manter a auditoria do run sem reapontar para um documento que já não faz parte do acervo vivo. `ingestion_datasets` e `ingestion_dataset_generations` não devem mais ser tratados como fonte do dataset vivo no runtime oficial.
+- Consequência prática de `overwrite`: `vector_ingestion_runs` e `vector_ingestion_run_documents` permanecem preservados como trilha operacional; `vector_active_documents` e filhas representam o acervo publicado.
 - Consequência obrigatória: o sistema não pode considerar sucesso quando apenas uma dessas materializações foi atualizada e as demais ficaram antigas.
+- A auditoria operacional atual compara cada PDF ativo com suas materializações no PostgreSQL/FTS,
+  BM25 e provider vetorial. O Analyze Log registra e resume inconsistências observadas durante a
+  ingestão; a tela Vector Store v3 também executa uma leitura atual do dataset e lista nominalmente
+  os PDFs divergentes, permitindo reprocessar somente os documentos afetados.
+- Em `vector_active_document_chunks`, `fts_content IS NOT NULL` prova que a projeção FTS foi
+  materializada. Um `tsvector` materializado sem lexemas continua íntegro, mas é informado
+  separadamente como não pesquisável. Assim, texto sem termos indexáveis não vira falso positivo de
+  corrupção.
 
 ## Relações Principais
 
 - `vector_dataset_master` é a entidade central do dataset vivo por `tenant_code` e `vectorstore_id`.
 - `vector_ingestion_runs` materializa o histórico de negócio de cada lote publicado ou tentado no modelo novo.
-- `ingestion_document_manifest` é a entidade central do domínio de documentos.
-- `ingestion_document_chunks`, `ingestion_document_pages` e `ingestion_document_images` dependem do manifesto do documento.
-- `ingestion_runs` representa a execução operacional da ingestão, `ingestion_run_documents` guarda o detalhe operacional de cada documento dentro dessa execução e `ingestion_run_slot_leases` materializa o controle de concorrência do fan-out por documento sem concentrar contenção na linha pai.
-- `ingestion_datasets` e `ingestion_dataset_generations` são legado do lifecycle antigo. Enquanto permanecerem fisicamente no banco, servem para compatibilidade/forense, não como fonte oficial do dataset vivo vetorial.
+- `vector_ingestion_runs` representa a execução pai e `vector_ingestion_run_documents` guarda o detalhe de cada documento, inclusive o lease efêmero de execução do fan-out em metadata.
 - `interaction_runs` representa a execução principal de uma interação e `interaction_run_events` guarda os eventos associados.
 - O schema `job_core` concentra o ledger canônico do runtime assíncrono de jobs, por meio de `job_core.job_runs` e `job_core.job_run_events`.
 - O schema `ag_ui` concentra o replay durável do protocolo AG-UI, separando a trilha visual de runs e threads do ledger de background e do histórico genérico de interação.
@@ -128,8 +592,11 @@ contratos espalhados.
 - `agent_hil_approval_requests` representa a pausa Human-in-the-Loop assíncrona de agentes em background, guardando o pedido de aprovação, o canal esperado, o token seguro, a decisão e a trilha mínima de auditoria para retomada.
 - O schema `agent_background` concentra a capacidade de Execução Agentic em Background, separando alvo autorizado, solicitação criada por prompt, projeção compatível de run, eventos, HIL durável ligado ao run e outbox operacional.
 - `user_accounts` é a entidade central da conta pessoal do usuário.
-- `user_auth_identities`, `user_password_credentials`, `user_account_yaml` e `user_account_payment_cards` dependem de `user_accounts`.
+- `user_auth_identities`, `user_password_credentials` e `user_account_payment_cards` dependem de `user_accounts`.
 - `tenants` é a entidade central do domínio de organizações.
+- `tenant_yaml` guarda os YAMLs publicados e versionados de cada tenant; um tenant pode ter vários YAMLs no mesmo ambiente.
+- `tenant_access_keys` e `tenant_channels` migram pelo binding de projeto/release/operação;
+  `tenant_user_yaml` não participa mais da resolução runtime.
 - `system_domains` é o catálogo global de domínios funcionais disponíveis para projetos organizacionais.
 - `tenant_access_keys`, `tenant_security_keys`, `tenant_secrets`, `tenant_channels`, `tenant_channel_end_users`, `tenant_users`, `tenant_user_yaml`, `tenant_user_projects`, `tenant_payment_cards` e `tenant_audit_log` dependem de `tenants`.
 - `tenant_users` também depende de `user_accounts` para representar membership organizacional.
@@ -286,6 +753,21 @@ contratos espalhados.
 - Finalidade prática: guardar a fila persistida simples da spec 101 para jobs assíncronos de ingestão de PDF.
 - Papel operacional: esta tabela não substitui `job_core.job_runs`. Ela é um ledger simplificado e específico do fluxo de PDFs, usado para registrar o pedido aceito, o estado operacional básico do job e o resumo final sem introduzir a semântica completa do Job Core genérico.
 - Relação com o runtime simples: o submit cria uma linha `pending` aqui e envia apenas um wakeup curto ao dispatcher. O dispatcher, hospedado no worker, lê os jobs pendentes desta tabela, faz o claim lógico mudando o estado para `processing`, executa os PDFs do job e fecha a linha em `success`, `error` ou `cancelled`. Quando um cancelamento é solicitado, o Killer muda o estado para `cancelling`, localiza o processo do job e só então fecha a linha em `cancelled`.
+- Fonte de verdade da tela: para um job de PDF da spec 101, o estado desta tabela prevalece sobre o
+  status do Job Core genérico que apenas aceitou/enfileirou o pedido. Esse job externo pode terminar
+  antes dos runners; a deduplicação do dashboard substitui esse overlay pela linha de
+  `job_core.async_jobs`, evitando exibir “Concluída” enquanto PDFs ainda estão sendo processados.
+- Contadores derivados do log: o total `resolved` inclui sucesso, erro e pulado. Em “PDFs por
+  runner”, `processed` também significa todo desfecho terminal do runner (sucesso + erro + pulado),
+  e a interface mostra as três parcelas. O contador global histórico `processed` permanece sucesso +
+  erro; use `resolved` para medir o avanço real do lote.
+- Proteção contra pendências fantasmas: o processo raiz do job nasce com `spawn`, apropriado para o
+  Worker multithread. O dispatcher executa a reconciliação na chegada de um wakeup e também a cada
+  30 segundos enquanto a fila está ociosa; portanto, um job órfão não depende da submissão de outro
+  lote para ser percebido. A reconciliação cobre jobs sem heartbeat pelo limite geral e jobs que
+  entraram em `processing`, tocaram a linha apenas nos primeiros segundos e não produziram atividade
+  sustentada dentro da janela de startup. O resultado é terminal `error`, com mensagem explícita,
+  liberando a fila sem apagar a evidência operacional nem iniciar jobs pendentes por efeito colateral.
 - Chave primária: `job_id`.
 - DDL oficial atual:
 
@@ -364,7 +846,7 @@ CREATE INDEX IF NOT EXISTS ix_async_jobs_tenant_code_created_at
 
 ### Como o processamento paralelo agnóstico usa o schema `job_core`
 
-- Escopo correto: o mecanismo genérico e agnóstico de jobs paralelos usa diretamente apenas `job_core.job_runs` e `job_core.job_run_events` como ledger durável do worker. Tabelas como `ingestion_runs`, `ingestion_run_documents`, `ingestion_run_slot_leases`, `agent_background.*` e `scheduler.*` pertencem a especializações ou a slices produtores, e não substituem o ledger canônico do runtime genérico.
+- Escopo correto: o mecanismo genérico e agnóstico de jobs paralelos usa diretamente apenas `job_core.job_runs` e `job_core.job_run_events` como ledger durável do worker. Tabelas como `vector_ingestion_runs`, `vector_ingestion_run_documents`, `agent_background.*` e `scheduler.*` pertencem a especializações ou a slices produtores, e não substituem o ledger canônico do runtime genérico.
 - O que entra em `job_core.job_runs` no primeiro write: `PostgresJobRunStore.create_run(...)` persiste a identidade mínima do envelope aceito pelo worker, gravando `job_id`, `route_kind`, `dispatch_mode`, `job_type`, `handler_key`, `correlation_id`, `parent_job_id`, `root_job_id`, `envelope_payload`, `envelope_metadata`, `status`, `final_reason`, `output_payload`, `metadata`, `owner_worker_id`, `claimed_at`, `last_heartbeat_at`, `created_at`, `started_at` e `finished_at`.
 - Em termos práticos de ingestão, isso significa que o job pai `prepared_yaml`, o job pai `resolve_on_worker` e o filho `document_fanout_child` entram no mesmo ledger e se diferenciam por `route_kind + dispatch_mode` e pelo conteúdo opaco de `envelope_payload`.
 - O que muda ao longo da execução: `PostgresJobRunStore.transition_status(...)` atualiza `status` como fonte de verdade do lifecycle. Quando o job entra em execução, o método preenche `started_at`. Quando termina, também grava `finished_at`, `final_reason`, `output_payload` e o `metadata` operacional mais recente.
@@ -499,7 +981,7 @@ CREATE INDEX IF NOT EXISTS ix_async_jobs_tenant_code_created_at
 - Uso na ingestão de PDF: é a ficha principal de cada PDF ou documento equivalente. O runtime consulta esta tabela antes de processar para decidir se deve pular, atualizar ou gravar uma nova versão, e atualiza a linha quando o documento é persistido com sucesso.
 - O que ela grava no fluxo de PDF: identidade lógica do documento (`document_identity_key`), fingerprint binário do arquivo (`pdf_binary_sha256`), hash do conteúdo/versionamento (`document_hash`), caminho e nome mais recentes observados, tamanho, tipo, MIME, total de páginas, estado de ingestão, última execução, ACL e metadata operacional. Em linguagem simples: ela diz “qual PDF lógico é este e qual é a versão oficial dele agora?”.
 - Para que é usada: localizar documentos do acervo vivo, aplicar idempotência, avaliar `if_exists=skip`, fazer filtros de autorização e apontar para a versão ativa em `active_document_version_id`.
-- Relação com páginas, chunks e imagens: as tabelas `ingestion_document_pages`, `ingestion_document_chunks` e `ingestion_document_images` dependem do `manifest_id`. O manifesto é o pai lógico; os filhos carregam o conteúdo detalhado.
+- Relação com conteúdo detalhado: as filhas legadas remanescentes dependem do `manifest_id`, mas o acervo vivo materializa páginas, chunks e imagens em `vector_active_document_*`.
 - Relação com `overwrite`: quando a política é `overwrite`, esta tabela representa exatamente o acervo PostgreSQL que deve ser removido da geração substituída. Em termos simples: destruir o manifesto antigo e seus filhos é a forma de retirar o documento do dataset vivo sem apagar a trilha histórica do run.
 - Chave primária: `manifest_id`.
 - Colunas:
@@ -559,7 +1041,7 @@ Regra de identidade do manifesto:
 - O lookup e o upsert do manifesto de PDF devem sempre usar `document_identity_key`.
 - `document_hash` continua essencial para detectar reprocessamento idempotente e mudança real de conteúdo, mas não pode mais decidir sozinho a identidade lógica do PDF.
 - `active_document_version_id` aponta qual edição de conteúdo está oficialmente publicada para aquele documento lógico naquele momento.
-- Consequência prática: duas fontes diferentes com o mesmo PDF colidem no mesmo manifesto lógico; a provenance de cada fonte passa a viver em `ingestion_document_source_occurrences`.
+- Consequência prática: duas fontes diferentes com o mesmo PDF colidem no mesmo manifesto lógico; a provenance operacional deve ficar nas tabelas do run e no documento ativo publicado.
 
 ### ingestion_document_versions
 
@@ -592,38 +1074,15 @@ Regra de identidade do manifesto:
 - Índice `idx_ingestion_document_versions_identity` em `tenant_code, vectorstore_id, document_identity_key, activated_at DESC`.
 - Unique parcial `ux_ingestion_document_versions_active_identity` em `tenant_code, vectorstore_id, document_identity_key` quando `status = 'active'`.
 
-### ingestion_document_source_occurrences
-
-- Finalidade prática: guardar a provenance de cada fonte que aponta para um manifesto lógico já conhecido.
-- Papel no dataset vivo: esta tabela responde “onde esse PDF apareceu?” sem recriar manifesto duplicado para o mesmo arquivo.
-- Uso na ingestão de PDF: sempre que um PDF novo é persistido ou um PDF já conhecido reaparece em outra origem, o runtime faz upsert da ocorrência de fonte nesta tabela.
-- O que ela grava no fluxo de PDF: `manifest_id`, tenant, vectorstore, `source_system`, `canonical_source_key`, URI da fonte, identificador externo, ACL observada e metadata da ocorrência.
-- Regra prática: pode haver várias ocorrências para o mesmo `manifest_id`, mas somente uma por `tenant_code + vectorstore_id + source_system + canonical_source_key`.
-- Chave primária: composta por `tenant_code, vectorstore_id, source_system, canonical_source_key`.
-- Colunas principais:
-- `manifest_id`: manifesto lógico dono do PDF.
-- `source_system`: origem observada.
-- `canonical_source_key`: identidade estável da fonte.
-- `source_uri`: localização concreta observada na fonte.
-- `external_document_id`: id estável exposto pela origem, quando existir.
-- `is_restricted`, `allows_anonymous`, `permitted_groups`, `authorization_checked_at`, `authorization_source`, `authorization_snapshot`: ACL da ocorrência.
-- `metadata`: metadata operacional da ocorrência.
-- `created_at` e `updated_at`: trilha temporal da ocorrência.
-- Índices e restrições:
-- PK composta em `tenant_code, vectorstore_id, source_system, canonical_source_key`.
-- FK `manifest_id` para `ingestion_document_manifest.manifest_id` com `ON DELETE CASCADE`.
-- Índice `idx_ingestion_document_source_occurrences_manifest` em `manifest_id`.
-
 Como ler na prática:
 
 - `ingestion_document_manifest` diz qual é o documento lógico do acervo.
 - `ingestion_document_versions` diz qual edição de conteúdo esse documento lógico já teve.
-- `ingestion_document_source_occurrences` diz em quais fontes esse mesmo PDF apareceu.
 - `active_document_version_id` no manifesto aponta para a única edição que o runtime pode tratar como oficial.
 - Se uma nova ingestão do mesmo documento falhar antes do commit final, a versão anterior continua sendo a ativa.
 - Para legado antigo sem `active_document_version_id`, a reconciliação correta deve ser idempotente e derivada de `document_identity_key + version_fingerprint`. Em termos práticos: não gerar UUID aleatório, não adivinhar versão ativa e não reinventar fingerprint de PDF sem bytes comprovados.
 
-### ingestion_runs
+### Histórico removido: tabela anterior de runs
 
 - Finalidade prática: registrar cada execução de ingestão.
 - Papel no ciclo de vida: esta tabela é histórico operacional e auditoria de execução. Ela não deve ser confundida com o dataset vivo do acervo e não entra automaticamente em limpeza destrutiva de `overwrite`.
@@ -681,7 +1140,7 @@ Como ler na prática:
 - Índice único parcial `ux_ingestion_runs_active_vectorstore` em `tenant_code, vectorstore_id` quando `vectorstore_id` não é nulo e `status` está em `pending`, `queued`, `running`, `processing` ou `cancelling`. Esse índice é a trava durável que impede dois runs pais ativos ao mesmo tempo para o mesmo acervo lógico.
 - Leitura operacional segura: os scripts `scripts/sql/20260511_audit_ingestion_schema_columns.sql`, `scripts/sql/20260511_audit_ingestion_column_population.sql` e `scripts/sql/20260511_audit_ingestion_integrity_checks.sql` são guardiões read-only deste contrato. Eles existem para auditar o schema e os invariantes sem escrever no banco.
 
-### ingestion_run_documents
+### Histórico removido: tabela anterior de documentos do run
 
 - Finalidade prática: registrar o estado canônico de cada documento dentro de uma execução de ingestão.
 - Papel no ciclo de vida: esta tabela pertence ao histórico operacional do run. Ela ajuda a auditar como o acervo foi construído, mas não substitui o estado vivo do dataset representado por manifesto, BM25 e banco vetorial.
@@ -729,116 +1188,13 @@ Como ler na prática:
 - Índice `idx_ingestion_run_documents_tenant_vector` em `tenant_code, vectorstore_id`.
 - Índice `idx_run_documents_type_status` em `document_type, status`.
 
-### ingestion_run_slot_leases
-
-- Finalidade prática: materializar o semáforo canônico do fan-out por documento, limitando quantos documentos do mesmo run podem executar em paralelo sem usar lock pessimista na linha de `ingestion_runs`.
-- Uso na ingestão de PDF: quando a ingestão executa documentos em paralelo, esta tabela representa os slots disponíveis para os filhos. O documento só entra em execução ativa depois de conquistar ou renovar um slot.
-- O que ela grava no fluxo de PDF: slot do run, documento dono do slot, URI da fonte, worker, correlação do documento, horário de aquisição, heartbeat, expiração e metadata do lease.
-- Para que é usada: controlar concorrência por run sem bloquear a linha pai com `SELECT ... FOR UPDATE`. Em termos simples: ela evita que documentos demais rodem ao mesmo tempo no mesmo lote.
-- Limite importante: slot não é documento e não é resultado final. É uma permissão temporária de execução. O resultado continua sendo registrado em `ingestion_run_documents` e o agregado em `ingestion_runs`.
-- Chave primária: `tenant_code, run_id, slot_index`.
-- Colunas:
-- `tenant_code`: código lógico do tenant.
-- `run_id`: execução pai dona do conjunto de slots.
-- `vectorstore_id`: coleção associada ao lote, útil para purge e diagnóstico operacional.
-- `slot_index`: número ordinal do slot dentro do run. Na prática, se o paralelismo efetivo for 5, existirão 5 slots canônicos numerados de 1 a 5.
-- `lease_run_document_id`: documento que está ocupando o slot naquele instante, quando houver.
-- `lease_source_uri`: origem do documento atualmente dono do slot.
-- `lease_worker_identity`: identidade do worker que conquistou ou renovou o slot.
-- `lease_document_correlation_id`: correlação operacional do documento que ocupa o slot.
-- `lease_acquired_at`: momento em que o slot foi conquistado.
-- `lease_heartbeat_at`: última renovação operacional observada do slot.
-- `lease_expires_at`: prazo máximo do lease atual.
-- `metadata`: metadados do lease em `jsonb`, com default de objeto vazio.
-- `created_at`: criação da linha do slot, com default `now()`.
-- `updated_at`: última atualização do slot, com default `now()`.
-- Semântica operacional:
-- o run pai materializa um conjunto fixo de slots canônicos conforme o `effective_parallelism` resolvido para o fan-out.
-- o documento continua sendo a entidade canônica de execução; o slot é apenas uma permissão temporária de concorrência.
-- um documento só pode entrar em `running` ou `retrying` depois de conquistar um slot livre ou reutilizar o seu próprio slot vigente.
-- renovação e liberação do slot acontecem junto da transição canônica do documento, evitando coordenação por `SELECT ... FOR UPDATE` na linha pai.
-- o fechamento agregado do run pai deixa de depender de escrita a cada filho; o lote pode ser sincronizado no encerramento real, quando não restam documentos ativos.
-- Índices e restrições:
-- PK em `tenant_code, run_id, slot_index`.
-- FK `run_id` para `ingestion_runs.run_id` com `ON DELETE CASCADE`.
-- FK `lease_run_document_id` para `ingestion_run_documents.run_document_id` com `ON DELETE SET NULL`, para limpar automaticamente o vínculo quando o documento associado desaparecer.
-- Check `slot_index > 0`, garantindo que não exista slot zero ou negativo.
-- Índice `idx_ingestion_run_slot_leases_run_active` em `tenant_code, run_id, lease_expires_at, slot_index`.
-- Índice `idx_ingestion_run_slot_leases_tenant_vector` em `tenant_code, vectorstore_id`.
-- Índice `idx_ingestion_run_slot_leases_document` em `tenant_code, run_id, lease_run_document_id`.
-- Índice único parcial `ux_ingestion_run_slot_leases_document` para impedir que o mesmo documento ocupe mais de um slot ao mesmo tempo quando `lease_run_document_id` estiver preenchido.
-
-### ingestion_document_chunks
-
-- Finalidade prática: guardar os chunks textuais produzidos para cada documento.
-- Uso na ingestão de PDF: depois que o PDF é extraído e quebrado em partes menores, cada parte textual vira uma linha nesta tabela. O runtime grava o texto, posição, páginas cobertas, metadados e identificador do vetor correspondente no provider vetorial.
-- O que ela grava no fluxo de PDF: conteúdo textual pesquisável, índice do chunk, intervalo de páginas e caracteres, modelo de embedding, id do vetor e metadata técnica. A coluna `fts_content` é gerada pelo PostgreSQL a partir de `text_content`.
-- Para que é usada: busca textual PostgreSQL/FTS, exportação de textos, recuperação RAG e conferência entre texto persistido, BM25 e banco vetorial.
-- Limite importante: esta tabela não escolhe qual versão é oficial sozinha. A leitura correta deve respeitar `document_version_id` e o `active_document_version_id` do manifesto.
-- Chave primária: `chunk_id`.
-- Colunas:
-- `chunk_id`: identificador UUID do chunk.
-- `manifest_id`: documento pai.
-- `document_version_id`: versão de conteúdo oficialmente associada aos chunks atuais do documento.
-- `chunk_index`: posição do chunk no documento.
-- `text_content`: texto do chunk.
-- `page_start`: página inicial coberta pelo chunk.
-- `page_end`: página final coberta pelo chunk.
-- `char_start`: posição inicial de caractere.
-- `char_end`: posição final de caractere.
-- `embedding_vector_id`: identificador do vetor.
-- `embedding_model`: modelo de embedding usado.
-- `reindex_required`: indica necessidade de reindexação.
-- `metadata`: metadados do chunk em `jsonb`.
-- `created_at`: criação do registro.
-- `fts_content`: coluna gerada com índice textual em português.
-- Índices e restrições:
-- PK em `chunk_id`.
-- Unique `ingestion_document_chunks_manifest_id_chunk_index_key` em `manifest_id, chunk_index`.
-- FK `manifest_id` para `ingestion_document_manifest.manifest_id` com `ON DELETE CASCADE`.
-- FK `document_version_id` para `ingestion_document_versions.document_version_id` com `ON DELETE CASCADE`.
-- Índice GIN `idx_chunks_fts_content` em `fts_content`.
-- Índice `idx_chunks_manifest` em `manifest_id`.
-- Índice `idx_ingestion_document_chunks_document_version` em `document_version_id`.
-- Índice `idx_chunks_vector` em `embedding_vector_id`.
-
-### ingestion_document_pages
-
-- Finalidade prática: guardar a visão por página do documento.
-- Uso na ingestão de PDF: cada página extraída do PDF pode ser persistida com texto bruto, texto limpo, HTML, imagem, thumbnail, confiança de OCR, indicação de tabelas e metadata. Isso preserva a leitura por página, mesmo quando os chunks agrupam conteúdo de mais de uma página.
-- O que ela grava no fluxo de PDF: número da página, textos extraídos, recursos visuais associados, sinais de OCR/tabela e versão de conteúdo do documento.
-- Para que é usada: auditoria visual/textual de PDF, depuração de OCR, reconstrução de evidência por página e associação de imagens à página correta.
-- Limite importante: a página também deve apontar para `document_version_id`. Isso evita que uma página antiga seja lida como se pertencesse à versão ativa nova.
-- Chave primária: `page_id`.
-- Colunas:
-- `page_id`: identificador UUID da página.
-- `manifest_id`: documento pai.
-- `document_version_id`: versão de conteúdo oficialmente associada à página.
-- `page_number`: número da página.
-- `text_raw`: texto bruto.
-- `text_clean`: texto limpo.
-- `html_content`: versão HTML da página.
-- `image_uri`: URI da imagem da página.
-- `thumbnail_uri`: URI do thumbnail da página.
-- `ocr_confidence`: confiança do OCR.
-- `has_tables`: indica se há tabela detectada.
-- `metadata`: metadados da página em `jsonb`.
-- `created_at`: criação do registro.
-- Índices e restrições:
-- PK em `page_id`.
-- Unique `ingestion_document_pages_manifest_id_page_number_key` em `manifest_id, page_number`.
-- FK `manifest_id` para `ingestion_document_manifest.manifest_id` com `ON DELETE CASCADE`.
-- FK `document_version_id` para `ingestion_document_versions.document_version_id` com `ON DELETE CASCADE`.
-- Índice `idx_pages_manifest` em `manifest_id`.
-- Índice `idx_ingestion_document_pages_document_version` em `document_version_id`.
-
 ### ingestion_document_images
 
 - Finalidade prática: guardar imagens extraídas dos documentos e seus metadados multimodais.
 - Uso na ingestão de PDF: imagens encontradas nas páginas do PDF, ou imagens geradas como representação visual de página, são persistidas aqui com localização, OCR, descrição de visão e eventual vetor multimodal.
 - O que ela grava no fluxo de PDF: origem e storage da imagem, MIME, dimensões, página, índice da imagem, texto OCR, confiança, descrição visual, modelo usado, vetor e metadata.
 - Para que é usada: recuperação multimodal, auditoria de OCR/visão, ligação entre página e imagem e diagnóstico de assets persistidos no storage.
-- Limite importante: `page_id` pode ser nulo quando a imagem não puder ser ligada a uma linha de página, mas `manifest_id` e `document_version_id` preservam o vínculo com o documento e a edição de conteúdo.
+- Limite importante: `page_id` é um resíduo legado nullable. O vínculo funcional atual preservado para imagem é `manifest_id`, `document_version_id` e `page_number`; no acervo vivo, imagens se vinculam por `active_document_id`.
 - Chave primária: `image_id`.
 - Colunas:
 - `image_id`: identificador UUID da imagem.
@@ -866,38 +1222,20 @@ Como ler na prática:
 - Unique `ux_img_per_page` em `manifest_id, page_number, image_index`.
 - FK `manifest_id` para `ingestion_document_manifest.manifest_id` com `ON DELETE CASCADE`.
 - FK `document_version_id` para `ingestion_document_versions.document_version_id` com `ON DELETE CASCADE`.
-- FK `page_id` para `ingestion_document_pages.page_id` com `ON DELETE SET NULL`.
+- Sem FK funcional para página legada no contrato vivo.
 - Índice `idx_img_manifest_page` em `manifest_id, page_number`.
 - Índice `idx_ingestion_document_images_document_version` em `document_version_id`.
 - Índice `idx_img_vector` em `embedding_vector_id`.
 
-### ingestion_domain_processors
+### Configuração de domínio por dataset
 
-- Finalidade prática: guardar configuração de processadores de domínio por tenant e por vectorstore.
-- Uso na ingestão de PDF: o pipeline pode carregar configurações de domínio persistidas para decidir quais enriquecimentos, overrides ou ajustes automáticos aplicar ao conteúdo ingerido. Essa tabela não guarda o PDF; ela guarda como o conteúdo daquele domínio deve ser tratado.
-- O que ela grava no fluxo de PDF: domínio, prioridade, habilitação, override de processador, configuração manual e configuração automática por escopo de tenant/vectorstore.
-- Para que é usada: alimentar o `DomainConfigRepository` e os agregadores de auto-configuração, permitindo que regras de domínio evoluam sem depender apenas de YAML estático.
-- Limite importante: configurações desta tabela afetam processamento e enriquecimento, mas não substituem o manifesto, as versões, páginas, chunks ou imagens do acervo.
-- Chave primária: `id`.
-- Colunas:
-- `id`: identificador bigserial do registro.
-- `tenant_id`: tenant do escopo, podendo ser nulo.
-- `vectorstore_id`: coleção do escopo, podendo ser nula.
-- `domain_key`: chave do domínio.
-- `display_name`: nome amigável do domínio.
-- `enabled`: indica se o processador está ativo.
-- `priority`: prioridade de aplicação.
-- `processor_override`: sobrescrita explícita do processador.
-- `created_at`: criação do registro.
-- `updated_at`: última atualização do registro.
-- `deleted_at`: remoção lógica.
-- `manual_config`: configuração manual em `jsonb`.
-- `auto_config`: configuração automática em `jsonb`.
-- Índices e restrições:
-- PK em `id`.
-- Unique `ingestion_domain_processors_domain_tenant_vector_uq` em `domain_key, tenant_id, vectorstore_id`.
-- Check `ingestion_domain_processors_priority_check` garantindo `priority >= 0`.
-- FK `tenant_id` para `tenants.tenant_id` com `ON DELETE SET NULL` e `ON UPDATE CASCADE`.
+- Configuração manual e habilitação dos processadores permanecem no YAML.
+- O snapshot automático específico do acervo fica em
+  `vector_dataset_master.metadata.domain_specific_processing.domains`.
+- A chave física do escopo é a própria unique do master: `tenant_code + vectorstore_id`.
+- A escrita é atômica, idempotente e rejeita metadata total superior a 1.000.000 bytes.
+- O estado incremental mantém no máximo 1.000 identificadores; quando esse limite é atingido,
+  a próxima agregação recompõe o snapshot completo a partir de `vector_active_documents`.
 
 ## Modelo de Ingestão Vetorial `vector_*` (modelo ATIVO — DDL real e de-para)
 
@@ -911,9 +1249,9 @@ Como ler na prática:
 >   o guard do RAG consomem o modelo novo via `VectorActiveArchiveRepository`. A leitura legada
 >   de `ingestion_*` no caminho da tela foi cortada (sem fallback).
 > - **Populado por dado, não por código:** o acervo novo está populado para o dataset de TESTE
->   (`dnit_teste`). PRODUÇÃO (`dnit_producao`) ainda **não** foi reconstruída (rebuild pendente),
->   então seu acervo novo está vazio até a re-ingestão. O guard do RAG é estrito onde o acervo
->   está populado e tolerante onde está vazio.
+>   (`dnit_teste`) e para PRODUÇÃO (`dnit_producao`). O estado comprovado registrado neste
+>   manual é de 510 documentos ativos em produção. O guard do RAG é estrito onde o acervo está
+>   populado e tolerante apenas para datasets ainda vazios.
 > - **Tabelas antigas `ingestion_*`:** continuam existindo e servindo ao control plane do Job
 >   Core, streaming/status ao vivo, worker e manutenção; deixaram de ser a fonte de verdade do
 >   histórico/acervo de NEGÓCIO no caminho da tela.
@@ -1144,16 +1482,14 @@ CREATE INDEX ix_vector_active_document_chunks_fts
 
 ### De-para de tabelas
 
-Tabelas atuais que viram tabelas novas:
+Tabelas substituídas pelo modelo novo:
 
-| Tabela atual (ativa hoje)     | Tabela nova (planejada)          | Regra de destino                                                                                  |
+| Tabela substituída            | Tabela oficial                    | Regra de destino                                                                                  |
 | ----------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `ingestion_datasets`          | `vector_dataset_master`          | Vira a ficha master do acervo.                                                                    |
 | `ingestion_runs`              | `vector_ingestion_runs`          | Continua como histórico de run, mas passa a ser ligado explicitamente ao master.                  |
 | `ingestion_run_documents`     | `vector_ingestion_run_documents` | Continua como detalhe do lote, mas perde a ambiguidade com manifesto.                             |
 | `ingestion_document_manifest` | `vector_active_documents`        | Deixa de ser manifesto híbrido e vira lista explícita de documentos publicados.                   |
-| `ingestion_document_pages`    | `vector_active_document_pages`   | Passa a ligar ao documento ativo publicado.                                                       |
-| `ingestion_document_chunks`   | `vector_active_document_chunks`  | Passa a ligar ao documento ativo publicado.                                                       |
 | `ingestion_document_images`   | `vector_active_document_images`  | Passa a ligar ao documento ativo publicado.                                                       |
 
 Tabelas atuais cujo conteúdo deixa de ser contrato principal:
@@ -1162,8 +1498,6 @@ Tabelas atuais cujo conteúdo deixa de ser contrato principal:
 | --------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
 | `ingestion_dataset_generations`         | morre como entidade principal                                      | o modelo novo usa `last_published_run_id` e publicação explícita, sem camada de geração separada.            |
 | `ingestion_document_versions`           | morre como entidade principal                                      | versionamento implícito passa a viver no próprio documento publicado e na relação com o item do run.        |
-| `ingestion_document_source_occurrences` | morre como entidade principal                                      | provenance de origem passa a ficar no documento do run e no documento ativo.                                 |
-| `ingestion_run_slot_leases`             | pode continuar só como infraestrutura de concorrência              | não é modelo de domínio do acervo, fica fora do contrato de leitura do produto.                             |
 | `bm25_indexes`                          | permanece como tabela técnica de materialização física            | continua útil para operação física do índice, mas não define o acervo publicado.                            |
 
 ### De-para de campos (por tabela)
@@ -1222,7 +1556,7 @@ item do lote (`run_document_id`, `run_id`, `tenant_code`, `vectorstore_id`, `doc
 `document_path`, `document_name`, `document_type`, `mime_type`, `file_size_bytes`,
 `file_last_modified`, `external_document_id`, `document_hash`, `metadata` — mantêm a semântica.)
 
-Tabelas de conteúdo detalhado: `ingestion_document_pages/chunks/images` ->
+Tabelas legadas de conteúdo detalhado ->
 `vector_active_document_pages/chunks/images`, trocando o vínculo `manifest_id` por
 `active_document_id`; `vector_active_document_chunks` passa a aceitar `vector_point_id` explícito.
 
@@ -1231,10 +1565,9 @@ Tabelas de conteúdo detalhado: `ingestion_document_pages/chunks/images` ->
 Morrem no novo contrato principal: `ingestion_datasets.active_generation_id`,
 `ingestion_document_manifest.active_document_version_id`, toda a tabela
 `ingestion_document_versions` (`document_version_id`, `status`, `activated_at`,
-`superseded_at`), `ingestion_document_source_occurrences.canonical_source_key` como eixo
-principal, e qualquer lógica que exija `manifest_id + document_version_id` para descobrir o que
-está ativo. Em resumo: a camada de geração, manifesto híbrido e versão ativa separada deixa de
-ser o centro do modelo.
+`superseded_at`) como eixo principal, e qualquer lógica que exija
+`manifest_id + document_version_id` para descobrir o que está ativo. Em resumo: a camada de
+geração, manifesto híbrido e versão ativa separada deixa de ser o centro do modelo.
 
 Nascem: em `vector_dataset_master` — `vector_provider`, `vector_target`, `bm25_provider`,
 `bm25_target`, `last_published_run_id`, `last_completed_run_id`, `last_sync_at`. Em
@@ -1258,6 +1591,10 @@ Nascem: em `vector_dataset_master` — `vector_provider`, `vector_target`, `bm25
   (`published`/`updated`/`unchanged`/`removed`/`skipped`/`failed`). O vínculo com o documento
   ativo não é gravado aqui — é resolvido por `source_run_document_id` em `vector_active_documents`.
   `content_fingerprint` representa o conteúdo físico processado, não a identidade de origem.
+  Durante o fan-out, `metadata.document_fanout_execution_lease` guarda somente estado, worker,
+  correlação, tentativa, heartbeat e expiração da permissão atual. A renovação exige o mesmo
+  worker e um lease ainda vigente; estados terminais substituem o objeto por uma liberação sem
+  expiração. O limite é calculado contando leases vigentes do mesmo `control_plane_run_id`.
 - `vector_active_documents`: uma linha ativa por `dataset_id + canonical_document_key`. Conteúdo
   novo do mesmo documento atualiza a mesma linha e troca `current_run_id`,
   `source_run_document_id`, `content_fingerprint`, `document_hash` e `published_at`. Remoção
@@ -1303,6 +1640,13 @@ modelos principais dizendo coisas diferentes sobre o mesmo acervo — exatamente
 transitória de hoje, que esta seção documenta para resolver no futuro.
 
 ## Domínio Interações e Eventos
+
+Estado físico confirmado em produção em 2026-07-12: `public.interaction_runs` e
+`public.interaction_run_events` estão materializadas conforme o contrato abaixo. O DDL é manual,
+transacional e não é executado pelo runtime. A cadeia operacional versionada está em
+`scripts/sql/20260712_{precheck,backup,create,postcheck,rollback}_interaction_telemetry_schema.sql`.
+O backup do estado anterior fica em `migration_backup.interaction_telemetry_t16_manifest`; o
+rollback recusa remoção quando qualquer uma das tabelas contém dados.
 
 ### interaction_runs
 
@@ -1789,6 +2133,189 @@ Em linguagem simples: o schema `agent_background` é o banco da história operac
 - `meta_whatsapp_business_account_id`: identificador WABA.
 - `meta_graph_api_version`: versão da Graph API.
 
+### YAML governado e bindings externos: leitura 101
+
+O YAML continua sendo o contrato de montagem do runtime, mas o cliente não precisa enviar esse
+contrato inteiro em toda chamada. Um YAML publicado pode ficar em `tenant_yaml.yaml_content`, e
+uma identidade externa aponta explicitamente para ele:
+
+- na API direta, uma chave `key_kind='tenant_yaml'` aponta por
+  `tenant_access_keys.tenant_yaml_id`;
+- em canais, `(channel_type, external_id)` aponta por
+  `tenant_channels.tenant_yaml_id`;
+- os dois caminhos usam o mesmo resolvedor de binding e carregam o mesmo `yaml_content`.
+
+Em linguagem simples: chave e canal são duas portas de entrada para a mesma configuração
+governada. O banco impede que uma porta de um tenant ou ambiente abra o YAML de outro.
+
+O `environment` é coluna obrigatória nas quatro tabelas deste recorte. Ele participa das
+unicidades e das FKs compostas; portanto, uma linha de `development` nunca pode resolver por
+engano uma linha de `prod`.
+
+### tenant_yaml
+
+- Finalidade prática: guardar os YAMLs governados e publicados de um tenant. A relação é 1:N:
+  ter vários YAMLs por tenant é o caso normal.
+- Fonte de runtime: `yaml_content`. O runtime governado não lê o arquivo indicado por
+  `yaml_path`.
+- Chave primária: `tenant_yaml_id` (UUID).
+- Colunas:
+- `tenant_yaml_id`: identificador do YAML governado.
+- `tenant_id`: tenant dono do YAML; FK para `tenants`.
+- `yaml_path`: referência de origem e migração. Não é fonte de runtime.
+- `yaml_content`: conteúdo materializado que o runtime carrega.
+- `yaml_hash`: SHA-256 usado para conferir a identidade do conteúdo e a equivalência durante a migração.
+- `version`: versão governada, com default `1`.
+- `status`: estado do YAML; o runtime aceita somente `active`.
+- `published_at`: instante da publicação. Mesmo com `status='active'`, um YAML sem esse campo não é executável por binding.
+- `deactivated_at`: instante de desativação, quando aplicável.
+- `source_kind`: origem administrativa do conteúdo, com default `database`.
+- `environment`: ambiente normalizado da linha e segregador obrigatório.
+- `warmup_on_boot`: indica se o artefato pode participar do aquecimento previsto pelo diretório.
+- `is_default`: indica o YAML padrão do tenant naquele ambiente.
+- `execution_mode`: modo de execução associado.
+- `descricao`: descrição funcional.
+- `metadata_json`: metadados auxiliares em `jsonb`.
+- `agent_instructions_md`: **não é coluna de `tenant_yaml` no estado aplicado comprovado**.
+  A instrução compartilhada alvo vive como `agent-instructions-md` dentro de `yaml_content`.
+- `created_by_user_account_id` e `updated_by_user_account_id`: identidades administrativas opcionais de criação e atualização.
+- `created_at` e `updated_at`: trilha temporal da linha.
+- Índices e restrições:
+- FK simples de `tenant_id` para `tenants`.
+- Unique `uq_tenant_yaml_environment_tenant_id_yaml_id` em
+  `(environment, tenant_id, tenant_yaml_id)`, alvo das FKs anti cross-tenant.
+- Unique `uq_ty_env_tenant_yaml_path` em `(environment, tenant_id, yaml_path)`.
+- Unique parcial `uq_tenant_yaml_default_active` em `(environment, tenant_id)` para
+  `is_default = true AND status = 'active'`.
+
+### tenant_access_keys
+
+- Finalidade prática: guardar credenciais de tenant e chaves de execução ligadas a projeto/operação SaaS.
+- Chave primária: `access_key_id`.
+- Tipos:
+- `key_kind='tenant'`: credencial de tenant. Pode autenticar e enriquecer uma chamada que já trouxe YAML explícito, mas não escolhe YAML sozinha.
+- `key_kind='tenant_yaml'`: chave de execução com binding obrigatório para `tenant_yaml_id`.
+- Colunas:
+- `access_key_id`: identificador interno da credencial.
+- `tenant_id`: tenant dono da chave; FK para `tenants`.
+- `tenant_yaml_id`: YAML governado associado quando `key_kind='tenant_yaml'`.
+- `saas_project_id`: projeto SaaS do mesmo ambiente/tenant; nullable durante a janela de corte.
+- `operation`: operação governada (`agent`, `rag`, `ingest` ou `etl`); nunca agente/subagente.
+- `key_kind`: `tenant` ou `tenant_yaml`.
+- `scope`: escopo administrativo opcional da chave.
+- `status`: estado administrativo da credencial.
+- `expires_at`: expiração opcional; deve ser posterior a `created_at`.
+- `revoked_at`: revogação explícita.
+- `permissions_json`, `rate_limits_json` e `metadata_json`: permissões, limites e metadados em `jsonb`.
+- `default_user_email`: usuário padrão associado, quando aplicável.
+- `environment`: ambiente normalizado e segregador obrigatório.
+- `access_key_hash`: SHA-256 do segredo das chaves novas.
+- `access_key_prefix` e `access_key_last4`: partes não secretas para identificação operacional.
+- `access_key`: plaintext nullable preservado somente para credenciais legadas ainda não rotacionadas.
+- `last_used_at`: último uso auditado da chave de YAML; o runtime limita a escrita a uma janela de cinco minutos.
+- `created_at` e `updated_at`: trilha temporal.
+- Formato das chaves novas: `pk_<env>_<random>`. O segredo é entregue na emissão e o banco
+  persiste apenas hash, prefixo e últimos quatro caracteres.
+- Índices e restrições:
+- FK composta `fk_tak_tenant_yaml` de `(environment, tenant_id, tenant_yaml_id)` para
+  `tenant_yaml`, com `ON DELETE RESTRICT`.
+- FK composta `tenant_access_keys_saas_project_fk` de
+  `(environment, tenant_id, saas_project_id)` para `saas_projects`; o índice parcial inclui
+  `operation`. T14 não fez backfill das API keys atuais porque nenhuma declarava operação.
+- `chk_tak_yaml_requires_binding` exige binding, hash e ausência de plaintext para
+  `key_kind='tenant_yaml'`.
+- `chk_tak_key_material` exige plaintext legado ou hash novo.
+- Unique parcial `uq_tenant_access_keys_environment_hash` em `(environment, access_key_hash)`.
+- Unique parcial `uq_tak_env_access_key` em `(environment, access_key)` para o legado.
+
+### tenant_channels
+
+- Finalidade prática: ligar a identidade externa de um canal a projeto/operação SaaS do mesmo tenant e ambiente.
+- Chave primária: `tenant_channel_id`.
+- Colunas principais:
+- `tenant_channel_id`: identificador interno do canal.
+- `tenant_id`: tenant dono do canal; FK para `tenants`.
+- `client_code`: código lógico do cliente.
+- `channel_type` e `external_id`: identidade externa usada pelo adapter de canal.
+- `tenant_yaml_id`: binding governado obrigatório para execução do canal.
+- `saas_project_id`: projeto SaaS resolvido pela FK composta anti cross-tenant.
+- `operation`: `rag` quando `execution_mode='ask'`; `agent` quando `workflow`. O modo legado
+  `agent` do canal continua bloqueado no código executável.
+- `yaml_path`: referência de migração e diagnóstico; nunca fonte de runtime.
+- `descricao`, `label`, `execution_mode`, `status` e `metadata_json`: contrato operacional do canal.
+- `environment`: ambiente normalizado e segregador obrigatório.
+- `created_at` e `updated_at`: trilha temporal.
+- Índices e restrições:
+- FK composta `fk_tch_tenant_yaml` de `(environment, tenant_id, tenant_yaml_id)` para
+  `tenant_yaml`, com `ON DELETE RESTRICT`.
+- FK composta `tenant_channels_saas_project_fk` para `saas_projects` e check fechado da
+  operação. O canal Casa Moderna foi reconciliado one-shot ao único projeto ativo do tenant;
+  esse fallback existe somente no script de migração, nunca no runtime.
+- Unique `uq_tch_env_channel_type_external_id` em
+  `(environment, channel_type, external_id)`.
+- Unique `uq_tenant_channels_environment_tenant_channel` em
+  `(environment, tenant_id, tenant_channel_id)`, usado pela FK dos usuários do canal.
+
+### tenant_channel_end_users
+
+- Finalidade prática: guardar o remetente/usuário externo observado dentro de um canal, sem misturar usuários de tenants ou ambientes diferentes.
+- Chave primária: `tenant_channel_end_user_id`.
+- Colunas:
+- `tenant_channel_end_user_id`: identificador do vínculo.
+- `tenant_id` e `tenant_channel_id`: tenant e canal donos do vínculo.
+- `channel_type` e `external_user_id`: tipo do canal e identidade externa do remetente.
+- `status`: `pending`, `allowed` ou `blocked`.
+- `metadata_json`: metadados em objeto `jsonb`.
+- `environment`: ambiente normalizado e segregador obrigatório.
+- `created_at`, `updated_at` e `last_seen_at`: trilha temporal e último contato observado.
+- Índices e restrições:
+- FK composta `fk_tceu_tenant_channel` de
+  `(environment, tenant_id, tenant_channel_id)` para `tenant_channels`, com
+  `ON DELETE CASCADE`.
+- Unique `uq_tceu_environment_channel_external_user` em
+  `(environment, tenant_channel_id, external_user_id)`.
+- Checks limitam `status` e exigem `metadata_json` como objeto.
+
+### Regras de runtime, falha fechada e auditoria
+
+- A fonte explícita enviada na requisição vence. A ordem é: payload criptografado, conteúdo
+  YAML inline/dict, caminho explícito e, somente quando nenhuma dessas fontes existe,
+  `X-API-Key` com binding `tenant_yaml`.
+- Uma chave `key_kind='tenant'` sem binding continua válida como credencial, mas uma chamada
+  somente com essa chave recebe `409`; o runtime não escolhe YAML por canal, usuário ou
+  ordenação por `updated_at`.
+- Chave indisponível é rejeitada antes da execução. No resolvedor de configuração, o lookup
+  indisponível mapeia para `401`; no boundary oficial com autenticação, a revogação foi provada
+  como `403`. Tenant inativo ou tentativa de binding cross-tenant recebe `403`; binding ausente,
+  YAML inativo/não publicado ou conteúdo ausente recebe `409`. Indisponibilidade do diretório
+  recebe `503`.
+- O canal usa `(channel_type, external_id)` para chegar ao mesmo resolvedor. Canal sem binding
+  governado falha fechado; não há fallback para `yaml_path`.
+- `last_used_at` é atualizado no uso de uma chave `tenant_yaml`, com throttle de cinco minutos
+  no processo e no predicado do PostgreSQL.
+- Os eventos canônicos registram `correlation_id`, ids de tenant/chave/canal/YAML, `yaml_hash`,
+  origem e motivo. A chave completa e o conteúdo YAML não entram no log.
+
+### Estado do rollout em 2026-07-11
+
+- O namespace canônico de produção é `environment='prod'` no banco compartilhado.
+- Dezesseis YAMLs estão ativos e publicados em `prod`: 6 em `engenharia_dnit`, 5 em
+  `pdv-vendas`, 3 em `linx-demo`, 1 em `casa_moderna` e 1 em `apify`. Cada um desses cinco
+  tenants tem exatamente um YAML default; o relacionamento 1:N é o caso normal.
+- Os sete tenants raiz são `casa_moderna`, `engenharia_dnit`, `pdv-vendas`, `linx-demo`,
+  `apify`, `master` e `demo`. `master` e `demo` permanecem sem YAML executável.
+- A classificação é explícita por família de arquivo e cada linha guarda os bytes versionados,
+  o SHA-256 correspondente e as capacidades estruturais observadas. `execution_mode` permanece
+  nulo quando o arquivo não declara um modo canônico; ele não é inferido pelo nome.
+- O canal Casa Moderna está em `prod` e ligado ao YAML publicado do mesmo tenant.
+- As quatro chaves mantidas estão em `prod`, mas permanecem
+  `key_kind='tenant'`, sem `tenant_yaml_id`: elas autenticam chamadas com YAML explícito e não
+  escolhem configuração sozinhas.
+- Novas chaves `tenant_yaml` podem ser emitidas de forma controlada, mas ligar qualquer uma das
+  quatro chaves legadas a um YAML ainda exige decisão de negócio explícita.
+- O runtime governado usa `tenant_yaml.yaml_content`; `tenant_yaml.yaml_path` é apenas dica de
+  origem e diagnóstico.
+
 ### Visao geral do schema integrations
 
 O schema `integrations` concentra o cadastro governado das integracoes externas e das tools parametrizadas da plataforma. Em termos conceituais, ele separa o que e catalogo global da plataforma do que e cadastro multi-tenant de conectores e ativos funcionais. Assim, a plataforma consegue administrar tools builtin, grupos funcionais, credenciais, fontes OpenAPI, conexoes SQL, endpoints HTTP, queries e procedures de forma rastreavel, sem depender de configuracao solta espalhada em arquivos. No runtime atual mais evidenciado em codigo, esse schema ja participa diretamente da resolucao governada de `dyn_api<...>` e `dyn_sql<...>`, enquanto o catalogo builtin global e carregado do banco pelo cache central.
@@ -2184,59 +2711,45 @@ Em linguagem simples: pense nesse schema como uma prateleira oficial de integrac
 - Check para limitar `password_algorithm` ao algoritmo suportado.
 - Check para `failed_login_attempts >= 0`.
 
-### user_account_yaml
+### user_account_yaml (removida)
 
-- Finalidade prática: guardar o YAML único da conta pessoal do usuário.
-- Chave primária: `user_account_yaml_id`.
-- Colunas:
-- `user_account_yaml_id`: identificador UUID do vínculo.
-- `user_account_id`: conta pessoal dona do YAML.
-- `yaml_path`: caminho do YAML pessoal.
-- `status`: estado do vínculo, com default `active`.
-- `execution_mode`: modo de execução associado.
-- `descricao`: descrição funcional do vínculo.
-- `metadata_json`: metadados adicionais em `jsonb`.
-- `agent_instructions_md`: instruções persistentes de DeepAgent (equivalente ao AGENTS.md) da conta **pessoal**, em texto Markdown; coluna dedicada `text` nullable. Alimenta o `MemoryMiddleware` nativo do DeepAgent via `/memories/agents.md` (escopo `user`). Ver a seção `### agent_skills` para o contexto completo da feature e o gate de DDL manual.
-- `created_at`: criação do vínculo.
-- `updated_at`: última atualização do vínculo.
-- Índices e restrições:
-- PK em `user_account_yaml_id`.
-- FK `user_account_id` para `user_accounts.user_account_id` com `ON DELETE CASCADE`.
-- Unique `user_account_yaml_user_account_id_key` em `user_account_id`.
-- Unique `user_account_yaml_path_key` em `user_account_id, yaml_path`.
+Esta tabela foi retirada do modelo. Conta pessoal não possui fonte YAML própria e o runtime
+não resolve configuração por e-mail, caminho, data de atualização ou fallback implícito.
 
-#### Como usar no contexto pessoal
+### tenant_user_yaml — FÍSICA PARA ROLLBACK, SEM RUNTIME DESDE T17
 
-- esta tabela resolve o contexto pessoal, quando o usuário opera fora de uma organização.
-- a conta pessoal deve ter no máximo um YAML ativo.
-- se não houver YAML pessoal configurado, o sistema deve falhar de forma clara, sem fallback automático para tenant.
-
-### tenant_user_yaml
-
-- Finalidade prática: guardar o YAML do usuário **dentro de uma organização** (contexto organizacional). É a contraparte de `user_account_yaml`, mas o vínculo é usuário↔tenant, não a conta pessoal isolada. Resolvida por `UserYamlRepository.resolve_tenant_yaml_path` (JOIN com `tenant_users` por `email + tenant_id`).
+- Finalidade histórica: associava membership a uma implementação YAML. T17 removeu repository,
+  query, cache, default e sessão que consumiam essa associação. Não use esta tabela em código
+  novo; T21 fará a contração física após a janela de observação.
 - Chave primária: `tenant_user_yaml_id`.
 - Colunas:
 - `tenant_user_yaml_id`: identificador UUID do vínculo YAML organizacional.
 - `tenant_user_id`: vínculo do usuário com a organização (membership em `tenant_users`).
 - `tenant_id`: organização dona do YAML.
-- `yaml_path`: caminho do YAML organizacional.
+- `environment`: ambiente obrigatório do binding.
+- `tenant_yaml_id`: YAML governado associado ao membership.
 - `status`: estado do vínculo, com default `active`.
 - `is_default`: indica o YAML organizacional padrão do usuário naquela organização.
 - `descricao`: descrição funcional do vínculo.
 - `execution_mode`: modo de execução associado.
 - `metadata_json`: metadados adicionais em `jsonb`.
-- `agent_instructions_md`: instruções persistentes de DeepAgent (equivalente ao AGENTS.md) **organizacionais** (escopo `org`), em texto Markdown; coluna dedicada `text` nullable. Alimenta o `MemoryMiddleware` nativo do DeepAgent via `/memories/agents.md`. Ver a seção `### agent_skills` para o contexto completo da feature e o gate de DDL manual.
+- `agent_instructions_md`: coluna `text` nullable sem leitor/escritor runtime. A instrução
+  compartilhada usa exclusivamente `agent-instructions-md` dentro do YAML da release.
 - `created_at`: criação do vínculo.
 - `updated_at`: última atualização do vínculo.
 - Índices e restrições:
 - PK em `tenant_user_yaml_id`.
-- unicidade lógica por vínculo usuário↔tenant↔yaml_path (o YAML organizacional pertence ao vínculo, não à conta pessoal direta).
+- FK composta `(tenant_id, tenant_user_id)` para o membership correspondente.
+- FK composta `(environment, tenant_id, tenant_yaml_id)` para `tenant_yaml`.
+- unicidade lógica por membership, ambiente e `tenant_yaml_id`, com no máximo um default
+  ativo por membership e ambiente.
 
-#### Como usar tenant_user_yaml no contexto organizacional
+#### Como tratar tenant_user_yaml durante a janela de rollback
 
-- esta tabela resolve o contexto organizacional; o YAML pertence ao vínculo usuário↔tenant, não à conta pessoal.
-- a leitura é sempre escopada por `tenant_id` (segregação obrigatória; nunca cross-tenant).
-- se a coluna `agent_instructions_md` não existir no schema físico, a leitura dedicada dessa coluna **falha explícito** (`AgentInstructionsSchemaMissingError`) — nunca cria schema nem degrada para vazio. A resolução do `yaml_path` em si permanece intacta (não depende da coluna nova).
+- não ler, escrever, cachear nem usar como entitlement/default;
+- membership humano vive em `tenant_users`; contratação vive em assinatura/entitlement;
+- configuração executável resolve projeto → release ativa → único `tenant_yaml` e operação;
+- a tabela permanece intocada somente para rollback controlado até T21.
 
 ### agent_skills
 
@@ -2259,11 +2772,13 @@ Em linguagem simples: pense nesse schema como uma prateleira oficial de integrac
 - Índice `ix_agent_skills_tenant_env_status` em `(tenant_id, environment, status)`.
 - Check `ck_agent_skills_status` (`active`/`inactive`) e `ck_agent_skills_skill_name_format` (formato Agent Skills).
 
-#### Gate de DDL manual e feature AGENTS.md/Skills por tenant (DeepAgent)
+#### Gate de DDL manual e estado legado AGENTS.md/Skills por tenant (DeepAgent)
 
-- **DDL sempre manual (`CLAUDE.md §5`).** A tabela `agent_skills` e as colunas `agent_instructions_md` (em `user_account_yaml` e `tenant_user_yaml`) são criadas **à mão**, fora do runtime, em janela controlada de deploy. Os scripts-artefato ficam em `docs/.interno/.planos/deepagents-skills-memory-interpreter/ddl/` (`agent_skills.sql`, `agent_instructions_md.sql`). Nenhum processo (API/worker/scheduler/request/boot) dispara esse DDL; o runtime assume o schema existente e **falha explícito** se faltar.
-- **DSN de domínio.** Essas estruturas vivem no banco de domínio `DATABASE_PROMETEU_GENERIC_RAG_DSN` (mesmo de `user_account_yaml`/`tenant_user_yaml`), acessadas por `AgentSkillsPostgresRepository` e `UserYamlRepository` sobre `ClientDirectoryBase`.
-- **Onde o conteúdo é usado.** `agent_instructions_md` → `/memories/agents.md` (via `MemoryMiddleware`, sempre injetado no system prompt); `agent_skills` → `/skills/<skill_name>/SKILL.md` (via `SkillsMiddleware`, carregado sob demanda). Ambos usam o `PostgresStore` do DeepAgent (`backend.type: postgres`), com namespace segregado por `ENVIRONMENT` + tenant.
+- **DDL sempre manual.** A tabela `agent_skills` e a coluna `tenant_user_yaml.agent_instructions_md` são criadas **à mão**, fora do runtime, em janela controlada de deploy. Nenhum processo (API/worker/scheduler/request/boot) dispara DDL.
+- **DSN de domínio.** Essas estruturas vivem no banco de domínio `DATABASE_PROMETEU_GENERIC_RAG_DSN`, acessadas por `AgentSkillsPostgresRepository` e `UserYamlRepository` sobre `ClientDirectoryBase`.
+- **Onde o conteúdo é usado hoje.** `agent_instructions_md` não é usado. A chave
+  `agent-instructions-md` do YAML materializa `/memories/agents.md`; `agent_skills` continua
+  materializando `/skills/<skill_name>/SKILL.md`.
 
 ### Leitura prática de tenant_users no modelo final
 
@@ -2395,20 +2910,26 @@ Em linguagem simples: pense nesse schema como uma prateleira oficial de integrac
 ### Fluxo operacional esperado
 
 - Cadastro pessoal: cria `user_accounts` e, dependendo do método de login, grava em `user_auth_identities` ou `user_password_credentials`.
-- Configuração pessoal: grava o YAML único da conta em `user_account_yaml`.
 - Criação de organização: cria `tenants`, vincula o criador em `tenant_users` com `role='owner'` e registra `owner_user_account_id`.
-- Configuração organizacional: grava o YAML único do vínculo em `tenant_user_yaml`.
+- Configuração organizacional: publica release imutável de projeto apontando a `tenant_yaml`.
 - Acesso pessoal: usa apenas `user_accounts` e `user_account_payment_cards`.
-- Sessão autenticada padrão: deve nascer com o `yaml_path` pessoal de `user_account_yaml`; a lista de organizações do usuário é contexto separado e explícito.
+- Sessão autenticada padrão: nasce sem YAML e recebe somente contextos SaaS autorizados por
+  projeto/release/operação; nunca recebe seletor de agente nem binding de membership→YAML.
 - Acesso organizacional: exige membership em `tenant_users`; permissões vêm do `role` e a cobrança sai de `tenant_payment_cards`.
 - Usuário sem organização: continua funcional, sem obrigatoriedade de pertencer a um tenant.
 
-### Regra obrigatória de resolução de YAML
+### Regra obrigatória de resolução de YAML por sessão de usuário
 
-- Contexto pessoal: resolver exclusivamente por `user_account_id` em `user_account_yaml`.
-- Contexto organizacional: resolver exclusivamente por `tenant_user_id` ou por `tenant_id + user_account_id` em `tenant_user_yaml`.
-- É proibido escolher YAML por `user_email` solto ou por ordenação implícita de `updated_at` entre vários vínculos.
-- É proibido fallback automático entre YAML pessoal e YAML organizacional sem requisito explícito.
+As regras abaixo governam o contexto organizacional escolhido por uma sessão de usuário.
+Elas não substituem o binding externo governado de API e canal documentado acima:
+o runtime T14 resolve `saas_project_id + operation`, pinando a release ativa e seu YAML/hash.
+
+- Não existe YAML pessoal nem tabela `user_account_yaml`.
+- Contexto executável resolve exclusivamente projeto, release ativa, `tenant_yaml`/hash e
+  operação autorizada pelo `SaasRuntimeRequestResolver`.
+- É proibido escolher YAML por `user_email` solto, `updated_at`, caminho, default global ou
+  pela existência de um único YAML no tenant.
+- Sem projeto/operação autorizado, o fluxo falha fechado; membership sozinho não concede produto.
 
 ## Domínio Memória do Usuário
 
@@ -2452,18 +2973,19 @@ Em linguagem simples: pense nesse schema como uma prateleira oficial de integrac
 ## Leitura Operacional do Schema
 
 - Para analisar integridade do acervo ativo no modelo oficial, primeiro leia `vector_dataset_master` para descobrir `dataset_id`, `vector_target`, `bm25_target`, `last_published_run_id` e `last_completed_run_id` do par `tenant_code + vectorstore_id`. Depois confira `vector_active_documents` e as filhas `vector_active_document_pages`, `vector_active_document_chunks` e `vector_active_document_images`. O BM25 materializado continua em `bm25_indexes`, mas o pivô do acervo vivo já não é `active_generation_id`.
-- Para investigar divergência de dataset, trate `ingestion_runs` e `ingestion_run_documents` como trilha histórica, não como fonte primária do estado vivo do acervo.
+- Para investigar divergência de dataset, use `vector_ingestion_runs` e `vector_ingestion_run_documents` como trilha histórica, não como fonte primária do estado vivo do acervo.
 - Para localizar um documento vivo no acervo vetorial, comece por `vector_active_documents`. Para ACL/autorização e identidade lógica preservada, complemente com `ingestion_document_manifest`.
 - Para localizar um documento externo do Confluence, consulte `source_system` junto com `external_document_id`.
 - Para auditoria e filtros SQL de autorização, priorize `is_restricted`, `allows_anonymous`, `permitted_groups` e `authorization_checked_at` em `ingestion_document_manifest`.
-- Para investigar a execução de uma ingestão, use `ingestion_runs` e depois `ingestion_run_documents`.
+- Para investigar a execução de uma ingestão, use `vector_ingestion_runs` e depois `vector_ingestion_run_documents`.
 - Para abrir a trilha completa de uma interação, use `interaction_runs` e depois `interaction_run_events`.
 - Para investigar Execução Agentic em Background, comece por `agent_background.background_execution_requests`, depois siga para `scheduler.scheduled_jobs` e `scheduler.job_executions`, e só então leia `agent_background.background_execution_runs` e `agent_background.background_execution_events` como projeção compatível do slice.
 - Para investigar uma aprovação humana assíncrona ligada a run background, priorize `agent_background.agent_hil_approval_requests`; ali estão o pedido, o run, o canal, o prazo, o status, o token em hash e a decisão final aceita pelo sistema.
 - Para validar conta pessoal e autenticação, comece por `user_accounts`, `user_auth_identities` e `user_password_credentials`.
-- Para validar YAML pessoal, use `user_account_yaml`.
-- Para validar configuração organizacional, comece por `tenants`, `tenant_access_keys`, `tenant_channels`, `tenant_security_keys` e `tenant_secrets`.
-- Para entender o membership, o YAML do usuário e a classificação funcional dos projetos dentro do tenant, use `tenant_users`, `tenant_user_yaml`, `system_domains`, `tenant_user_projects` e `tenant_user_project_details`.
+- Para validar configuração organizacional, comece por `tenants`, `tenant_yaml`, `tenant_access_keys`, `tenant_channels`, `tenant_security_keys` e `tenant_secrets`.
+- Para investigar qual configuração uma identidade externa executou, siga o binding composto
+  por `environment + tenant_id + tenant_yaml_id`; nunca deduza pelo `yaml_path`.
+- Para entender o membership, sua associação explícita ao YAML governado e a classificação funcional dos projetos, use `tenant_users`, `tenant_user_yaml`, `tenant_yaml`, `system_domains`, `tenant_user_projects` e `tenant_user_project_details`.
 - Para cobrança, separe sempre pagamento pessoal em `user_account_payment_cards` e pagamento organizacional em `tenant_payment_cards`.
 - Para recuperar memória conversacional consolidada, use `user_memory_interactions` e `user_memory_session_summaries`.
 
@@ -2479,8 +3001,8 @@ Em linguagem simples: pense nesse schema como uma prateleira oficial de integrac
 
 ### O documento existe no histórico do run, mas não aparece no acervo vivo
 
-Causa provável: a investigação começou em `ingestion_runs` ou
-`ingestion_run_documents`, que são trilha histórica, e não no conjunto
+Causa provável: a investigação começou em `vector_ingestion_runs` ou
+`vector_ingestion_run_documents`, que são trilha histórica, e não no conjunto
 vivo do dataset.
 
 Como confirmar: volte para `vector_dataset_master`,
@@ -2513,6 +3035,8 @@ correlatas do fluxo web.
 - Entendi a diferença entre identidade da fonte e hash de conteúdo.
 - Entendi por que o schema conecta ingestão, autenticação, HIL e integrações.
 - Entendi como o schema `agent_background` separa pedido, agenda, run, eventos e HIL.
+- Entendi que API, canal e sessão organizacional convergem para `tenant_yaml.yaml_content`.
+- Entendi por que as FKs compostas com `environment + tenant_id` impedem binding cross-tenant e cross-environment.
 - Entendi por onde começar uma investigação sem confundir tabela histórica com fonte de verdade.
 
 ## Schema Implementado de Integrações Governadas
@@ -2622,8 +3146,18 @@ Convenções canônicas deste schema:
 
 ## Observações Finais
 
-- Este manual reflete o DDL atual informado para o schema público, incluindo o modelo final de conta pessoal, autenticação e cobrança organizacional.
+- Este manual reflete o DDL real introspectado no schema público em 2026-07-11 e a validação
+  operacional do módulo SaaS executada em produção em 2026-07-12.
+- As tabelas `saas_*`, seus guards e o catálogo-base de cinco projetos/release/planos estão
+  implantados. Os boundaries de projeto, release, assinatura simulada, billing e entitlement
+  foram exercitados ponta a ponta; os artefatos da prova foram encerrados como projeto arquivado,
+  assinatura cancelada e direitos revogados, mantendo a trilha auditável.
+- Membership administrativa em `tenant_users` e assinatura comercial em `saas_subscriptions`
+  são conceitos independentes: a primeira autoriza administrar o tenant; somente a segunda,
+  combinada com release publicada e operação no manifesto/plano, concede entitlement de uso.
 - Este manual também registra o schema `chat`, que persiste as conversas e mensagens do componente de chat embutível genérico, com chave natural `conversation_id` e segregação por `tenant_code`.
+- Este manual também registra `tenant_yaml` como fonte governada de configuração e os bindings
+  explícitos de API/canal, segregados por `environment` e protegidos por FKs compostas.
 - Este manual também registra o schema `integrations` já implementado e o desenho contratual já aprovado para a tabela global `integrations.builtin_tool_registry`, para documentar no mesmo lugar o armazenamento dos cadastros técnicos, funcionais e do catálogo builtin.
 - Este manual também passa a registrar o schema demo de varejo consultado por `DATABASE_VAREJO_DSN` e `DATABASE_VAREJO_SCHEMA`, para facilitar futuras consultas operacionais de SQL, UCP, dashboards e NL2SQL.
 - Estruturas antigas que não aparecem mais no DDL foram removidas deste documento para evitar ambiguidade.

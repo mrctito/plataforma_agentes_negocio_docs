@@ -70,13 +70,13 @@ Nem todo campo do YAML participa deste selo. O foco é o fragmento governado do 
 
 Em DeepAgent, o detector usa como conjunto padrão:
 
-- selected_supervisor;
+- selected_entrypoint;
 - multi_agents;
 - tools_library.
 
 Em Workflow, o conjunto padrão é:
 
-- selected_workflow;
+- selected_entrypoint;
 - workflows_defaults;
 - workflows;
 - tools_library.

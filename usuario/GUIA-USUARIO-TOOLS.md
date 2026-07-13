@@ -279,7 +279,7 @@ Exemplo mínimo de DeepAgent usando a tool para comunicação operacional:
 ```yaml
 tools_library: []
 
-selected_supervisor: "atendimento_email"
+selected_entrypoint: "atendimento_email"
 
 multi_agents:
   - id: "atendimento_email"

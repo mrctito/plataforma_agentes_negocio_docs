@@ -39,7 +39,7 @@ O modo llm_schema exige provider LLM com saída estruturada. O modo heuristic pr
 
 ### 2.3. AST pública do assembly
 
-O envelope central é AgenticDocumentAST. Ele representa o documento agentic como estrutura tipada com campos como target, selected_workflow, selected_supervisor, workflows, multi_agents, deepagent_multi_agents, tools_library e blocos de configuração relacionados.
+O envelope central é AgenticDocumentAST. Ele representa o documento agentic como estrutura tipada com campos como target, selected_entrypoint, workflows, multi_agents, deepagent_multi_agents, tools_library e blocos de configuração relacionados.
 
 Essa AST é a base para parse, validação, merge parcial e compilação final.
 
@@ -205,9 +205,9 @@ Quando tudo fecha, o serviço devolve:
 
 AgenticDocumentAST organiza o documento inteiro e consegue recortar o fragmento governado via to_fragment conforme o alvo.
 
-Para workflow, o fragmento inclui selected_workflow, workflows_defaults, workflows e, quando houver, tools_library.
+Para workflow, o fragmento inclui selected_entrypoint, workflows_defaults, workflows e, quando houver, tools_library.
 
-Para deepagent, o fragmento inclui selected_supervisor, multi_agents e, se necessário, tools_library. O nome selected_supervisor permanece como chave histórica; no caminho oficial ele escolhe o DeepAgent ativo.
+Para DeepAgent, o fragmento inclui selected_entrypoint, multi_agents e, se necessário, tools_library. A mesma chave também seleciona Workflow e deve resolver exatamente um runtime habilitado.
 
 ### 7.2. WorkflowAST
 
@@ -227,7 +227,7 @@ O merge final é feito por DocumentCompiler. Ele não reescreve o YAML inteiro p
 
 As regras confirmadas são:
 
-- para workflow, só atualiza selected_workflow, workflows_defaults, workflows e tools_library;
+- para workflow, só atualiza selected_entrypoint, workflows_defaults, workflows e tools_library;
 - para deepagent, faz merge seletivo em multi_agents e tools_library por id;
 - quando há material legado no mesmo bloco, o compiler isola o slice deepagent pelo execution.type;
 - no modo auto, copia apenas as chaves presentes no fragmento produzido.
@@ -402,7 +402,7 @@ Entrada: prompt, user_email, target workflow e YAML base com provider openai.
 
 Processamento: preflight pronto, draft válido, validate válido, confirm dry-run bem-sucedido.
 
-Saída: selected_workflow preenchido, final_yaml_text pronto para revisão, chosen_tools listada e publicação liberada.
+Saída: selected_entrypoint preenchido, final_yaml_text pronto para revisão, chosen_tools listada e publicação liberada.
 
 ### 16.2. Tool ambígua
 

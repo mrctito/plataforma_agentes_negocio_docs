@@ -1,0 +1,15 @@
+flowchart LR
+    R["Release SaaS<br/>APLICADA"] --> Y["tenant_yaml.yaml_content<br/>um bundle por release"]
+    Y --> S["selected_entrypoint<br/>chave raiz do YAML"]
+    Y --> I["agent-instructions-md<br/>chave raiz do YAML"]
+    Y --> A["Workflow ou DeepAgent<br/>múltiplas definições permitidas"]
+    Y --> G["RAG opcional"]
+    Y --> N["ingestion opcional"]
+    Y --> E["extract_transform_load opcional"]
+    S --> A
+    I --> A
+    A --> X["um único runtime agentic resolvido"]
+    G --> O["manifesto/hash/operações<br/>APLICADOS T9"]
+    N --> O
+    E --> O
+    X --> O

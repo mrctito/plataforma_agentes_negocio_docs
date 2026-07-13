@@ -104,8 +104,19 @@ metodologia-engenharia-claude/
 ├── base-conceitual/               ← substância neutra, compartilhada (inclui o Mapa da Governança)
 ├── consultoria/                   ← decisão e implantação: caso de negócio, guia, decks CTO/conselho
 ├── lente-futebol/                 ← apresentação com metáfora de time de futebol
-└── lente-engenharia-software/     ← apresentação com metáfora de fábrica de software
+├── lente-engenharia-software/     ← apresentação com metáfora de fábrica de software
+└── pulse-team-e-a-metodologia.md  ← aplicação: como o PulseTeam se beneficia da metodologia
 ```
 
 > **Sugestão de uso:** escolha a lente pelo público, leia a doc-mãe dela, e use a base conceitual para
 > aprofundar os temas transversais e projetar os diagramas.
+
+---
+
+## 7. Aplicação: o PulseTeam sobre a metodologia
+
+Para conectar a metodologia a uma ferramenta concreta de inteligência de engenharia, veja
+[O PulseTeam sobre a Metodologia](pulse-team-e-a-metodologia.md): como a governança garante que o
+PulseTeam seja **assertivo** (só afirma o que prova) e **produza código certo** (artefato correto e
+verificável), estágio a estágio — e por que os sinais auditáveis que a metodologia gera são exatamente o
+que o PulseTeam agrega em indicador, pontuação e recomendação.

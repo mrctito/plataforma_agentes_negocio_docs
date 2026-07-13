@@ -24,7 +24,7 @@ O workflow resolve esses três pontos impondo uma espinha dorsal única. O YAML 
 
 Para liderança, o valor do workflow não está em “usar LangGraph”. O valor está em transformar automações complexas em ativos governáveis.
 
-Isso melhora previsibilidade operacional porque o processo deixa de depender de comportamento implícito do modelo. Também melhora governança porque selected_workflow, nodes, edges, retry_policy, human_approval e thread_id passam a ser parte de um contrato verificável. E melhora suporte porque a execução deixa trilha suficiente para diagnóstico.
+Isso melhora previsibilidade operacional porque o processo deixa de depender de comportamento implícito do modelo. Também melhora governança porque selected_entrypoint, nodes, edges, retry_policy, human_approval e thread_id passam a ser parte de um contrato verificável. E melhora suporte porque a execução deixa trilha suficiente para diagnóstico.
 
 Em termos executivos, workflow reduz risco de automação opaca. Ele permite dizer com clareza que o produto consegue modelar processo, aplicar regras, pausar, retomar, registrar decisões e escalar a automação sem multiplicar fluxos paralelos frágeis.
 
@@ -68,7 +68,7 @@ O parser tenta ler o máximo possível e produzir diagnóstico útil. A validaç
 
 ### 6.4. Workflow ativo
 
-Se houver mais de um workflow habilitado, o sistema não adivinha. selected_workflow passa a ser obrigatório para o resolver escolher o alvo correto.
+Se houver mais de um workflow habilitado, o sistema não adivinha. selected_entrypoint passa a ser obrigatório para o resolver escolher o alvo correto.
 
 ### 6.5. Estado compartilhado
 
@@ -166,7 +166,7 @@ O custo é precisar explicar dois modelos assíncronos, mas isso evita misturar 
 
 As configurações que realmente mudam o comportamento do recurso são estas.
 
-- selected_workflow: escolhe o fluxo ativo quando há ambiguidade.
+- selected_entrypoint: escolhe o fluxo ativo quando há ambiguidade.
 - workflows_defaults: compartilha defaults entre workflows.
 - settings.max_iterations: limita iteração no runtime e no executor quando aplicável.
 - edges: muda o modelo para edge-first.
@@ -353,7 +353,7 @@ Para entender a feature de forma correta, siga esta ordem mental.
 O caminho confirmado no código é este.
 
 1. Criar ou ajustar um YAML com seção workflows válida.
-2. Garantir que selected_workflow esteja definido quando houver mais de um fluxo habilitado.
+2. Garantir que selected_entrypoint esteja definido quando houver mais de um fluxo habilitado.
 3. Executar pela borda /workflow/execute com autenticação compatível com workflow.execute.
 4. Se houver pausa humana, retomar a mesma thread com /workflow/continue.
 5. Se o objetivo for job recorrente ou durável, usar a capacidade de background execution com target_type workflow.

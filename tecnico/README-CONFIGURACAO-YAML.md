@@ -130,7 +130,8 @@ A feature flag `FEATURE_AGENTIC_AST_ENABLED` controla a ativação do caminho go
 
 O fluxo real observado no código é este.
 
-1. O YAML chega por arquivo, payload inline ou payload criptografado.
+1. A configuração chega por uma fonte explícita (arquivo, objeto/conteúdo inline ou payload
+   criptografado) ou, na ausência de todas elas, por uma `X-API-Key` ligada a um YAML publicado.
 2. ConfigurationFactory carrega o documento e injeta user_session.correlation_id e, quando aplicável, user_email.
 3. A fábrica valida security_keys.
 4. A fábrica exige tools_library na raiz e a injeta a partir do catálogo builtin quando a chave chega vazia.
@@ -141,6 +142,84 @@ O fluxo real observado no código é este.
 9. Quando existe escopo agentic, a plataforma ainda pode validar o trecho governado por AST e checar drift.
 
 Ou seja: YAML carregado não é YAML pronto.
+
+### 10.1. As duas formas de fornecer a configuração
+
+Há duas famílias de entrada aceitas pelo resolvedor canônico.
+
+1. **YAML explícito:** payload criptografado, conteúdo/objeto YAML inline ou caminho informado
+   pela própria requisição. Esse é o contrato já existente e continua funcionando.
+2. **`X-API-Key` com YAML associado:** quando nenhuma fonte explícita foi enviada, uma chave
+   `key_kind='tenant_yaml'` pode resolver o `tenant_yaml` publicado no banco. O runtime carrega
+   `tenant_yaml.yaml_content` e continua pela mesma preparação descrita neste manual.
+
+A precedência é estrita: payload criptografado vence conteúdo/objeto inline, que vence caminho
+explícito, que vence a chave como fonte de YAML. Portanto, enviar `X-API-Key` junto com YAML
+explícito não substitui o YAML; nessa situação a chave continua exercendo autenticação e
+enriquecimento.
+
+Não existe fallback silencioso. Uma chave de tenant sem binding não procura configuração em
+canal, usuário, `default_user_email`, `updated_at` ou arquivo. Ela autentica chamadas que já
+trouxeram configuração, mas uma chamada `api_key`-only falha de forma clara.
+
+### 10.2. A mesma fonte para API, canais e memberships
+
+A API direta e os canais usam o mesmo resolvedor de YAML governado:
+
+- API: `X-API-Key` → `tenant_access_keys.tenant_yaml_id`;
+- canal: `(channel_type, external_id)` → `tenant_channels.tenant_yaml_id`;
+- sessão organizacional: membership → `tenant_user_yaml.tenant_yaml_id`;
+- destino comum: `tenant_yaml.yaml_content`, desde que tenant, binding e publicação estejam ativos.
+
+O `tenant_user_yaml` não persiste caminho nem conteúdo: guarda somente a associação e a
+preferência explícita. `tenant_yaml.yaml_path` é apenas uma dica de origem/diagnóstico e nunca
+uma fonte alternativa do runtime governado. Isso é especialmente importante nos containers
+da plataforma, que não possuem filesystem persistente.
+
+### 10.3. Segurança, falhas esperadas e rastreabilidade
+
+Uma chave governada nova usa o formato `pk_<env>_<random>`. O segredo é retornado na emissão;
+o banco guarda SHA-256, prefixo e últimos quatro caracteres, não o token completo. As FKs
+compostas por `environment + tenant_id + tenant_yaml_id` impedem binding entre tenants ou
+ambientes diferentes.
+
+Falhas do caminho `api_key`-only são fechadas e explícitas:
+
+| Condição | Resposta HTTP |
+| --- | --- |
+| chave indisponível no lookup de configuração | `401` |
+| chave revogada no boundary oficial autenticado | `403` (comprovado no rollout controlado) |
+| tenant inativo ou binding cross-tenant/cross-environment | `403` |
+| chave sem binding, binding ausente, YAML inativo/não publicado ou sem conteúdo | `409` |
+| diretório multi-tenant indisponível | `503` |
+| conteúdo governado inválido | `400` |
+
+No sucesso, a origem lógica é `db://tenant_yaml/<tenant_yaml_id>`. Os eventos
+`api.config_resolution.api_key_yaml.lookup.*` e
+`security.access_key_repository.yaml_binding.loaded` permitem reconstruir a decisão por
+`correlation_id`, com ids e `yaml_hash`, sem registrar a chave completa nem o conteúdo YAML.
+O `last_used_at` da chave de YAML é atualizado em janela controlada de cinco minutos.
+
+### 10.4. Estado atual do rollout
+
+Em 2026-07-11, o banco compartilhado usa `environment='prod'` como namespace canônico. O
+dataset operacional mantém sete tenants raiz: `casa_moderna`, `engenharia_dnit`, `pdv-vendas`,
+`linx-demo`, `apify`, `master` e `demo`. Há 16 YAMLs executáveis publicados: 6 DNIT, 5 PDV,
+3 Linx, 1 Casa Moderna e 1 Apify. Cada tenant com YAML tem exatamente um default e pode ter
+quantos YAMLs a sua família exigir. `master` e `demo` permanecem sem YAML.
+
+O inventário é materializado pelos bytes versionados, com `yaml_path`, `yaml_content` e
+`yaml_hash` concordantes. O banco não adivinha `execution_mode` pelo nome do arquivo: quando o
+modo não existe no contrato do YAML, a coluna fica nula e `metadata_json` registra somente as
+capacidades estruturais realmente presentes.
+
+O canal Casa Moderna e as quatro chaves legadas de produção foram preservados. Nenhuma chave
+foi ligada a YAML por inferência.
+
+As associações de membership começam vazias: nenhuma foi inferida dos caminhos antigos. Cada
+novo binding deve declarar `environment + tenant_id + tenant_yaml_id` e apontar para um YAML
+publicado do mesmo tenant. As quatro chaves anteriores continuam `key_kind='tenant'`, sem
+binding; autenticam chamadas com YAML explícito, mas não executam apenas com `X-API-Key`.
 
 ## 11. Sintaxe realmente aceita pelo runtime
 
@@ -190,7 +269,7 @@ No escopo agentic governado, o próprio tooling e o detector de drift deixam exp
 
 | Chave              | Papel                                    |
 | ------------------ | ---------------------------------------- |
-| selected_workflow  | escolhe o workflow ativo                 |
+| selected_entrypoint  | escolhe o workflow ativo                 |
 | workflows_defaults | guarda defaults do conjunto de workflows |
 | workflows          | define os workflows do documento         |
 | tools_library      | catálogo agentic visível ao runtime      |
@@ -199,7 +278,7 @@ No escopo agentic governado, o próprio tooling e o detector de drift deixam exp
 
 | Chave               | Papel                                         |
 | ------------------- | --------------------------------------------- |
-| selected_supervisor | chave histórica que escolhe o DeepAgent ativo |
+| selected_entrypoint | seletor único de Workflow ou DeepAgent ativo |
 | multi_agents        | guarda o DeepAgent serializado para runtime   |
 | tools_library       | catálogo agentic visível ao runtime           |
 
@@ -221,8 +300,8 @@ Observação importante: deepagent_multi_agents existe no envelope AST interno, 
 
 | Chave ou caminho                 | Quando se torna obrigatória                                         |
 | -------------------------------- | ------------------------------------------------------------------- |
-| selected_workflow                | quando existe mais de um workflow habilitado                        |
-| selected_supervisor              | quando existe mais de um DeepAgent habilitado compatível com o alvo |
+| selected_entrypoint                | quando existe mais de um workflow habilitado                        |
+| selected_entrypoint              | quando existe mais de um DeepAgent habilitado compatível com o alvo |
 | schema_metadata.enabled          | quando alguma tool schema_rag_sql é habilitada                      |
 | schema_metadata.vectorstore_id   | quando alguma tool schema_rag_sql é habilitada                      |
 | schema_metadata.sql_dialect      | quando alguma tool schema_rag_sql é habilitada                      |
@@ -241,8 +320,7 @@ Observação importante: deepagent_multi_agents existe no envelope AST interno, 
 
 | Chave ou caminho    | Observação                                                                                      |
 | ------------------- | ----------------------------------------------------------------------------------------------- |
-| selected_workflow   | opcional quando só existe um workflow habilitado sem ambiguidade                                |
-| selected_supervisor | opcional quando só existe um supervisor habilitado sem ambiguidade                              |
+| selected_entrypoint | obrigatório para execução agentic; resolve exatamente um Workflow ou DeepAgent habilitado |
 | security_keys       | pode ficar vazia apenas em fluxos que chamam a fábrica com allow_empty_security_keys verdadeiro |
 | content_sources     | aceita como fallback de compatibilidade                                                         |
 
@@ -363,7 +441,8 @@ O trecho governado passa no parse YAML, mas falha em semântica, target, drift o
 
 O diagnóstico correto do YAML segue esta ordem.
 
-1. Confirmar se a origem do YAML foi resolvida corretamente.
+1. Confirmar se a origem do YAML foi resolvida corretamente: explícita ou
+   `db://tenant_yaml/<tenant_yaml_id>`.
 2. Confirmar se user_session foi injetado na raiz.
 3. Confirmar se client_context.client foi enriquecido com os identificadores esperados.
 4. Confirmar se security_keys existe, está serializável e contém o que o fluxo precisa.
@@ -421,7 +500,7 @@ Impacto prático: a alteração fica concentrada na configuração, não em rami
 
 Cenário: o operador quer configurar um workflow ou um DeepAgent.
 
-O que acontece: o YAML mantém only selected_workflow ou selected_supervisor, seus respectivos blocos governados e tools_library. O assembly agentic valida esse recorte antes de publicar.
+O que acontece: o YAML mantém um único selected_entrypoint, seus blocos governados e tools_library. O assembly agentic valida esse recorte antes de publicar.
 
 Nota importante: WorkflowAgent e DeepAgent continuam sendo espinhas dorsais diferentes. Um não substitui o outro.
 
@@ -484,7 +563,7 @@ Como confirmar: revisar security_keys, warnings de serialização e placeholders
 
 Sintoma: o documento parece correto, mas o runtime agentic acusa erro.
 
-Causa provável: problema semântico, target ambíguo, ausência de selected_workflow ou selected_supervisor quando existe múltipla escolha, ou drift do fragmento governado.
+Causa provável: problema semântico, ausência ou invalidade de selected_entrypoint, resolução não única ou drift do fragmento governado.
 
 Como confirmar: revisar validation_report, diagnostics e metadata.agentic_assembly.governed_hashes.
 
@@ -502,7 +581,8 @@ Esse diagrama mostra a ordem real do preparo da configuração antes da execuç�
 
 O mapa conceitual da feature pode ser lido assim.
 
-1. Entrada: arquivo, inline ou payload criptografado.
+1. Entrada: fonte explícita (arquivo, inline ou payload criptografado) ou `X-API-Key` governada
+   quando não houver fonte explícita.
 2. Preparação: sessão, segredos, placeholders e catálogo builtin.
 3. Normalização: rejeição de layouts legados e caminhos inválidos.
 4. Especialização: contratos como vector_store e slices de domínio.
@@ -514,14 +594,15 @@ O mapa conceitual da feature pode ser lido assim.
 
 O caminho confirmado no código lido é este.
 
-1. Fornecer YAML como arquivo, conteúdo inline ou payload criptografado.
+1. Fornecer uma fonte explícita (arquivo, conteúdo/objeto inline ou payload criptografado) ou,
+   sem nenhuma delas, uma `X-API-Key` `key_kind='tenant_yaml'` ligada a YAML ativo e publicado.
 2. Garantir user_session na raiz.
 3. Garantir tools_library na raiz quando o fluxo usa a fábrica agentic.
 4. Deixar tools_library vazia para auto-injeção do catálogo builtin.
 5. Garantir client_context.client quando o fluxo depende de identidade do cliente ou tenant.
 6. Usar client_context.client.tenant_id como caminho canônico para tenant.
 7. Garantir vector_store.if_exists quando o contrato de vector_store for usado.
-8. Se houver escopo agentic, respeitar selected_workflow ou selected_supervisor quando existir ambiguidade.
+8. Se houver escopo agentic, exigir selected_entrypoint resolvendo exatamente um runtime habilitado.
 
 ## 32. Exercícios guiados
 
@@ -561,6 +642,10 @@ O que observar: metadata.tenant_id e caminhos derivados não são aceitos como c
 - Entendi que vector_store.if_exists tem valores canônicos explícitos.
 - Entendi que o escopo agentic tem chaves top-level próprias e governadas.
 - Entendi que sintaxe YAML válida não basta para garantir validade de runtime.
+- Entendi que YAML explícito sempre vence a chave como fonte de configuração.
+- Entendi que `api_key`-only exige uma chave `tenant_yaml` com binding publicado.
+- Entendi que API e canal carregam `tenant_yaml.yaml_content` pelo mesmo resolvedor e nunca usam
+  `yaml_path` como fallback de runtime.
 
 ## 34. Evidências no código
 
@@ -568,7 +653,11 @@ O que observar: metadata.tenant_id e caminhos derivados não são aceitos como c
 
 - src/config/config_cli/configuration_factory.py: lido para confirmar a trilha de finalização do YAML, a validação de security_keys, a auto-injeção obrigatória de tools_library e a expansão de placeholders.
 
-- src/api/routers/config_resolution.py: lido para confirmar enriquecimento via diretório multi-tenant, determinação de client_code, injeção de security_keys, expansão de placeholders após injeção e exigência prática de client_context.client.
+- src/api/routers/config_resolution.py: lido para confirmar enriquecimento via diretório multi-tenant, determinação de client_code, injeção de security_keys, expansão de placeholders após injeção, exigência prática de client_context.client e a precedência aditiva da fonte `api_key`.
+
+- src/security/tenant_yaml_binding_resolver.py e src/security/access_key_repository.py: lidos para confirmar o resolvedor único, carga por `tenant_yaml.yaml_content`, falhas fechadas, `source_hint`, hash/hints seguros e auditoria de `last_used_at`.
+
+- src/channel_layer/config_resolver.py: lido para confirmar que o canal usa o mesmo resolvedor por `tenant_yaml_id` e não carrega `yaml_path` em runtime.
 
 - src/config/vector_store_contract.py: lido para confirmar que vector_store.if_exists é obrigatório quando o contrato é avaliado e que os valores aceitos são overwrite, skip e update.
 
@@ -581,7 +670,6 @@ O que observar: metadata.tenant_id e caminhos derivados não são aceitos como c
 - tools/vscode-agentic-language-server/server/src/agentic_yaml_lsp/analysis_service.py: lido para confirmar a lista explícita de chaves top-level governadas por alvo no tooling do YAML agentic.
 
 - .sandbox/relatorio-contrato-yaml-codigo-2026-05-02.md: relatório forense derivado exclusivamente do código para consolidar chaves top-level confirmadas, obrigatórias condicionais, rejeições explícitas e lacunas de afirmação segura.
-
 
 ## 35. AG-UI no YAML: respostas com gráficos (Generative UI) — exemplo real do demo varejo
 

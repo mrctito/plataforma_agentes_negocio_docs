@@ -2,7 +2,7 @@ flowchart TD
     A["Ingestao de documentos"] --> B["Manifestos com auto_config_signals"]
     B --> C["DomainAutoConfigAggregator em domain_signal_processor.py"]
     C --> D["DomainConfigRepository.update_auto_config"]
-    D --> E["(ingestion_domain_processors.auto_config)"]
+    D --> E["vector_dataset_master.metadata auto_config"]
 
     F["Pergunta do usuario"] --> G["rag_router -> ContentQASystem"]
     G --> H["DomainConfigurationService._build_runtime_domain_config"]

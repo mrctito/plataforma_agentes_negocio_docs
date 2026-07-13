@@ -1,0 +1,46 @@
+%% APLICADO: bindings legados de tenant_yaml; migração para projeto/operação é FUTURO T14+.
+erDiagram
+    tenants ||--o{ tenant_yaml : "publica bundles"
+    tenants ||--o{ tenant_access_keys : "emite credenciais"
+    tenants ||--o{ tenant_channels : "configura canais"
+    tenant_yaml ||--o{ tenant_access_keys : "binding legado opcional"
+    tenant_yaml ||--o{ tenant_channels : "binding legado do canal"
+    tenant_channels ||--o{ tenant_channel_end_users : "observa usuários externos"
+    tenant_users ||--o{ tenant_user_yaml : "schema aplicado; zero linhas"
+    tenant_yaml ||--o{ tenant_user_yaml : "FUTURO contrair T10+"
+
+    tenant_yaml {
+        uuid tenant_yaml_id PK
+        text environment UK
+        text tenant_id FK,UK
+        text yaml_content
+        text yaml_hash
+        bigint version
+        text status
+        timestamptz published_at
+        boolean is_default
+    }
+    tenant_access_keys {
+        uuid access_key_id PK
+        text environment
+        text tenant_id FK
+        uuid tenant_yaml_id FK
+        text key_kind
+        text access_key_hash
+    }
+    tenant_channels {
+        uuid tenant_channel_id PK
+        text environment
+        text tenant_id FK
+        uuid tenant_yaml_id FK
+        text channel_type
+        text external_id
+    }
+    tenant_user_yaml {
+        uuid tenant_user_yaml_id PK
+        uuid tenant_user_id FK
+        text tenant_id FK
+        text environment
+        uuid tenant_yaml_id FK
+        text agent_instructions_md
+    }

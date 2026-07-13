@@ -42,7 +42,7 @@ Em [../src/agentic_layer/background_execution/runtime.py](../src/agentic_layer/b
 
 O quinto ponto de prova é a validação e o controle de deriva.
 
-Em [../src/config/agentic_assembly/drift_detector.py](../src/config/agentic_assembly/drift_detector.py), o fragmento governado de `workflow` usa `selected_workflow`, `workflows_defaults`, `workflows` e `tools_library`. Já o fragmento governado de DeepAgent usa `selected_supervisor`, `multi_agents` e `tools_library`.
+Em [../src/config/agentic_assembly/drift_detector.py](../src/config/agentic_assembly/drift_detector.py), o fragmento governado de `workflow` usa `selected_entrypoint`, `workflows_defaults`, `workflows` e `tools_library`. Já o fragmento governado de DeepAgent usa `selected_entrypoint`, `multi_agents` e `tools_library`.
 
 Isso mostra que até o bloco do YAML monitorado como contrato oficial muda conforme o backbone.
 
@@ -97,7 +97,7 @@ Workflowagent organiza o sistema em torno de um grafo declarativo.
 
 - A unidade principal é o workflow.
 - O contrato central é `workflows`.
-- Os elementos principais são `nodes`, `edges`, `settings`, `selected_workflow` e estado do grafo.
+- Os elementos principais são `nodes`, `edges`, `settings`, `selected_entrypoint` e estado do grafo.
 - A pergunta dominante é: qual é o próximo passo do processo.
 
 DeepAgent organiza o sistema em torno de uma coordenação agentic governada.

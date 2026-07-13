@@ -150,7 +150,7 @@ Em termos de ERP, isso e valioso porque mostra um agente operando regra de negoc
 
 O arquivo app/yaml/rag-config-pdv-vendas-demo.yaml e o mais forte para explicar a convergencia entre DeepAgent, ERP e interface generativa.
 
-O supervisor e selecionado explicitamente por selected_supervisor e divide o problema em subdominios de negocio.
+O supervisor e selecionado explicitamente por selected_entrypoint e divide o problema em subdominios de negocio.
 
 1. vendas.
 2. checkout e UCP.
@@ -233,4 +233,4 @@ Em um ERP, isso e importante porque o problema nunca e so "responder". O problem
   - Comportamento confirmado: especialistas focados em lojas e saude fiscal via dyn_api.
 - app/yaml/rag-config-pdv-vendas-demo.yaml
   - Motivo da leitura: confirmar DeepAgent real para AG-UI com visualizacao generativa condicional em contexto PDV.
-  - Comportamento confirmado: selected_supervisor explicito, subdominios de negocio e bloco `ag_ui.generative` (chat_renderer + catalogo de componentes A2UI) no supervisor.
+  - Comportamento confirmado: selected_entrypoint explicito, subdominios de negocio e bloco `ag_ui.generative` (chat_renderer + catalogo de componentes A2UI) no supervisor.

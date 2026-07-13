@@ -1,7 +1,7 @@
 flowchart TB
     U["Usuário (webchat)"] -->|"POST /agent/execute<br/>mode=deepagent"| B["Boundary HTTP<br/>correlation_id + tenant + YAML"]
     B --> ASM["Assembly agentic<br/>YAML → AST → validação"]
-    ASM --> SEL{"selected_supervisor"}
+    ASM --> SEL{"selected_entrypoint"}
     SEL -->|"ag_ui_pdv_vendas_supervisor"| SV["Supervisor de CONSULTA<br/>9 subdomínios · ~37 dyn_sql"]
     SEL -->|"ag_ui_pdv_operacoes_supervisor"| SO["Supervisor de OPERAÇÕES<br/>5 subagentes de escrita"]
     SEL -->|"3 supervisores background"| SB["Fechamento diário / Recuperação<br/>checkout / Catálogo e ofertas"]

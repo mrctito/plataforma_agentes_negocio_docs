@@ -335,7 +335,7 @@ No caso assíncrono, a tela espera algo como:
     A lógica de modo da UI, baseada na seleção do usuário e/ou no YAML carregado.
 
 6. Como a tela sabe que um YAML é DeepAgent ou Workflow?
-    Ela usa o resolvedor de modo preferencial que procura sinais como `selected_supervisor`, `multi_agents`, `selected_workflow` e `workflows`.
+    Ela usa o resolvedor de modo preferencial que cruza `selected_entrypoint` com `multi_agents` e `workflows`.
 
 7. O `correlation_id` nasce no frontend?
     Não. Ele nasce no backend e a UI apenas o captura e preserva.

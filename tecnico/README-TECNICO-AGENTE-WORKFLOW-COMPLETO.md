@@ -138,7 +138,7 @@ WorkflowCompiler normaliza ids de workflow e nodes. Unsupported não entra no fr
 WorkflowSemanticValidator valida:
 
 - coleção de workflows;
-- selected_workflow;
+- selected_entrypoint;
 - tools e local_tools_configuration;
 - referências cruzadas;
 - edges;
@@ -149,9 +149,9 @@ WorkflowSemanticValidator valida:
 
 WorkflowConfigResolver aplica regras de seleção.
 
-- Um único workflow habilitado pode ser resolvido sem selected_workflow.
-- Vários habilitados exigem selected_workflow.
-- selected_workflow apontando para fluxo inexistente ou desabilitado falha cedo.
+- Toda execução agentic exige selected_entrypoint.
+- Vários workflows habilitados são válidos quando selected_entrypoint resolve exatamente um.
+- selected_entrypoint apontando para fluxo inexistente ou desabilitado falha cedo.
 
 ### 6.5. Inicialização do runtime
 
@@ -183,7 +183,7 @@ continue_execution reinicializa o runtime, recompõe invoke_config com a mesma t
 
 ## 7.1. Bloco de seleção
 
-selected_workflow escolhe o alvo ativo. Quando há mais de um workflow habilitado, esse campo deixa de ser opcional na prática.
+selected_entrypoint escolhe o alvo ativo e é obrigatório em toda execução agentic.
 
 ## 7.2. Bloco de defaults
 
@@ -753,7 +753,7 @@ Ou seja: hoje coexistem dois modelos válidos.
 
 ## 11. Configurações que mudam o comportamento
 
-- selected_workflow: escolhe o alvo ativo.
+- selected_entrypoint: escolhe o alvo ativo.
 - enabled: define se o fluxo pode ser selecionado.
 - settings.max_iterations: altera recursion_limit e o comportamento do executor.
 - retry_policy: altera a resiliência por node.
@@ -890,7 +890,7 @@ Ordem prática de investigação:
 2. Ver se a falha aconteceu antes ou depois do initialize.
 3. Checar se o runtime entrou em edge-first ou node-driven.
 4. Ler execution_trace e snapshots.
-5. Revisar tool_catalog, selected_workflow e referências cruzadas.
+5. Revisar tool_catalog, selected_entrypoint e referências cruzadas.
 
 ## 16. Estado da arte e comparação
 
@@ -980,9 +980,9 @@ Tecnicamente, workflow é uma esteira de produção com regras claras. O YAML de
 
 ## 20. Troubleshooting
 
-### 20.1. Sintoma: selected_workflow rejeitado
+### 20.1. Sintoma: selected_entrypoint rejeitado
 
-Causa provável: selected_workflow inexistente, desabilitado ou ambiguidade entre vários workflows habilitados.
+Causa provável: selected_entrypoint inexistente, desabilitado ou ambiguidade entre vários workflows habilitados.
 
 Como confirmar: revisar WorkflowSemanticValidator e WorkflowConfigResolver.
 
@@ -1021,7 +1021,7 @@ O diagrama resume a execução real: primeiro o contrato é governado, depois o 
 ### 22.1. Execução direta pela API
 
 1. Montar um YAML com seção workflows válida.
-2. Garantir selected_workflow quando houver mais de um fluxo habilitado.
+2. Garantir selected_entrypoint quando houver mais de um fluxo habilitado.
 3. Chamar /workflow/execute com workflow.execute autorizado.
 4. Se houver HIL, chamar /workflow/continue com a mesma thread.
 
@@ -1129,7 +1129,7 @@ Quando a dúvida é gramática, o ponto certo é ast/workflow.py e schema_servic
 O caminho confirmado pelo código é:
 
 1. Resolver um YAML agentic com seção workflows válida.
-2. Garantir selected_workflow coerente quando necessário.
+2. Garantir selected_entrypoint coerente quando necessário.
 3. Passar pela borda /workflow/execute com autenticação compatível com workflow.execute.
 4. Observar thread_id, correlation_id e workflow_metadata devolvidos.
 5. Se houver pausa humana, chamar /workflow/continue com o mesmo thread_id e human_response.
@@ -1147,7 +1147,7 @@ Exercício 3. Pegue o workflow de WhatsApp e explique por que resolver mídia e 
 ## 23. Checklist de entendimento
 
 - Entendi o pipeline YAML -> AST -> validação -> runtime.
-- Entendi quando selected_workflow é obrigatório.
+- Entendi quando selected_entrypoint é obrigatório.
 - Entendi os dois modos de transição.
 - Entendi o papel de retry_policy e human_approval.
 - Entendi o catálogo de nodes suportados.

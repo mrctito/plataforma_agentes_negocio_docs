@@ -3,8 +3,8 @@ flowchart TD
     B --> C["Session e security_keys são resolvidos"]
     C --> D["tools_library builtin pode ser injetada"]
     D --> E{"Domínio desejado"}
-    E -- Workflow --> F["Assembly AST resolve selected_workflow"]
-    E -- DeepAgent --> G["Assembly AST resolve selected_supervisor"]
+    E -- Workflow --> F["Assembly AST resolve selected_entrypoint"]
+    E -- DeepAgent --> G["Assembly AST resolve selected_entrypoint"]
     E -- ETL --> H["ExtractTransformLoadService valida extract_transform_load"]
     F --> I["Validate e Confirm publicam fragmento governado"]
     G --> I

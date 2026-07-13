@@ -1,0 +1,51 @@
+%% TABELAS APLICADAS, ZERO LINHAS: lifecycle comercial permanece FUTURO T10+.
+erDiagram
+    saas_projects ||--o{ saas_plans : "schema aplicado; T10+"
+    user_accounts ||--o{ saas_subscriptions : "schema aplicado; T10+"
+    saas_plans ||--o{ saas_subscriptions : "contrato futuro"
+    saas_subscriptions ||--o{ saas_entitlements : "direitos futuros"
+    saas_projects ||--o{ saas_entitlements : "limita ao projeto"
+    user_accounts ||--o{ saas_user_preferences : "configurará preferência segura"
+    saas_projects ||--o{ saas_user_preferences : "escopa preferência"
+
+    saas_plans {
+        uuid saas_plan_id PK
+        text environment UK
+        text tenant_id UK
+        uuid saas_project_id FK
+        text plan_key UK
+        text status
+        jsonb provider_config_json
+    }
+    saas_subscriptions {
+        uuid saas_subscription_id PK
+        text environment UK
+        text tenant_id UK
+        uuid user_account_id FK
+        uuid saas_plan_id FK
+        text status
+        text provider_name
+        text provider_subscription_ref UK
+        bigint version
+    }
+    saas_entitlements {
+        uuid saas_entitlement_id PK
+        text environment UK
+        text tenant_id UK
+        uuid saas_subscription_id FK,UK
+        uuid saas_project_id FK,UK
+        text operation UK
+        text status
+        jsonb limits_json
+        timestamptz valid_from
+        timestamptz valid_until
+    }
+    saas_user_preferences {
+        uuid saas_user_preference_id PK
+        text environment UK
+        text tenant_id UK
+        uuid user_account_id FK,UK
+        uuid saas_project_id FK,UK
+        text preference_key UK
+        jsonb preference_value_json
+    }

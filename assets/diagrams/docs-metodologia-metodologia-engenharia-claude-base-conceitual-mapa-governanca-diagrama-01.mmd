@@ -1,0 +1,15 @@
+flowchart TB
+    R["1. CLAUDE.md raiz - 180 ln<br>sempre em contexto"]
+    N["2. CLAUDE.md aninhados - 5 arquivos<br>entram pela pasta tocada"]
+    RU["3. Rules - 20 arquivos<br>19 com paths: (escopo por caminho)"]
+    SK["4. Skills - 17<br>gatilho fino pelo pedido do usuario"]
+    AG["5. Agents - 20<br>procedimento completo, roda isolado"]
+    HK["6. Hooks - 7 scripts<br>deterministicos, fora do LLM"]
+    SC["7. Scripts de dados - 46 em 8 subpastas<br>fonte de verdade real"]
+    R --> N
+    R --> RU
+    R --> SK
+    SK --> AG
+    RU -. "paths: casam os proprios agents" .-> AG
+    AG --> SC
+    HK -. "bloqueiam ou avisam em qualquer camada" .-> AG

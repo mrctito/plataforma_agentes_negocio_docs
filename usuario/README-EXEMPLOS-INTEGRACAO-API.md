@@ -628,9 +628,9 @@ Resposta esperada no caminho feliz:
   "resolved_target": "workflow",
   "blocking_stage": null,
   "final_yaml": {
-    "selected_workflow": "wf_atendimento"
+    "selected_entrypoint": "wf_atendimento"
   },
-  "final_yaml_text": "selected_workflow: wf_atendimento\n",
+  "final_yaml_text": "selected_entrypoint: wf_atendimento\n",
   "chosen_tools": [
     {
       "tool_id": "crm_lookup",
@@ -662,7 +662,7 @@ curl -X POST http://localhost:8000/config/assembly/draft \
     },
     "return_content": true,
     "base_yaml": {
-      "selected_workflow": "wf_base",
+      "selected_entrypoint": "wf_base",
       "workflows": []
     }
   }'
