@@ -23,7 +23,7 @@ Os pontos donos deste subsistema, confirmados no codigo lido, sao estes.
 4. `src/core/log_object_storage.py`: contrato de object storage, adapter MinIO e montagem segura de key e prefix.
 5. `src/core/base_correlation_component.py`: contrato de componentes correlacionados.
 6. `src/core/log_canonical_fields.py`: campos canônicos globais e builder oficial.
-7. `src/core/log_origin_metadata.py`: sidecar e manifest por correlacao.
+7. `src/core/log_origin_metadata.py`: sidecar, manifest e resolucao do logger ativo sem mutar objetos compartilhados.
 8. `src/api/services/log_provider_service.py`: resolucao do provider ativo e classes concretas de leitura.
 9. `src/api/services/canonical_log_reader.py`: leitura canônica da familia de logs.
 10. `src/api/services/logs_admin_service.py`: boundary de servicos para analise administrativa.
@@ -111,6 +111,11 @@ Depois disso, a base:
 3. cria `self.logger` via `create_logger_with_correlation(self.correlation_id)`.
 
 Em linguagem simples: os componentes da aplicacao nao recebem permissao para operar sem `correlation_id` oficial.
+
+`BaseCorrelationComponent` guarda logger e identidade na instancia. Por isso, uma instancia
+desse tipo pertence a uma unica requisicao e nao pode ser colocada em pool ou cache
+compartilhado. O runtime Q&A cria um `ContentQASystem` novo por request; os pools reutilizam
+somente dependencias comprovadamente independentes da requisicao.
 
 ## 6. Logger correlacionado versus logger tecnico
 
@@ -422,7 +427,32 @@ Além disso, `build_correlation_log_file_fields(...)` em `src/core/logging_syste
 
 Por que dois resolvedores: o contextvar do boundary HTTP nao atravessa a thread do no de tool do grafo. Um objeto que roda dentro do grafo (por exemplo uma tool dinamica cacheada) que tentasse ler o contextvar HTTP resolveria o valor errado. Por isso, dentro do grafo, a correlacao correta vem de `get_graph_correlation_id()`.
 
-Regra do objeto cacheado/compartilhado: qualquer objeto reutilizado entre requisicoes (tool, client, adapter, repository, logger, checkpointer, factory, resolver) **nao pode** congelar o `correlation_id` capturado na construcao — esse valor pertence a execucao que construiu o objeto, e reusa-lo em outra requisicao vaza o log. A correlacao da execucao corrente deve ser resolvida **em tempo de chamada** por um desses dois resolvedores; qualquer valor guardado no objeto serve apenas como fallback. Padroes de referencia no codigo: `dynamic_sql_factory._resolve_runtime_correlation` e `agent_middlewares._resolve_active_correlation_id` (dentro do grafo); `ag_ui_event_store` (boundary/request).
+Regra do objeto cacheado/compartilhado: qualquer objeto reutilizado entre requisicoes (tool, client, adapter, repository, logger, checkpointer, factory, resolver) **nao pode** congelar o `correlation_id` capturado na construcao — esse valor pertence a execucao que construiu o objeto, e reusa-lo em outra requisicao vaza o log.
+
+O helper canônico `resolve_active_correlation_logger(...)` concentra a ordem
+grafo → request → correlacao de build. Quando encontra contexto ativo, ele recria o
+logger para a execucao corrente sem alterar a instancia compartilhada. Dynamic SQL,
+Stored Procedure, Dynamic API e SQL Schema RAG usam esse mesmo helper no momento da
+chamada. A correlacao de build e apenas ultimo recurso quando nao existe grafo nem
+request ativo; nao e identidade normal de runtime cacheado.
+
+### 11.2. Arquivo correlacionado nao substitui a janela da requisicao
+
+O arquivo ou a familia materializada preserva a historia correlacionada, inclusive
+eventos assíncronos que podem terminar depois da resposta HTTP. Para medir uma
+requisicao, o `src.log_analyzer` recorta a primeira janela delimitada por um inicio
+canônico e pelo primeiro terminal HTTP compativel.
+
+Consequencias praticas:
+
+1. o total prefere o `duration_ms` emitido pelo terminal HTTP;
+2. diferenca de timestamps so pode fornecer o total quando existem os dois limites;
+3. eventos do worker de telemetria continuam visiveis em lane separada, mas nao
+   aumentam o caminho critico HTTP;
+4. ausencia de limites ou de vínculo causal explicito vira lacuna de observabilidade,
+   nao uma duracao inventada pelo primeiro e ultimo evento do arquivo.
+
+O contrato detalhado da janela e das lanes fica nos READMEs do Log Analyzer.
 
 ## 12. CloudWatch no processo atual
 

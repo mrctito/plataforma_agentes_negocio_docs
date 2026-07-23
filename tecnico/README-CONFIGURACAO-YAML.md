@@ -348,7 +348,6 @@ Esta é a parte mais importante para o pedido de “somente as chaves válidas�
 | ingestion.pdf                                                             | usar ingestion.content_profiles.type_specific.pdf      |
 | ingestion.json                                                            | usar ingestion.content_profiles.type_specific.json     |
 | ingestion.remote_sources.web_scraping.security.authentication.attachments | usar ingestion.remote_sources.web_scraping.attachments |
-| rag_system.retriever.fts.pq_schema                                        | usar rag_system.retriever.fts.pg_schema                |
 | qa_system.retrieval.vector_store_id                                       | usar vector_store.id                                   |
 | vector_store.incremental_indexing.respect_last_modified                   | usar vector_store.incremental_indexing.enabled         |
 | metadata.tenant_id                                                        | usar client_context.client.tenant_id                   |

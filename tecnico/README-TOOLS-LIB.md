@@ -137,7 +137,7 @@ Este documento resume classes, helpers, services, factories e modulos compartilh
 - Responsabilidade principal: definir a fonte única de verdade dos campos globais, dos grupos de campos transversais e do builder reutilizável que normaliza `event_name`, aceita apenas campos permitidos e preserva o contrato global fora do domínio.
 - Dependencias principais: tipagem Python e `pathlib`; não depende de módulos de domínio.
 - Acoplamento forte com dominio?: Nao. Infraestrutura transversal de observabilidade.
-- Uso atual observado: Sim. Consumido por [src/telemetry/rag/log_vocabulary.py](../src/telemetry/rag/log_vocabulary.py), [src/ingestion_layer/telemetry/log_vocabulary.py](../src/ingestion_layer/telemetry/log_vocabulary.py), [src/api/service_api.py](../src/api/service_api.py), [src/api/services/async_job_dramatiq.py](../src/api/services/async_job_dramatiq.py), [src/agentic_layer/background_execution/runtime.py](../src/agentic_layer/background_execution/runtime.py) e [src/telemetry/interaction/interaction_telemetry_manager.py](../src/telemetry/interaction/interaction_telemetry_manager.py).
+- Uso atual observado: Sim. Consumido por [src/telemetry/rag/log_vocabulary.py](../src/telemetry/rag/log_vocabulary.py), [src/ingestion_layer/telemetry/log_vocabulary.py](../src/ingestion_layer/telemetry/log_vocabulary.py), [src/api/service_api.py](../src/api/service_api.py), [src/core/job_core/log_payload_builder.py](../src/core/job_core/log_payload_builder.py), [src/agentic_layer/background_execution/runtime.py](../src/agentic_layer/background_execution/runtime.py) e [src/telemetry/interaction/interaction_telemetry_manager.py](../src/telemetry/interaction/interaction_telemetry_manager.py).
 - Seguro reutilizar como esta?: Sim, sempre que a necessidade for montar a parte global do payload ou compor grupos canônicos sem arrastar semântica de domínio para o core.
 - Riscos ou limitacoes: não substitui vocabulário de domínio; usar este módulo para campos específicos de RAG, ingestão ou fluxo local seria acoplamento errado. O desvio oposto também é problema: inventar campos globais ou aliases locais fora deste catálogo quebra consulta e auditoria.
 - Sugestao de melhoria: continuar migrando call sites manuais para o builder central e manter a lista de grupos sincronizada com os produtores oficiais de runtime e com os builders oficiais dos slices.
@@ -241,7 +241,7 @@ Este documento resume classes, helpers, services, factories e modulos compartilh
 - Responsabilidade principal: encapsular retries sincronos e assincronos com classificacao de falhas transitivas.
 - Dependencias principais: `tenacity`, logging do projeto
 - Acoplamento forte com dominio?: Nao. Infraestrutura transversal.
-- Uso atual observado: Sim. Chamado por [src/telemetry/job_runs/canonical_job_runs_manager.py](../src/telemetry/job_runs/canonical_job_runs_manager.py), [src/config/agentic_assembly/nl/structured_llm_client.py](../src/config/agentic_assembly/nl/structured_llm_client.py), [src/scheduler_layer/postgres_repository.py](../src/scheduler_layer/postgres_repository.py), [src/ingestion_layer/hospitality/repository.py](../src/ingestion_layer/hospitality/repository.py), [src/ingestion_layer/hospitality/nlp_repository.py](../src/ingestion_layer/hospitality/nlp_repository.py), [src/qa_layer/memory/postgres_backend.py](../src/qa_layer/memory/postgres_backend.py) e [src/ucp/ucp_fallback_runtime.py](../src/ucp/ucp_fallback_runtime.py).
+- Uso atual observado: Sim. Chamado por [src/config/agentic_assembly/nl/structured_llm_client.py](../src/config/agentic_assembly/nl/structured_llm_client.py), [src/scheduler_layer/postgres_repository.py](../src/scheduler_layer/postgres_repository.py), [src/ingestion_layer/hospitality/repository.py](../src/ingestion_layer/hospitality/repository.py), [src/ingestion_layer/hospitality/nlp_repository.py](../src/ingestion_layer/hospitality/nlp_repository.py), [src/qa_layer/memory/postgres_backend.py](../src/qa_layer/memory/postgres_backend.py) e [src/ucp/ucp_fallback_runtime.py](../src/ucp/ucp_fallback_runtime.py).
 - Seguro reutilizar como esta?: Sim, principalmente para I/O externo e storage remoto.
 - Riscos ou limitacoes: usar retry em erro nao transitivo e um anti-pattern; cada chamada ainda precisa escolher bem o timeout e a classificacao de excecao.
 - Sugestao de melhoria: consolidar exemplos de configuracao por tipo de recurso e continuar removendo wrappers locais que ainda escondam telemetria ou semantica propria de retry.
@@ -376,7 +376,7 @@ Este documento resume classes, helpers, services, factories e modulos compartilh
 - Responsabilidade principal: criar e validar conexoes com banco de forma padronizada e observavel, inclusive quando um boundary sincronico precisa inicializar recursos assincronos do fabricante.
 - Dependencias principais: `psycopg`, `psycopg_pool`, `sqlalchemy`, `aiosqlite`, [src/core/logging_system.py](../src/core/logging_system.py)
 - Acoplamento forte com dominio?: Nao. Infraestrutura transversal.
-- Uso atual observado: Sim. Usado em [src/telemetry/job_runs/canonical_job_runs_manager.py](../src/telemetry/job_runs/canonical_job_runs_manager.py), [src/qa_layer/rag_engine/fts_bootstrap.py](../src/qa_layer/rag_engine/fts_bootstrap.py), [src/security/offline_key_store.py](../src/security/offline_key_store.py), [src/agentic_layer/supervisor/memory_factory.py](../src/agentic_layer/supervisor/memory_factory.py) e varios repositores operacionais.
+- Uso atual observado: Sim. Usado em [src/security/offline_key_store.py](../src/security/offline_key_store.py), [src/agentic_layer/supervisor/memory_factory.py](../src/agentic_layer/supervisor/memory_factory.py) e varios repositores operacionais.
 - Seguro reutilizar como esta?: Sim.
 - Riscos ou limitacoes: continua sendo responsabilidade do chamador escolher ciclo de vida do pool e evitar transacoes longas demais; em recursos async de longa vida, o caller ainda precisa definir como manter o loop vivo e quando encerrar cleanup.
 - Sugestao de melhoria: expor exemplos por padrao de uso, como pool singleton, pool lazy, bootstrap async em boundary sync e engine read-only.
@@ -440,7 +440,7 @@ Este documento resume classes, helpers, services, factories e modulos compartilh
 - Responsabilidade principal: instanciar a implementacao correta de vector store a partir do YAML e do identificador fisico.
 - Dependencias principais: [src/shared/rag_contracts/interfaces.py](../src/shared/rag_contracts/interfaces.py), resolutores de alvo fisico, configuracao do projeto
 - Acoplamento forte com dominio?: Medio. E infraestrutura de RAG, mas transversal dentro do dominio de retrieval.
-- Uso atual observado: Sim. Usado por [src/ingestion_layer/document_persistence_manager.py](../src/ingestion_layer/document_persistence_manager.py), [src/ingestion_layer/vector_manager.py](../src/ingestion_layer/vector_manager.py) e [src/qa_layer/rag_engine/bm25_rehydrator.py](../src/qa_layer/rag_engine/bm25_rehydrator.py).
+- Uso atual observado: Sim. Usado por [src/ingestion_layer/document_persistence_manager.py](../src/ingestion_layer/document_persistence_manager.py), [src/ingestion_layer/vector_manager.py](../src/ingestion_layer/vector_manager.py) e [src/api/services/admin/vector_preview_service.py](../src/api/services/admin/vector_preview_service.py).
 - Seguro reutilizar como esta?: Sim. Deve ser o ponto de entrada padrao para vector stores.
 - Riscos ou limitacoes: acoplado aos tipos registrados hoje; adicionar provider novo exige registro formal.
 - Sugestao de melhoria: documentar claramente o contrato para registrar novos backends.
@@ -597,36 +597,20 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 
 ## Runtime assincrono e Job Core em Python
 
-### JobEnvelope, JobExecutionContext e JobExecutionResult
+### JobProcess, JobProcessRegistry e JobCoreExecutor
 
-- Descricao: contrato minimo e generico do Job Core V1 para representar o envelope recebido pelo worker, o contexto de execucao e o resultado terminal sem importar dominio de ingestao, ETL ou background.
-- Tags: job-core, contrato, runtime
-- Tipo: contrato
-- Arquivo: [src/core/job_core/models.py](../src/core/job_core/models.py)
+- Descricao: contrato, registry e runner unicos do Job Core. `JobProcess.execute(input, context)` devolve `ProcessOutcome`; `JobProcessRegistry` resolve um `JobProcessDescriptor` por `route_kind + dispatch_mode` ou `process_key`; `JobCoreExecutor` cria o processo por invocacao e traduz retorno, cancelamento ou excecao para lifecycle exatamente uma vez.
+- Tags: job-core, contrato, executor, registry
+- Tipo: contrato/service
+- Arquivos: [src/core/job_core/job_process.py](../../src/core/job_core/job_process.py), [src/core/job_core/registry.py](../../src/core/job_core/registry.py) e [src/core/job_core/executor.py](../../src/core/job_core/executor.py)
 - Linguagem: Python
-- Responsabilidade principal: congelar os campos obrigatorios do envelope e os estados/erros minimos do lifecycle generico.
-- Dependencias principais: tipagem Python e validacao do proprio pacote `job_core`.
-- Acoplamento forte com dominio?: Nao. O objetivo e justamente evitar acoplamento com um caso de uso especifico.
-- Uso atual observado: Sim. Consumido pelo bridge oficial em [src/api/services/async_job_dramatiq.py](../src/api/services/async_job_dramatiq.py) e pelos publishers que montam `QueuedJobEnvelope` para o runtime assincrono.
-- Seguro reutilizar como esta?: Sim, quando o fluxo novo realmente precisa entrar no runtime assincrono oficial.
-- Riscos ou limitacoes: nao deve virar deposito de regra de negocio; qualquer campo novo precisa provar valor transversal real.
-- Sugestao de melhoria: manter os exemplos de publish sempre alinhados a esse contrato para evitar produtores paralelos.
-- Prioridade: Alta
-
-### JobHandlerRegistry e JobCoreExecutor
-
-- Descricao: dupla central do runtime generico do Job Core. O registry resolve handlers por `route_kind + dispatch_mode`, e o executor coordena ledger, eventos e resultado terminal sem conhecer RabbitMQ, Dramatiq ou dominio concreto.
-- Tags: job-core, executor, registry
-- Tipo: service
-- Arquivo: [src/core/job_core/executor.py](../src/core/job_core/executor.py)
-- Linguagem: Python
-- Responsabilidade principal: executar envelopes genericos de forma deterministica e observavel, mantendo separacao entre transporte e caso de uso.
-- Dependencias principais: [src/core/job_core/registry.py](../src/core/job_core/registry.py), [src/core/job_core/store.py](../src/core/job_core/store.py), [src/core/job_core/events.py](../src/core/job_core/events.py)
-- Acoplamento forte com dominio?: Nao. Ele conhece apenas contratos genericos do Job Core.
-- Uso atual observado: Sim. O boundary oficial em [src/api/services/async_job_dramatiq.py](../src/api/services/async_job_dramatiq.py) monta esse executor para entregar o envelope consumido ao handler correto.
-- Seguro reutilizar como esta?: Sim, desde que o fluxo novo entre pelo contrato oficial de envelope e nao por um dispatcher paralelo.
-- Riscos ou limitacoes: registry e executor nao substituem o transporte; tentar usalos como fila ou scheduler paralelo recria o erro arquitetural que o plano corrigiu.
-- Sugestao de melhoria: manter testes de contrato cobrindo ordem de eventos e resolucao de handler sempre que surgirem novos modos de dispatch.
+- Responsabilidade principal: manter dominio host-transparente e concentrar no Core decodificacao, host/contexto, materializacao de `ChildWorkPlan`, heartbeat e terminalizacao.
+- Dependencias principais: [src/core/job_core/models.py](../../src/core/job_core/models.py), [src/core/job_core/store.py](../../src/core/job_core/store.py) e [src/core/job_core/events.py](../../src/core/job_core/events.py)
+- Acoplamento forte com dominio?: Nao. Descritores injetam factories/codec sem levar store, envelope ou lifecycle para o processo.
+- Uso atual observado: Sim. [src/api/services/async_job_process_catalog.py](../../src/api/services/async_job_process_catalog.py) registra todos os processos e [src/api/services/async_job_worker_runtime_factory.py](../../src/api/services/async_job_worker_runtime_factory.py) monta registry, executor, store, reconciliador e poller oficiais.
+- Seguro reutilizar como esta?: Sim. Novo trabalho de background entra por `JobProcessDescriptor` no catalogo unico e e publicado por `QueuedJobEnvelope`/`JobCoreJobQueue`.
+- Riscos ou limitacoes: `ProgressFact` e fato nao autoritativo; processo nao devolve status, nao publica filhos e nao recebe callback/store/token concreto. Nao ha retry automatico de job.
+- Sugestao de melhoria: evoluir o contrato somente quando uma capacidade transversal comprovada nao couber nos tipos atuais; nunca criar segundo protocol, registry ou runner.
 - Prioridade: Alta
 
 ### PostgresJobRunStore
@@ -634,36 +618,36 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Descricao: implementacao duravel do ledger generico do Job Core, gravando `job_runs` e `job_run_events` no schema `job_core` com pool `psycopg`, retry canonico e fail-close quando `INGESTION_TELEMETRY_DSN` nao existe.
 - Tags: job-core, postgres, ledger
 - Tipo: service
-- Arquivo: [src/core/job_core/postgres_store.py](../src/core/job_core/postgres_store.py)
+- Arquivo: [src/core/job_core/postgres_store.py](../../src/core/job_core/postgres_store.py)
 - Linguagem: Python
 - Responsabilidade principal: ser a autoridade duravel do lifecycle generico no runtime oficial do worker.
-- Dependencias principais: [src/core/database_connection_manager.py](../src/core/database_connection_manager.py), [src/core/external_retry.py](../src/core/external_retry.py), [src/config/config_api/system_config_manager.py](../src/config/config_api/system_config_manager.py)
+- Dependencias principais: [src/core/database_connection_manager.py](../../src/core/database_connection_manager.py), [src/core/external_retry.py](../../src/core/external_retry.py), [src/config/config_api/system_config_manager.py](../../src/config/config_api/system_config_manager.py)
 - Acoplamento forte com dominio?: Nao. Ele persiste apenas o contrato generico do Job Core.
-- Uso atual observado: Sim. O runtime oficial em [src/api/services/async_job_dramatiq.py](../src/api/services/async_job_dramatiq.py) resolve esse store por `from_runtime_environment(...)` e o teste de integracao em [tests/integration/test_03-01-23_job_core_runtime_durable_ledger.py](../tests/integration/test_03-01-23_job_core_runtime_durable_ledger.py) prova a gravacao real no schema `job_core`.
+- Uso atual observado: Sim. O runtime oficial em [src/api/services/async_job_worker_runtime_factory.py](../../src/api/services/async_job_worker_runtime_factory.py) resolve esse store por `from_runtime_environment(...)`; os testes de store e concorrencia PostgreSQL cobrem o ledger real.
 - Seguro reutilizar como esta?: Sim, quando a necessidade for ledger generico de job no runtime oficial.
 - Riscos ou limitacoes: nao deve ser tratado como fila, nem como substituto das tabelas canonicas de dominio; ele guarda lifecycle generico, nao estado de negocio.
 - Sugestao de melhoria: manter a documentacao de schema e os testes de migracao alinhados sempre que novas colunas do envelope forem realmente necessarias.
 - Prioridade: Alta
 
-### OperationalRunReconciliationService
+### JobCoreCancelOnlyReconciler
 
-- Descricao: reconciliador canônico compartilhado para runs persistidos do runtime oficial. Ele concentra a reconciliação operacional de ETL e do Job Core, decide entre `stale` e `orphaned` e fecha o lifecycle em estado terminal sem abrir caminho paralelo de manutenção.
-- Tags: operational-run, reconciliation, maintenance, job-core
+- Descricao: reconciliador unico do Job Core, estruturalmente cancel-only. Seleciona runs nao terminais comprovadamente orfas pela politica canonica `evaluate_job_run_liveness` e a unica mutacao que aplica e CAS/idempotente para `cancelled` via `store.cancel_orphaned_run(...)`; nunca produz `stale`, `orphaned` ou `reconciled_failed`, nunca recupera, reexecuta, reencaminha ou reenfileira trabalho.
+- Tags: operational-run, reconciliation, cancel-only, job-core
 - Tipo: service
-- Arquivo: [src/api/services/operational_run_reconciliation_service.py](../src/api/services/operational_run_reconciliation_service.py)
+- Arquivo: [src/core/job_core/reconciliation.py](../../src/core/job_core/reconciliation.py)
 - Linguagem: Python
-- Responsabilidade principal: transformar sinais duráveis de ownership e liveness em decisão operacional explícita dentro do corredor canônico de manutenção, sem empurrar a regra para adapters paralelos ou schedulers especializados.
-- Dependencias principais: [src/core/job_core/store.py](../src/core/job_core/store.py), [src/core/job_core/events.py](../src/core/job_core/events.py), [src/core/canonical_job_runs_manager.py](../src/core/canonical_job_runs_manager.py)
-- Acoplamento forte com dominio?: Nao. O service olha apenas status genéricos, ownership e heartbeat do ledger persistido e dos runs operacionais oficiais.
-- Uso atual observado: Sim. O maintenance scheduler oficial em [src/api/startup/runtime_bootstrap.py](../src/api/startup/runtime_bootstrap.py) agenda [src/api/services/job_core_reconciliation_maintenance_job.py](../src/api/services/job_core_reconciliation_maintenance_job.py), que agora delega a reconciliação do Job Core para este service canônico.
-- Seguro reutilizar como esta?: Sim, quando o objetivo for reconciliar lifecycle operacional persistido sem criar requeue, fallback ou monitor paralelo.
-- Riscos ou limitacoes: nao substitui regra de dominio nem detecta saude de pipelines especializadas; ele fecha apenas o contrato operacional persistido do runtime oficial.
-- Sugestao de melhoria: manter a janela `stale_after_seconds` alinhada com o heartbeat real do worker e com os testes de boundary do runtime oficial.
+- Responsabilidade principal: transformar a decisao de liveness canonica em uma unica acao terminal auditavel (`cancelled`), sem empurrar a regra para adapters paralelos, projecoes de dominio ou schedulers especializados.
+- Dependencias principais: [src/core/job_core/store.py](../../src/core/job_core/store.py) (`evaluate_job_run_liveness`, `cancel_orphaned_run`, `list_stale_runs`) e [src/core/job_core/models.py](../../src/core/job_core/models.py)
+- Acoplamento forte com dominio?: Nao. O service nao importa ingestao nem qualquer read model de dominio; olha apenas status genericos, ownership e heartbeat do ledger persistido.
+- Uso atual observado: Sim. [src/api/services/async_job_worker_runtime_factory.py](../../src/api/services/async_job_worker_runtime_factory.py) injeta o reconciliador no [src/api/services/job_core_worker_runtime.py](../../src/api/services/job_core_worker_runtime.py), que chama `run_if_due()` na cadencia do poller.
+- Seguro reutilizar como esta?: Sim, quando o objetivo for cancelar lifecycle operacional persistido sem criar requeue, fallback, recovery ou monitor paralelo.
+- Riscos ou limitacoes: nao substitui regra de dominio nem detecta saude de pipelines especializadas; ele so cancela nao terminal comprovadamente orfao, nunca reabre run terminal.
+- Sugestao de melhoria: manter a janela `stale_after_seconds` (`JOB_CORE_RECONCILIATION_STALE_AFTER_SECONDS`) alinhada com o heartbeat real do worker e com os testes de boundary do runtime oficial.
 - Prioridade: Alta
 
 ### AsyncJobQueuePort e QueuedJobEnvelope
 
-- Descricao: boundary canonico de publicacao assincrona. Padroniza o ato de publicar trabalho para RabbitMQ + Dramatiq usando envelope generico e sem expor publishes especializados por dominio.
+- Descricao: boundary canonico de publicacao assincrona. Padroniza o ato de publicar trabalho no ledger PostgreSQL do Job Core usando envelope generico e sem expor publishes especializados por dominio.
 - Tags: async-job, envelope, boundary
 - Tipo: contrato
 - Arquivo: [src/api/services/async_job_queue_port.py](../src/api/services/async_job_queue_port.py)
@@ -671,7 +655,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Responsabilidade principal: garantir que produtores publiquem `QueuedJobEnvelope` pelo mesmo trilho oficial, com `correlation_id`, `worker_execution_correlation_id`, `route_kind` e `dispatch_mode` coerentes.
 - Dependencias principais: [src/core/job_core/models.py](../src/core/job_core/models.py)
 - Acoplamento forte com dominio?: Nao. E o contrato transversal do transporte assincrono.
-- Uso atual observado: Sim. Consumido por publishers de ingestao, ETL, scheduler e background, e implementado pelo adapter oficial em [src/api/services/async_job_dramatiq.py](../src/api/services/async_job_dramatiq.py).
+- Uso atual observado: Sim. Consumido por publishers de ingestao, ETL, scheduler e background, e implementado pelo adapter oficial [src/api/services/job_core_job_queue.py](../src/api/services/job_core_job_queue.py) (`JobCoreJobQueue.publish_job_envelope`). Na ingestao, o unico publisher que monta o envelope e submete por esse boundary e `JobCoreRuntimeIngestionPublisher.publish` em [src/api/services/ingestion_job_executor.py](../src/api/services/ingestion_job_executor.py).
 - Seguro reutilizar como esta?: Sim. Deve ser a primeira opcao para qualquer novo produtor de job assíncrono.
 - Riscos ou limitacoes: criar metodo especializado fora desse boundary reabre caminho paralelo de transporte.
 - Sugestao de melhoria: manter exemplos curtos de montagem de envelope por tipo de produtor oficial.
@@ -768,7 +752,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Responsabilidade principal: instrumentar pools e conexoes `psycopg` para que writes do dominio de ingestao contem a historia certa no log canonico, com foco em tabelas `ingestion_*`.
 - Dependencias principais: `psycopg`, [src/telemetry/ingestion/observability_severity.py](../src/telemetry/ingestion/observability_severity.py), [src/ingestion_layer/telemetry/log_vocabulary.py](../src/ingestion_layer/telemetry/log_vocabulary.py), logger canonico do projeto.
 - Acoplamento forte com dominio?: Medio. O helper e especifico do slice de ingestao, mas resolve um problema transversal de observabilidade do dominio.
-- Uso atual observado: Sim. Consumido por [src/ingestion_layer/telemetry/db_persistence_adapter.py](../src/ingestion_layer/telemetry/db_persistence_adapter.py), [src/ingestion_layer/telemetry/db_runtime.py](../src/ingestion_layer/telemetry/db_runtime.py), [src/telemetry/ingestion/ingestion_runs_repository.py](../src/telemetry/ingestion/ingestion_runs_repository.py), [src/telemetry/ingestion/vector_active_archive_repository.py](../src/telemetry/ingestion/vector_active_archive_repository.py) e [src/telemetry/job_runs/canonical_job_runs_manager.py](../src/telemetry/job_runs/canonical_job_runs_manager.py).
+- Uso atual observado: Sim. Consumido por [src/ingestion_layer/telemetry/db_persistence_adapter.py](../src/ingestion_layer/telemetry/db_persistence_adapter.py), [src/ingestion_layer/telemetry/db_runtime.py](../src/ingestion_layer/telemetry/db_runtime.py), [src/telemetry/ingestion/ingestion_runs_repository.py](../src/telemetry/ingestion/ingestion_runs_repository.py) e [src/telemetry/ingestion/vector_active_archive_repository.py](../src/telemetry/ingestion/vector_active_archive_repository.py).
 - Seguro reutilizar como esta?: Sim, sempre que o objetivo for observar mutacoes em tabelas `ingestion_*` sem reinventar proxies de pool ou de conexao.
 - Riscos ou limitacoes: ele nao substitui retry nem corrige semantica de negocio; so deve ser usado quando o write real pertence ao dominio de ingestao e o caller ja usa o logger canonico.
 - Sugestao de melhoria: manter novos repositorios do slice plugando neste helper em vez de abrir proxies locais por tabela ou por adapter.
@@ -783,11 +767,11 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Linguagem: Python
 - Responsabilidade principal: centralizar os campos locais aprovados do runtime background, como `request_id`, `schedule_id`, `target_id`, `approval_request_id`, `next_run_at`, `cancelled` e `updated`, sempre delegando a montagem final ao builder canônico global.
 - Dependencias principais: [src/core/log_canonical_fields.py](../src/core/log_canonical_fields.py) e consumidores do slice de execução em background.
-- Acoplamento forte com dominio?: Medio. E específico do runtime background e existe para impedir drift semântico entre runtime, dispatcher e worker handler.
+- Acoplamento forte com dominio?: Medio. É específico dos fatos e da execução funcional do domínio background; não define status, claim, heartbeat ou terminalização de job.
 - Uso atual observado: Sim. Consumido por [src/agentic_layer/background_execution/runtime.py](../src/agentic_layer/background_execution/runtime.py) e [src/agentic_layer/background_execution/services.py](../src/agentic_layer/background_execution/services.py).
 - Seguro reutilizar como esta?: Sim, sempre que o fluxo pertencer ao runtime background e precisar emitir eventos do slice sem reinventar `event_name` ou payload manual local.
 - Riscos ou limitacoes: nao substitui o logger canônico do projeto e nao deve ser usado fora do slice sem evidência de semântica realmente compartilhada.
-- Sugestao de melhoria: continuar puxando qualquer novo evento de dispatcher, HIL ou worker do mesmo slice para este builder antes de endurecer o core contra payload paralelo.
+- Sugestao de melhoria: manter aqui somente campos factuais do domínio background; eventos de lifecycle permanecem nos builders do Job Core.
 - Prioridade: Alta
 
 ### log_vocabulary
@@ -846,7 +830,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Responsabilidade principal: dar uma autoridade unica para o vocabulário observável da ingestao PDF, permitindo que diferentes emitters contem a mesma historia operacional com os mesmos nomes de evento e os mesmos campos base.
 - Dependencias principais: `pathlib`, `urllib.parse`, `uuid`, logger canonico do projeto e consumidores do slice de ingestao.
 - Acoplamento forte com dominio?: Medio. Ele e especifico da ingestao e justamente existe para evitar drift entre os boundaries desse dominio.
-- Uso atual observado: Sim. Consumido por [src/api/services/ingestion_http_execution_services.py](../src/api/services/ingestion_http_execution_services.py), [src/api/services/async_job_worker_payload_executor.py](../src/api/services/async_job_worker_payload_executor.py), [src/api/services/rag_async_execution_service.py](../src/api/services/rag_async_execution_service.py), [src/ingestion_layer/file_pipeline_services.py](../src/ingestion_layer/file_pipeline_services.py), [src/ingestion_layer/processors/pdf_chunking_service.py](../src/ingestion_layer/processors/pdf_chunking_service.py), [src/ingestion_layer/processors/txt_processor.py](../src/ingestion_layer/processors/txt_processor.py), [src/ingestion_layer/text_fallback_processor.py](../src/ingestion_layer/text_fallback_processor.py), [src/ingestion_layer/telemetry/ingestion_write_logging.py](../src/ingestion_layer/telemetry/ingestion_write_logging.py), [src/ingestion_layer/telemetry/manifest_manager.py](../src/ingestion_layer/telemetry/manifest_manager.py), [src/telemetry/ingestion/operational_insights.py](../src/telemetry/ingestion/operational_insights.py), [src/telemetry/ingestion/ingestion_runs_repository.py](../src/telemetry/ingestion/ingestion_runs_repository.py) e [src/ingestion_layer/vector_stores/qdrant_client.py](../src/ingestion_layer/vector_stores/qdrant_client.py).
+- Uso atual observado: Sim. Consumido por [src/api/services/ingestion_http_execution_services.py](../src/api/services/ingestion_http_execution_services.py), [src/api/services/rag_async_execution_service.py](../src/api/services/rag_async_execution_service.py), [src/ingestion_layer/file_pipeline_services.py](../src/ingestion_layer/file_pipeline_services.py), [src/ingestion_layer/processors/pdf_chunking_service.py](../src/ingestion_layer/processors/pdf_chunking_service.py), [src/ingestion_layer/processors/txt_processor.py](../src/ingestion_layer/processors/txt_processor.py), [src/ingestion_layer/text_fallback_processor.py](../src/ingestion_layer/text_fallback_processor.py), [src/ingestion_layer/telemetry/ingestion_write_logging.py](../src/ingestion_layer/telemetry/ingestion_write_logging.py), [src/ingestion_layer/telemetry/manifest_manager.py](../src/ingestion_layer/telemetry/manifest_manager.py), [src/telemetry/ingestion/operational_insights.py](../src/telemetry/ingestion/operational_insights.py), [src/telemetry/ingestion/ingestion_runs_repository.py](../src/telemetry/ingestion/ingestion_runs_repository.py) e [src/ingestion_layer/vector_stores/qdrant_client.py](../src/ingestion_layer/vector_stores/qdrant_client.py).
 - Seguro reutilizar como esta?: Sim, sempre que o fluxo pertencer ao slice de ingestao e precise usar o vocabulário canônico já aprovado em vez de inventar chaves ou `event_name` locais.
 - Riscos ou limitacoes: nao substitui o logger canonico, nao e um catalogo global do repositorio inteiro e nao deve ser usado para dominios fora da ingestao sem evidência de semantica realmente compartilhada.
 - Sugestao de melhoria: manter novas fases da ingestao entrando aqui antes de adicionarem semantica propria de log.
@@ -924,7 +908,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Arquivo: [src/ingestion_layer/vector_stores/base.py](../src/ingestion_layer/vector_stores/base.py)
 - Linguagem: Python
 - Responsabilidade principal: concentrar comportamento compartilhado entre providers de vector store.
-- Dependencias principais: contratos de vector store, telemetria de ingestao, dataset lifecycle, BM25 runtime
+- Dependencias principais: contratos de vector store, telemetria de ingestao, dataset lifecycle
 - Acoplamento forte com dominio?: Sim. E o nucleo da camada vetorial.
 - Uso atual observado: Sim. Serve de base para a familia de vector stores da ingestao e conversa diretamente com contratos compartilhados do projeto.
 - Seguro reutilizar como esta?: Sim, para novos providers ou extensoes do ciclo de vida vetorial.
@@ -966,15 +950,15 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 
 ## Compatibilidades residuais monitoradas em Python
 
-### Fachadas residuais de QA, BM25 e memoria agentic antiga
+### Fachadas residuais de QA e memoria agentic antiga
 
 - Descricao: conjunto de modulos mantidos por compatibilidade de importacao e por testes, mas que nao representam o boundary oficial atual do produto. O objetivo desses modulos e preservar contrato residual monitorado, nao servir como ponto de partida para features novas.
 - Tags: compatibilidade, residual, imports
 - Tipo: contrato residual
-- Arquivos principais: [src/qa_layer/rag_engine/adapter.py](../src/qa_layer/rag_engine/adapter.py), [src/qa_layer/json_rag/__init__.py](../src/qa_layer/json_rag/__init__.py), [src/ingestion_layer/core/bm25_config_resolver.py](../src/ingestion_layer/core/bm25_config_resolver.py), [src/ingestion_layer/core/generic_keyword_extractor.py](../src/ingestion_layer/core/generic_keyword_extractor.py), [src/ingestion_layer/core/vocabulary_policy.py](../src/ingestion_layer/core/vocabulary_policy.py), [src/ingestion_layer/core/rake_keyword_extractor.py](../src/ingestion_layer/core/rake_keyword_extractor.py), [src/agentic_layer/memory/implementations.py](../src/agentic_layer/memory/implementations.py), [src/agentic_layer/memory/memory_manager.py](../src/agentic_layer/memory/memory_manager.py)
+- Arquivos principais: [src/qa_layer/rag_engine/adapter.py](../src/qa_layer/rag_engine/adapter.py), [src/qa_layer/json_rag/__init__.py](../src/qa_layer/json_rag/__init__.py), [src/agentic_layer/memory/implementations.py](../src/agentic_layer/memory/implementations.py), [src/agentic_layer/memory/memory_manager.py](../src/agentic_layer/memory/memory_manager.py)
 - Linguagem: Python
 - Responsabilidade principal: deixar explicito no proprio codigo que essas superfices permanecem fora do runtime oficial e dependem de decisao explicita antes de qualquer remocao contratual.
-- Dependencias principais: boundary oficial de QA em [src/qa_layer/content_qa_system.py](../src/qa_layer/content_qa_system.py), JSON canonico em [src/ingestion_layer/json_advanced.py](../src/ingestion_layer/json_advanced.py), BM25 oficial em [src/core/bm25_runtime/config_resolver.py](../src/core/bm25_runtime/config_resolver.py) e memoria oficial nova em [src/agentic_layer/supervisor/memory_factory.py](../src/agentic_layer/supervisor/memory_factory.py).
+- Dependencias principais: boundary oficial de QA em [src/qa_layer/content_qa_system.py](../src/qa_layer/content_qa_system.py) e memoria oficial nova em [src/agentic_layer/supervisor/memory_factory.py](../src/agentic_layer/supervisor/memory_factory.py).
 - Acoplamento forte com dominio?: Medio. Essas superfices ainda carregam nomes historicos do dominio, mas seu papel atual e de compatibilidade monitorada.
 - Uso atual observado: Sim, principalmente por imports de pacote, testes de contrato e compatibilidade interna controlada.
 - Seguro reutilizar como esta?: Nao para codigo novo. Em manutencao, reutilize apenas quando a tarefa for explicitamente manter compatibilidade residual existente.
@@ -1058,7 +1042,7 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Responsabilidade principal: centralizar readiness, pool e acesso compartilhado ao Redis do projeto.
 - Dependencias principais: `redis`, configuracao do projeto, logging canonico
 - Acoplamento forte com dominio?: Nao. Infraestrutura transversal.
-- Uso atual observado: Sim. Consumido por [src/security/session_cache.py](../src/security/session_cache.py), [src/channel_layer/queue.py](../src/channel_layer/queue.py), [src/api/startup/runtime_bootstrap.py](../src/api/startup/runtime_bootstrap.py), [src/api/services/async_job_runtime_support_store.py](../src/api/services/async_job_runtime_support_store.py), [src/core/redis_mysql_handler.py](../src/core/redis_mysql_handler.py) e [src/workers/log_mysql_worker.py](../src/workers/log_mysql_worker.py).
+- Uso atual observado: Sim. Consumido por [src/security/session_cache.py](../src/security/session_cache.py), [src/channel_layer/queue.py](../src/channel_layer/queue.py), [src/api/startup/runtime_bootstrap.py](../src/api/startup/runtime_bootstrap.py), [src/core/redis_mysql_handler.py](../src/core/redis_mysql_handler.py) e [src/workers/log_mysql_worker.py](../src/workers/log_mysql_worker.py).
 - Seguro reutilizar como esta?: Sim. Deve ser o ponto de entrada padrao para conexao Redis nova no repositorio.
 - Riscos ou limitacoes: nao substitui a definicao de chaves, TTL, locking ou topologia de filas; o chamador ainda precisa respeitar o contrato do dominio.
 - Sugestao de melhoria: manter excecoes reais pequenas e explicitas; se um modulo nao puder usar esse trilho, isso precisa aparecer no inventario e nos testes.
@@ -1229,38 +1213,6 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Sugestao de melhoria: explicitar melhor o contrato de resolucao e erros esperados.
 - Prioridade: Alta
 
-### SchedulerHandlerRegistry
-
-- Descricao: registry OO de handlers do scheduler universal, evitando `if/else` por tipo de job e permitindo ligar novos handlers ao trilho oficial.
-- Tags: scheduler, registry, jobs
-- Tipo: registry
-- Arquivo: [src/scheduler_layer/handler_registry.py](../src/scheduler_layer/handler_registry.py)
-- Linguagem: Python
-- Responsabilidade principal: mapear tipos de job para handlers compativeis com o scheduler.
-- Dependencias principais: contratos do scheduler e validacoes da camada
-- Acoplamento forte com dominio?: Sim. Especifico do scheduler.
-- Uso atual observado: Sim. Instanciado por [src/api/services/async_job_worker_payload_executor.py](../src/api/services/async_job_worker_payload_executor.py) e exportado por [src/scheduler_layer/__init__.py](../src/scheduler_layer/__init__.py).
-- Seguro reutilizar como esta?: Sim, para novos handlers do scheduler.
-- Riscos ou limitacoes: so faz sentido dentro do contrato do scheduler universal.
-- Sugestao de melhoria: documentar exemplos de registro de novo handler e regras de validacao.
-- Prioridade: Alta
-
-### SchedulerDispatchService e SchedulerClaimService
-
-- Descricao: servicos de aplicacao do scheduler para claim e despacho de trabalho, mantendo a camada HTTP e jobs finos e desacoplados do repositorio e do publisher.
-- Tags: scheduler, application-service, dispatch
-- Tipo: service
-- Arquivo: [src/scheduler_layer/services.py](../src/scheduler_layer/services.py)
-- Linguagem: Python
-- Responsabilidade principal: coordenar fluxo de despacho e reserva de execucao.
-- Dependencias principais: portas `SchedulerRepositoryPort` e `SchedulerWorkPublisherPort`
-- Acoplamento forte com dominio?: Sim. Especifico do scheduler.
-- Uso atual observado: Sim. Consumido por [src/api/services/scheduler_dispatch_maintenance_job.py](../src/api/services/scheduler_dispatch_maintenance_job.py) e testado em [tests/unit/test_02-05-52_scheduler_dispatch_service.py](../tests/unit/test_02-05-52_scheduler_dispatch_service.py).
-- Seguro reutilizar como esta?: Sim, sempre que o fluxo fizer parte do scheduler oficial.
-- Riscos ou limitacoes: nao substitui uma fila generica; depende das portas do scheduler.
-- Sugestao de melhoria: manter exemplos de wiring com portas fake para testes.
-- Prioridade: Alta
-
 ### SchedulerAccessContextResolver, SchedulerAdminRepositoryFactory, SchedulerScheduleAdminPrimitive e SchedulerExecutionAdminPrimitive
 
 - Descricao: primitivas canônicas do scheduler admin para resolver contexto de acesso por access key, construir repositório oficial no boundary HTTP e centralizar operações de schedule e execução sem duplicar regra nos serviços de endpoint.
@@ -1307,22 +1259,6 @@ operacional curto da suite fica em `docs/README-TESTS.MD`.
 - Seguro reutilizar como esta?: Sim, para operações administrativas de execução/purge sob o mesmo contrato.
 - Riscos ou limitacoes: não é serviço de limpeza genérico; depende de `access_key`, limites fixos de segurança e semântica de preview/confirm do domínio admin scheduler.
 - Sugestao de melhoria: manter os limites de purge e regras de confirmação como política explícita centralizada para evitar variações entre endpoints.
-- Prioridade: Alta
-
-### CanonicalJobRunsManager
-
-- Descricao: gerenciador canonico de persistencia de job runs operacionais, com conexao de banco, retry, callback de progresso e maquina de estados para workers.
-- Tags: job-runs, telemetria, persistencia
-- Tipo: service
-- Arquivo: [src/telemetry/job_runs/canonical_job_runs_manager.py](../src/telemetry/job_runs/canonical_job_runs_manager.py)
-- Linguagem: Python
-- Responsabilidade principal: registrar historico operacional de jobs sem cada worker implementar sua propria persistencia.
-- Dependencias principais: [src/core/database_connection_manager.py](../src/core/database_connection_manager.py), [src/core/external_retry.py](../src/core/external_retry.py), status machine do dominio
-- Acoplamento forte com dominio?: Medio. E transversal aos jobs, mas focado em execucao operacional.
-- Uso atual observado: Sim. O proprio modulo combina pool compartilhado com retry canonico e e parte do caminho de persistencia worker-only dos jobs.
-- Seguro reutilizar como esta?: Sim, para novos tipos de job que entram no trilho oficial.
-- Riscos ou limitacoes: nao e uma telemetria generica de qualquer evento; e especifico para job runs canonicos.
-- Sugestao de melhoria: documentar claramente quais transicoes de estado sao responsabilidade do manager e quais sao do chamador.
 - Prioridade: Alta
 
 ## Shared Python com reuso importante, mas mais orientado a dominio

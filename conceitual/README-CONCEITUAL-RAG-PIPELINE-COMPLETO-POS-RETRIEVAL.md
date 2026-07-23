@@ -10,24 +10,15 @@ Em linguagem simples: e a triagem fina depois da busca bruta.
 
 O pos-retrieval lido no codigo cobre principalmente estes blocos.
 
-- enriquecimento ou fallback lexical por FTS;
 - fusao de rankings quando requires_fusion for verdadeiro;
 - deduplicacao de documentos;
 - cache semantico para retrievers elegiveis;
 - aplicacao de ACL apos a recuperacao;
 - normalizacao final dos documentos.
 
-## 3. FTS como complemento operacional
+## 3. Resultado lexical já resolvido pelo provider
 
-RetrievalEngine._maybe_enrich_with_fts decide se o FTS deve entrar quando:
-
-- nao houve resultados anteriores;
-- a quantidade ficou abaixo do minimo configurado;
-- a pontuacao semantica ficou abaixo do limite configurado.
-
-Depois, o FTS roda como retriever proprio, registra tentativa no trace e o resultado e mesclado com os documentos semanticos por _merge_fts_documents, seguido de deduplicacao.
-
-O ponto importante aqui e conceitual: FTS nao substitui o semantic retrieval. Ele entra para enriquecer ou salvar casos em que o sinal vetorial ficou fraco.
+Quando a estratégia é híbrida, o Qdrant já entrega o ranking combinado por RRF sobre dense+sparse e o Azure Search já combina texto+vetor no índice. O pós-retrieval recebe esse resultado pronto; não executa FTS PostgreSQL, retriever BM25 ou fusão lexical paralela.
 
 ## 4. Fusao formal de resultados
 
@@ -57,9 +48,9 @@ Esse detalhe e central para seguranca: o sistema pode encontrar um documento rel
 
 O retrieval trabalha sobre o acervo, mas o uso final da evidencia respeita o acesso do usuario. Isso deixa o pipeline tecnicamente honesto: relevancia e permissao nao sao a mesma coisa.
 
-### 8.2. FTS e condicionado por gatilho, nao ligado sem criterio
+### 8.2. Ausência de sparse falha fechada
 
-Isso evita pagar custo lexical em todas as consultas quando a resposta semantica ja foi boa o bastante.
+O caminho híbrido não troca silenciosamente para dense-only. Uma coleção incompatível precisa ser corrigida e reingerida pelo lifecycle oficial.
 
 ### 8.3. Cache semantico e rastreavel
 
@@ -69,7 +60,6 @@ O codigo nao so usa cache; ele registra quando usou. Sem isso, o cache acelerari
 
 Falhas ou efeitos confirmados:
 
-- FTS pode falhar e registrar erro explicito.
 - cache semantico pode falhar ao salvar e registrar erro estruturado.
 - ACL pode retirar todos os documentos, deixando o conjunto final vazio.
 
@@ -80,29 +70,28 @@ Em termos praticos, uma resposta ruim depois do retrieval pode ser problema de e
 Sinais uteis confirmados:
 
 - retrieval_trace por tentativa;
-- steps rag:fts, rag:fusion e rag:access_control;
+- steps de retrieval provider-native, rag:fusion e rag:access_control;
 - controle_acesso no payload final;
-- bm25 e resultado_retrieval em PipelineDiagnosticsBuilder;
+- resultado_retrieval em PipelineDiagnosticsBuilder;
 - logs de cache semantico hit, miss e store.
 
 ## 11. Exemplo pratico guiado
 
-Cenario: a busca vetorial retorna poucos chunks e scores baixos.
+Cenario: a busca híbrida provider-native retorna chunks de mais de uma expansão.
 
-1. _evaluate_fts_trigger decide que o sinal semantico foi insuficiente.
-2. O FTS roda como complemento.
-3. Os documentos dos dois caminhos sao mesclados.
-4. Duplicados sao removidos.
-5. A ACL retira o que o usuario nao pode ver.
-6. O conjunto final segue para o LLM.
+1. O provider entrega os rankings dense+sparse já combinados.
+2. Resultados de expansões adicionais são mesclados quando aplicável.
+3. Duplicados são removidos.
+4. A ACL retira o que o usuário não pode ver.
+5. O conjunto final segue para o LLM.
 
 Sem essa etapa, o sistema entregaria ao modelo um contexto mais fraco e menos governado.
 
 ## 12. Evidencias no codigo
 
 - src/qa_layer/rag_engine/retrieval_engine.py
-  - Simbolo relevante: etapa de enriquecimento FTS, avaliacao de gatilho FTS, mesclagem de resultados e deduplicacao
-  - Comportamento confirmado: FTS condicional, mesclagem e deduplicacao.
+  - Simbolo relevante: execução provider-native, fusão e deduplicação.
+  - Comportamento confirmado: busca híbrida nativa, mesclagem e deduplicação.
 - src/qa_layer/rag_engine/intelligent_orchestrator.py
   - Simbolo relevante: _execute_routing_decision e trecho de AccessControlEvaluator.filter_documents em intelligent_retrieve
   - Comportamento confirmado: fusao condicional, ACL pos-retrieval e normalizacao final.

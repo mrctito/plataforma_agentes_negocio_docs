@@ -360,10 +360,13 @@ Esta é a seção "por que foi desenhado assim" — cada decisão nasceu de um m
     recorte da suíte depender de convenção implícita de diretório.
     (Evidência: `tests/CLAUDE.md` — *"Seleção 100% por marker
     explícito"*.)
-14. **Depreciação governada com trilho.** O Job Core genérico está *"DEPRECADO — em depreciação
-    ativa"*: proibido adicionar job novo, proibido desligar enquanto ETL/background dependem dele.
-    Congela o crescimento sem quebrar o presente. Evita: tanto o legado que cresce quanto o big-bang
-    de remoção. (Evidência: `src/CLAUDE.md` Parte 4.)
+14. **Depreciação governada com trilho.** O Job Core é o executor único e ativo (não está
+    deprecado); quem está congelado são os componentes que violam essa regra
+    (`CanonicalJobRunsManager`, `BackgroundExecutionWorkerHandler`, `SchedulerDispatchService`):
+    proibido expandi-los, obrigatório migrar para o Job Core, proibido big-bang de remoção enquanto
+    a migração não sai. Congela o crescimento do infrator sem quebrar o presente. Evita: tanto o
+    legado que cresce quanto a remoção repentina que quebra produção. (Evidência:
+    `src/CLAUDE.md` Parte 4, ponto 8.)
 15. **Feedback de progresso como contrato, não cortesia.** A rodada longa deve emitir sinais de vida
     verificáveis; *"Heartbeat parado + processo ausente = rodada morta, nao 'espera'"*. Evita: esperar
     horas por um processo que já morreu.

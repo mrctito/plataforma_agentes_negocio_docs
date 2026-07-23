@@ -121,7 +121,8 @@ src/log_analyzer/
 ├── analysis/
 │   ├── engine.py                ← ABCs: AbstractLogEngine, AbstractAnalysisEngine,
 │   │                               AbstractOperationalQueryEngine, AnalysisDialect, AnalysisPlugin
-│   ├── plugins.py               ← 6 plugins padrão do pipeline V1.0 (DEFAULT_PLUGINS)
+│   ├── plugins.py               ← 7 plugins padrão do pipeline V1.0 (DEFAULT_PLUGINS)
+│   ├── request_timeline.py      ← janela HTTP, duração autoritativa e lanes concorrentes
 │   ├── query_engine.py          ← FastQueryEngine + 9 handlers
 │   ├── filter_engine.py         ← engine do subcomando filter
 │   ├── integrity.py             ← detecção de foreign_correlation_id (campo problems)
@@ -158,14 +159,16 @@ IndividualAnalysisRequest
     │                                   Limite: max_records (default 50.000)
     ├── PandasAnalysisEngine.load()   → constrói DataFrame
     │
-    ├── AnalysisRegistry.plugins()    → instancia os 6 plugins (DEFAULT_PLUGINS)
+    ├── AnalysisRegistry.plugins()    → instancia os 7 plugins (DEFAULT_PLUGINS)
     │
-    ├── Plugin 1: ErrorWarningPlugin      → dict com error_count, warning_count, top_errors
+    ├── Plugin 1: ErrorWarningPlugin      → erros, warnings explicáveis e gaps de schema
     ├── Plugin 2: PerformancePlugin       → dict com duration_stats, slow_operations
     ├── Plugin 3: SlowestSegmentsPlugin   → dict com maiores gaps entre eventos consecutivos
     ├── Plugin 4: StageTimingPlugin       → dict com tempo entre etapas (stage) do pipeline
     ├── Plugin 5: EventFlowPlugin         → dict com unique_events, top_events
-    └── Plugin 6: ComponentActivityPlugin → dict com active_components, component_activity
+    ├── Plugin 6: ComponentActivityPlugin → dict com active_components, component_activity
+    └── Plugin 7: VectorDocumentIntegrityPlugin
+                                           → integridade vetorial por documento
                                        │
                                        ▼
                                  AnalysisResult
@@ -539,20 +542,106 @@ Filtros transversais aplicados por todos os handlers:
 
 ### Plugins analíticos padrão (`analysis/plugins.py`)
 
-| Plugin                    | `analysis_id`                | Métricas produzidas                                                                                 |
-| ------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------- |
-| `ErrorWarningPlugin`      | `error_warning_summary`      | total_records, error_count, warning_count, error_rate_pct, top_error_messages, top_warning_messages |
-| `PerformancePlugin`       | `performance_summary`        | duration_stats (min/max/mean/median/p95/p99), slow_operations                                       |
-| `SlowestSegmentsPlugin`   | `slowest_segments`           | analyzed_events, total_window_seconds, top_slowest_gaps, slowest_recurring_transitions (gap entre eventos consecutivos) |
-| `StageTimingPlugin`       | `stage_timing_summary`       | tempo entre etapas (`stage`) já calculado: per_stage (total/avg/occurrences), slowest_stage (gargalo), stage_sequence, total_window_seconds |
-| `EventFlowPlugin`         | `event_flow_summary`         | unique_events, event_distribution, top_events                                                       |
-| `ComponentActivityPlugin` | `component_activity_summary` | active_components, component_activity                                                               |
+| Plugin | `analysis_id` | Métricas produzidas |
+| --- | --- | --- |
+| `ErrorWarningPlugin` | `error_warning_summary` | erros, warnings explicáveis, origem da mensagem e lacunas de schema |
+| `PerformancePlugin` | `performance_summary` | estatísticas dos `duration_ms` publicados pelos produtores |
+| `SlowestSegmentsPlugin` | `slowest_segments` | gaps entre eventos consecutivos; não substitui duração direta |
+| `StageTimingPlugin` | `stage_timing_summary` | janela HTTP, duração total, sequência de stages e lanes |
+| `EventFlowPlugin` | `event_flow_summary` | eventos distintos e distribuição |
+| `ComponentActivityPlugin` | `component_activity_summary` | componentes ativos e contagens |
+| `VectorDocumentIntegrityPlugin` | `ingestion_vector_integrity_summary` | recibos de integridade vetorial por documento |
 
 ```python
 # Acessando métricas de um plugin no AnalysisResult:
 error_data = result.analyses["error_warning_summary"]
 perf_data = result.analyses["performance_summary"]
 ```
+
+### 9.1. Janela request-scoped e duração autoritativa
+
+`RequestTimeline` é a fonte única usada pelo `StageTimingPlugin` e pelo
+`rag_diagnosis` para separar a requisição do restante da família de logs.
+
+O recorte segue estas regras:
+
+1. aceita como início `api.http.request.entered` ou `rag.http.operation.received`;
+2. usa o primeiro terminal HTTP compatível depois do início;
+3. rejeita registros com `correlation_id` externo divergente e o identificador
+   aninhado confirmado `token_billing_event.session_id`;
+4. prefere o `duration_ms` do terminal como total;
+5. só calcula o total por diferença de timestamps quando início e terminal existem;
+6. sem limites completos, devolve `total_duration_ms=null` e uma entrada em
+   `observability_gaps`.
+
+`stage_sequence` e `per_stage` descrevem deltas entre stages **dentro da lane HTTP
+recortada**. Esses deltas ajudam a localizar intervalos, mas não substituem
+`duration_ms` medido no produtor para atribuir custo a uma operação específica.
+
+### 9.2. Lanes: request HTTP e worker de telemetria
+
+O analyzer mantém duas visões no mesmo resultado:
+
+- `http_request`: caminho crítico da resposta;
+- `telemetry_worker`: persistência e termos de consulta executados de forma
+  assíncrona depois do enqueue.
+
+Os eventos do worker continuam em `async_lanes`, com sequência, stage e soma apenas
+dos `duration_ms` que cada produtor publicou. Eles não aumentam
+`total_duration_ms` do HTTP. Enquanto os produtores não publicarem
+`lane`/`span_id`/`thread_id`, a classificação usa o vocabulário factual
+`interaction.telemetry.*` e registra essa limitação em `observability_gaps`.
+
+### 9.3. Cache semântico: documentos, não resposta pronta
+
+No RAG clássico, `rag.retrieval.semantic_cache.hit` representa reuso de
+documentos. O terminal de retrieval publica:
+
+```json
+{
+  "cache_hit": true,
+  "cache_payload_kind": "documents",
+  "generation_required": true
+}
+```
+
+Portanto, uma chamada posterior à LLM é comportamento esperado. O hit fecha a
+tentativa de retrieval, mas não entrega a resposta final. O analyzer também
+reconhece logs históricos em que o hit de documentos existe sem o antigo marco
+`retrieval.completed`, sem confundir esse caso com cache de resposta.
+
+### 9.4. Warnings explicáveis e lacunas de schema
+
+Para cada registro `WARNING`, `ErrorWarningPlugin` escolhe o primeiro texto
+significativo nesta ordem:
+
+1. `error_message`;
+2. `reason`;
+3. `event_name`;
+4. `message`.
+
+`top_warning_messages` devolve `display_message`, `source_field`, `count`,
+`event_name`, `component`, `stage` e `timestamp`, sem copiar payload arbitrário
+ou sensível. Ocorrências equivalentes são agrupadas.
+
+Se nenhum dos quatro campos textuais existir, o warning continua contado e pode
+aparecer nas até cinco amostras de `warning_schema_gaps`, com os campos ausentes
+e a orientação de corrigir o emissor pelo builder canônico. O analyzer não
+inventa uma explicação.
+
+### 9.5. O que o diagnóstico prova e o que não prova
+
+Logs podem provar o fluxo executado, status, fontes registradas, contagens,
+permissões, cache, durações e lacunas observáveis. Eles não provam sozinhos:
+
+- factualidade completa da resposta;
+- frescor ou versão universal do corpus;
+- correção semântica de todo trecho gerado pela LLM;
+- ausência de contenção indireta de CPU, Redis ou rede sem métrica própria.
+
+A bateria DNIT validou resposta não vazia, fontes, documentos permitidos,
+terminais, cache e isolamento entre correlações. Uma avaliação factual completa
+exige um oracle documental/de negócio separado.
 
 ---
 
@@ -562,7 +651,7 @@ Registro imutável de plugins. Instancia cada plugin por chamada para garantir i
 entre execuções paralelas.
 
 ```python
-registry = AnalysisRegistry.default()      # carrega DEFAULT_PLUGINS (os 4 padrão)
+registry = AnalysisRegistry.default()      # carrega DEFAULT_PLUGINS (os 7 padrão)
 plugins = registry.plugins()               # list[AnalysisPlugin] — novas instâncias
 ids = registry.analysis_ids()             # list[str] — lista os analysis_id
 
@@ -601,7 +690,7 @@ exceções para o chamador — capturam e retornam como resultado estruturado co
 python -m src.log_analyzer [SUBCOMANDO] [OPÇÕES]
 
 Subcomandos:
-  analyze      análise profunda (Pandas, 6 plugins)
+  analyze      análise profunda (Pandas, 7 plugins)
   stats        resumo estatístico de múltiplos logs (análise agregada)
   query        consulta rápida por question_type
   filter       filtro objetivo de registros reais
@@ -743,11 +832,15 @@ na consulta atual e ajuda a reexecutar a próxima pergunta sem cache interno.
 
 ### Como diagnosticar "log não encontrado"
 
-1. Confirmar que `logs_dir` é o diretório correto: `ls -la /app/logs | grep <prefix-do-correlation-id>`
-2. Verificar o manifest: `grep <correlation_id> /app/logs/_meta/correlation_manifest.jsonl`
-3. Verificar se o arquivo existe com o padrão de nome: `ls /app/logs/<correlation_id>*.json`
-4. Se existir mas não for encontrado, o `CanonicalLogReader` pode não estar resolvendo o padrão —
-   inspecionar `src/api/services/canonical_log_reader.py`
+1. partir do `correlation_id` exato devolvido pelo boundary;
+2. quando a origem for remota, chamar
+   `BaseLogProvider.prepare_logs_for_correlation(correlation_id)`;
+3. passar a origem materializada para `LogFileLocator.locate`;
+4. conferir o resultado estruturado `LOG_NOT_FOUND` e o `logs_dir` efetivo;
+5. se o provider materializou a família mas o locator não a resolveu, inspecionar
+   `CanonicalLogReader` e o sidecar daquela correlação.
+
+Não liste nem varra `/logs` para procurar por tentativa e erro.
 
 ### Como diagnosticar resultado com `success=False`
 
@@ -836,7 +929,18 @@ Após `analyze_individual`, o dict `result.analyses` terá:
     "warning_count": 12,
     "error_rate_pct": 0.24,
     "top_error_messages": [{"value": "Connection refused", "count": 2}, ...],
-    "top_warning_messages": [...]
+    "top_warning_messages": [
+        {
+            "display_message": "qdrant_timeout",
+            "source_field": "event_name",
+            "count": 2,
+            "event_name": "qdrant_timeout",
+            "component": "semantic_cache",
+            "stage": "semantic_cache:qdrant:search_points",
+            "timestamp": "..."
+        }
+    ],
+    "warning_schema_gaps": []
 }
 
 # performance_summary
@@ -851,12 +955,24 @@ Após `analyze_individual`, o dict `result.analyses` terá:
     "analysis_id": "stage_timing_summary",
     "analyzed_stage_events": 18,
     "distinct_stages": 6,
-    "total_window_seconds": 12.4,
+    "total_window_seconds": 10.0,
+    "total_duration_source": "rag.http.request.completed.duration_ms",
+    "request_window": {
+        "complete": true,
+        "start_event": "rag.http.operation.received",
+        "terminal_event": "rag.http.request.completed"
+    },
     "stage_sequence": [
         {"stage": "retrieval", "from_timestamp": "...", "to_timestamp": "...", "duration_seconds": 7.0}, ...
     ],
     "per_stage": [{"stage": "retrieval", "total_seconds": 7.0, "occurrences": 1, "avg_seconds": 7.0}, ...],
-    "slowest_stage": {"stage": "retrieval", "total_seconds": 7.0}   # gargalo
+    "slowest_stage": {"stage": "retrieval", "total_seconds": 7.0},
+    "lanes": [
+        {"lane": "http_request", "kind": "critical_path", "total_duration_ms": 10000.0},
+        {"lane": "telemetry_worker", "kind": "asynchronous", "measured_duration_ms": 220.0}
+    ],
+    "async_lanes": [...],
+    "observability_gaps": []
 }
 
 # event_flow_summary
@@ -881,8 +997,10 @@ Após `analyze_individual`, o dict `result.analyses` terá:
 
 ### Sintoma: `LogFileNotFoundError`
 - **Causa provável:** `correlation_id` correto mas `logs_dir` apontando para diretório errado, ou arquivo ainda não foi gerado pelo processo
-- **Como confirmar:** `ls -la <logs_dir> | grep <correlation_id>`
-- **Ação:** verificar se o processo que gerou o `correlation_id` já encerrou; confirmar `logs_dir`
+- **Como confirmar:** preparar a correlação pelo provider oficial e consultar pelo
+  `LogFileLocator`, sem listar o diretório
+- **Ação:** verificar o `PreparedLogSource`, o `logs_dir` materializado e o sidecar
+  da correlação exata
 
 ### Sintoma: `result.truncated=True` com `answer=False` suspeito
 - **Causa:** `max_records` muito baixo, o erro pode estar além dos primeiros N registros

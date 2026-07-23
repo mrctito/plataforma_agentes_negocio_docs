@@ -89,7 +89,7 @@ Para calcular essa posição, o sistema usa um modelo de embedding (como `text-e
 
 ---
 
-## Fase 5 — Tokenização sparse da pergunta (o que é BM25?)
+## Fase 5 — Representação sparse provider-native (o que é BM25?)
 
 Esta fase só roda quando a busca híbrida foi escolhida no roteamento.
 
@@ -99,17 +99,11 @@ Esta fase só roda quando a busca híbrida foi escolhida no roteamento.
 
 Isso é diferente do embedding semântico: o BM25 não entende significado, mas é preciso para encontrar termos literais.
 
-**O que é tokenização**: é o processo de quebrar a pergunta em palavras relevantes, removendo stopwords (palavras sem significado próprio como "a", "o", "de", "com") e pontuação. A pergunta "qual é a capacidade máxima de carga por eixo?" vira `["capacidade", "maxima", "carga", "eixo"]`.
-
-**O que é o vocabulário**: durante a ingestão, o sistema construiu um dicionário de todas as palavras relevantes do corpus, com um índice numérico para cada uma. O vocabulário é persistido no PostgreSQL e cacheado no Redis. Por exemplo: `{"capacidade": 42, "maxima": 891, "carga": 156, "eixo": 203}`.
-
-**Como o vetor esparso é gerado**: cada token da pergunta é convertido no seu índice. O resultado é um vetor com quase tudo em zero e apenas alguns valores não-zero, nas posições dos tokens que aparecem. Por exemplo: posição 42 = 1, posição 156 = 1, posição 203 = 1 (e todas as outras posições = 0). Esse vetor compacto representa "as palavras exatas da pergunta".
+**Como a representação é gerada**: a aplicação envia o texto ao Qdrant usando o modelo server-side `qdrant/bm25` com idioma português. O provider produz a representação sparse tanto na ingestão quanto na consulta. Não existe vocabulário, corpus ou índice lexical paralelo mantido em PostgreSQL, Redis ou memória da aplicação.
 
 **Analogia**: o vetor denso é como um mapa de relevo — mostra o contorno geral do terreno. O vetor esparso é como uma lista de coordenadas GPS de pontos específicos — muito preciso para localização exata, mas sem informação sobre o entorno.
 
-**O que sai**: um `SparseVectorData` com índices e valores, pronto para ser enviado ao Qdrant.
-
-**Se o vocabulário não estiver disponível**: o sistema entra em modo fail-open e usa só a busca densa (veja Fase 6).
+**O que sai**: uma consulta sparse criada pelo mesmo modelo usado na ingestão e pronta para o prefetch híbrido do Qdrant.
 
 ---
 
@@ -129,21 +123,15 @@ Este é o coração do sistema. Aqui o Qdrant recebe os dois vetores da pergunta
 
 **O RRF é executado pelo servidor do Qdrant**, não pelo código Python. O código só monta e envia a query com as instruções de fusão. Isso significa que a fusão é rápida e não consome recursos do worker.
 
-**Fail-open confirmado no código**: se o vetor esparso for `None` (vocabulário indisponível, coleção sem sparse configurado, etc.), o sistema **não falha**. Ele degrada automaticamente para busca densa pura e registra o evento com `decision: "degrade_to_dense"`. Isso é chamado de *fail-open*: preferir uma resposta um pouco menos precisa a não responder nada.
+**Falha fechada confirmada no código**: se a coleção não comprovar o vetor sparse esperado, a busca híbrida encerra com erro estruturado. Ela não degrada silenciosamente para dense-only, porque isso esconderia uma coleção incompatível e mudaria a semântica da consulta.
 
 **O que sai**: uma lista de chunks ranqueados pelo Qdrant, com scores combinados.
 
 ---
 
-## Fase 7 — Enriquecimento FTS (opcional)
+## Fase 7 — Seleção pelo provider
 
-**O que é FTS**: Full-Text Search, busca por texto completo no banco de dados relacional (PostgreSQL). É diferente do BM25 do Qdrant: é uma busca SQL com operadores linguísticos (sinônimos, variações morfológicas).
-
-**Quando roda**: depende de configuração. Dois modos:
-- `augment`: sempre enriquece os resultados com o que o FTS encontrar.
-- `fallback`: só roda se o retrieval principal retornou poucos resultados ou scores baixos.
-
-Se a chave `rag_system.retriever.fts.enabled` estiver desligada, esta fase é pulada.
+A parte lexical não possui retriever nem chave própria. O runtime seleciona a busca híbrida nativa pela capacidade de `vector_store.type`: Qdrant combina dense e sparse com RRF; Azure combina texto e vetor no próprio serviço. Providers sem essa capacidade seguem pela busca vetorial, sem criar FTS PostgreSQL paralelo.
 
 ---
 
@@ -206,7 +194,7 @@ Se o roteador decidiu que a pergunta pode ser abordada por múltiplos ângulos, 
 
 O sistema tem suporte a re-ranqueamento, mas de forma condicional:
 
-**BM25 app-side rerank** (via `rank_bm25`): existe como opção, mas está **desligado por padrão**. Quando ligado (`rag_system.retriever.hybrid.bm25.app_side_rerank.enabled=True`), usa o `BM25Retriever` para reordenar os documentos já recuperados usando BM25 calculado em memória — é o "passo 3" de um pipeline de 3 peças. Com a busca híbrida nativa do Qdrant ativa, este re-rank app-side raramente traz benefício adicional e tem custo de memória relevante (o corpus textual precisa estar carregado no payload).
+**BM25 provider-native:** não existe re-rank lexical em memória nem corpus textual carregado pela aplicação. No Qdrant, documento e consulta usam o modelo `qdrant/bm25` e a fusão RRF do serviço. No Azure Search, o índice precisa declarar `BM25SimilarityAlgorithm`; similarity Classic ou desconhecida falha fechada e exige correção controlada do índice.
 
 **Rerank neural (cross-encoder)**: não confirmado como etapa explícita no caminho online principal dos arquivos lidos.
 
@@ -225,16 +213,14 @@ Pergunta do usuário
        ↓
     ┌──────────────────────────┐
     │  Embedding da pergunta   │ → Vetor DENSO (1536 números, semântica)
-    │  Tokenização sparse      │ → Vetor ESPARSO (posições das palavras)
+    │  Consulta sparse nativa  │ → Modelo BM25 executado pelo provider
     └──────────────────────────┘
        ↓
 [Qdrant: hybrid search nativo]
   → Prefetch denso: top-K por semântica
   → Prefetch esparso: top-K por palavras exatas
   → RRF server-side: combina os dois rankings
-  → [Se sparse indisponível → fail-open → só busca densa]
-       ↓
-[FTS opcional: enriquecimento por busca SQL]
+  → [Se sparse estiver ausente → falha fechada]
        ↓
 [ACL: remove documentos não autorizados]
        ↓
@@ -250,13 +236,13 @@ Resposta com fontes citadas
 ## Erros comuns e o que causam
 
 **"A resposta não encontrou o documento que eu sei que existe"**
-Causa mais provável: o chunk relevante ficou com score baixo na busca. Pode ser que a pergunta tenha palavras muito diferentes das do documento (busca semântica não conseguiu aproximar), e o vocabulário BM25 não tinha os termos certos (busca esparsa não os encontrou). Solução: verificar se o documento foi ingerido corretamente, se os chunks têm tamanho adequado, e se o vocabulário está atualizado.
+Causa mais provável: o chunk relevante ficou com score baixo na busca. Pode ser que a pergunta tenha palavras muito diferentes das do documento ou que a coleção não tenha sido ingerida com a configuração híbrida provider-native atual. Solução: verificar a ingestão, o tamanho dos chunks e os eventos de criação/consulta sparse do provider.
 
 **"A resposta inventou informação"**
 Causa: o retrieval não encontrou o trecho correto, mas o LLM tentou responder mesmo assim com base no que "sabe". O LLM não deve inventar — mas se o contexto fornecido for inadequado, o modelo pode preencher lacunas com conhecimento geral impreciso. Solução: melhorar a qualidade da busca; verificar se o threshold de score está calibrado corretamente.
 
 **"A busca está lenta"**
-Causas possíveis: multi-query ativo (gera múltiplas buscas em paralelo), FTS em modo `augment` (sempre consulta o PostgreSQL), reescrita de query (chama o LLM antes de buscar), ou payload BM25 muito grande no Redis (se `app_side_rerank` estiver ligado com corpus grande).
+Causas possíveis: multi-query ativo (gera múltiplas buscas em paralelo), reescrita de query (chama o LLM antes de buscar), latência do embedding ou latência do provider de vector store.
 
 **"A resposta cita documentos que o usuário não deveria ver"**
 Causa: filtro ACL mal configurado ou bug na implementação de ACL. O sistema filtra após o retrieval — se o filtro não está funcionando, documentos não autorizados chegam ao LLM.
@@ -273,15 +259,12 @@ Causa: filtro ACL mal configurado ou bug na implementação de ACL. O sistema fi
 | **Embedding** | Processo de converter texto em vetor denso. O resultado captura o significado semântico. |
 | **BM25** | Algoritmo de pontuação que mede relevância por frequência de palavras e raridade no corpus. Produz vetores esparsos. |
 | **IDF** | Inverse Document Frequency: palavras raras que aparecem em poucos documentos têm mais peso. Faz parte do BM25. |
-| **Vocabulário** | Dicionário que mapeia cada palavra relevante do corpus a um índice numérico. Necessário para gerar vetores esparsos. |
-| **Tokenizar** | Quebrar um texto em palavras relevantes, removendo stopwords e pontuação. |
 | **Hybrid search** | Busca que usa vetor denso e vetor esparso ao mesmo tempo, combinando os resultados. |
 | **RRF** | Reciprocal Rank Fusion: algoritmo que combina dois rankings usando a posição (não a nota) de cada item. |
-| **Fail-open** | Comportamento de degradar para uma versão mais simples (só busca densa) em vez de falhar completamente quando a busca esparsa não está disponível. |
-| **Rerank** | Reordenar os documentos já recuperados usando um critério diferente (ex.: BM25 calculado em memória). |
+| **Falha fechada** | Comportamento de encerrar a busca híbrida quando a capacidade sparse obrigatória não está disponível, sem esconder o defeito com dense-only. |
+| **Rerank** | Reordenar os documentos já recuperados usando um modelo específico, quando o fluxo o habilita. |
 | **Multi-query** | Gerar variações da pergunta original e buscar por todas elas em paralelo para encontrar mais documentos relevantes. |
 | **ACL** | Access Control List: controle de quais documentos cada usuário pode ver. Aplicado após o retrieval e antes do LLM. |
-| **FTS** | Full-Text Search: busca por texto completo no PostgreSQL, com suporte a variações linguísticas. |
 | **Context builder** | Parte do sistema que monta o "briefing" — os trechos selecionados que serão enviados ao LLM como contexto. |
 | **LLM** | Large Language Model: modelo de linguagem (ex.: GPT-4, Claude) que gera a resposta final com base no contexto. |
 | **Cache semântico** | Guarda respostas de perguntas anteriores. Se chegar uma pergunta semanticamente equivalente, devolve o cache sem chamar Qdrant nem LLM. |
@@ -293,12 +276,12 @@ Causa: filtro ACL mal configurado ou bug na implementação de ACL. O sistema fi
 Ao final da leitura, você deve conseguir responder:
 
 - [ ] Por que o sistema usa dois tipos de vetor (denso e esparso) em vez de um só?
-- [ ] O que é o vocabulário BM25 e onde ele fica armazenado?
+- [ ] Quem gera a representação BM25: a aplicação ou o provider?
 - [ ] O que é RRF e quem o executa (código Python ou Qdrant)?
-- [ ] O que acontece se o vocabulário BM25 não estiver disponível na hora da busca?
+- [ ] O que acontece se a coleção não tiver o vetor sparse obrigatório?
 - [ ] Por que a qualidade do retrieval é mais importante do que a qualidade do LLM para uma boa resposta?
 - [ ] Em qual fase o sistema filtra documentos que o usuário não pode ver?
-- [ ] O que é fail-open e por que ele é importante?
+- [ ] Por que a busca híbrida falha fechada em vez de degradar para dense-only?
 - [ ] Multi-query e rerank são usados em toda pergunta ou são condicionais?
 
 ---
@@ -306,9 +289,8 @@ Ao final da leitura, você deve conseguir responder:
 ## Evidências no código
 
 - `src/qa_layer/rag_engine/intelligent_orchestrator.py` — Fluxo principal: `intelligent_retrieve`, análise, roteamento, retrieval, ACL, montagem do contexto, geração.
-- `src/qa_layer/rag_engine/retrieval_engine.py` — Estratégias de retrieval: `execute_hybrid_processor`, `_execute_native_hybrid_search`, `maybe_enrich_with_fts`, `run_retriever_with_trace`.
-- `src/ingestion_layer/vector_stores/qdrant_client.py` — Busca híbrida nativa: `search_hybrid` com `models.Prefetch` (denso + esparso) e `models.FusionQuery(fusion=models.Fusion.RRF)`. Fail-open quando `sparse_vector is None`.
-- `src/core/bm25_runtime/sparse_vector_index.py` — Tokenização e geração do vetor esparso da pergunta: `build_sparse_query`, `SparseVectorTokenizer.tokenize`.
-- `src/qa_layer/rag_engine/bm25_retriever.py` — Re-rank BM25 app-side opcional: `BM25Retriever.retrieve`, usa `rank_bm25.BM25Okapi`.
+- `src/qa_layer/rag_engine/retrieval_engine.py` — Estratégias de retrieval: `execute_hybrid_processor`, `_execute_native_hybrid_search` e `run_retriever_with_trace`.
+- `src/ingestion_layer/vector_stores/qdrant_client.py` — Documento e consulta com `qdrant/bm25`, prefetch dense+sparse e `models.FusionQuery(fusion=models.Fusion.RRF)`; falha fechada sem sparse.
+- `src/ingestion_layer/vector_stores/azure_search_client.py` — Índice com `BM25SimilarityAlgorithm` e consulta híbrida texto+vetor.
 - `src/qa_layer/rag_engine/multi_query_retriever.py` — Expansão de queries: `MultiQueryRetriever`.
 - `src/qa_layer/rag_engine/generation_engine.py` — Geração final: `GenerationEngine.generate_intelligent_answer`, monta contexto e chama LLM.

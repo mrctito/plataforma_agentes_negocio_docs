@@ -104,7 +104,7 @@ Em termos simples, a plataforma agora trata job assíncrono como uma ficha únic
 
 Na prática, isso evita um problema comum em sistemas que cresceram por fatias: cada domínio criar seu próprio jeito de mandar trabalho para a fila. Quando isso acontece, o runtime vira um conjunto de atalhos paralelos difícil de auditar. O corte recente eliminou essa direção no caminho oficial.
 
-O worker continua usando RabbitMQ e Dramatiq como transporte e consumo reais, mas a decisão sobre qual trabalho executar passou a depender do envelope canônico e do roteamento por `route_kind + dispatch_mode`. Isso significa o seguinte em linguagem direta:
+O worker **não usa mais broker**: não há RabbitMQ nem Dramatiq no transporte de jobs. O próprio ledger PostgreSQL `job_core.job_runs` é a fila durável, e o worker consome por polling (`JobCoreWorkerPollingRuntime`, runtime obrigatório `job_core_polling`, validado no startup por `_validate_async_job_runtime_contract`). Cada linha é reivindicada uma única vez, de forma atômica, com `FOR UPDATE ... SKIP LOCKED` — por isso não existe reentrega de mensagem nem mensagem velha acordando depois. A decisão sobre qual trabalho executar depende do envelope canônico e do roteamento por `route_kind + dispatch_mode`. Isso significa o seguinte em linguagem direta:
 
 - existe uma porta oficial de publicação de job;
 - existe um dispatcher oficial de job;
@@ -137,7 +137,7 @@ O fluxo macro da plataforma, olhando de ponta a ponta, segue esta lógica:
 1. Um cliente, UI, canal ou sistema externo chama a API.
 2. A API autentica, aplica permissões, valida o contexto e decide se a operação é síncrona ou assíncrona.
 3. Se a operação for pesada ou temporal, ela é deslocada para worker ou scheduler.
-4. Quando a operação vira job assíncrono, o produtor monta um envelope canônico e o worker o entrega ao Job Core V1 pelo runtime oficial RabbitMQ + Dramatiq.
+4. Quando a operação vira job assíncrono, o produtor monta um envelope canônico e o grava no ledger `job_core.job_runs`; o worker oficial (`job_core_polling`) reivindica a linha por polling durável e entrega ao Job Core, sem broker intermediário.
 5. O runtime agentic ou o pipeline de dados usa o YAML e os contratos tipados para montar a execução real.
 6. O sistema consulta dados, vector stores, tools, canais ou integrações externas conforme o caso.
 7. O resultado volta à API, ao canal, à UI ou ao estado persistido do processo.
@@ -345,4 +345,4 @@ O que observar: web, fila, cache, bancos, vector store, OCR, Java, Node e libs a
   - Comportamento confirmado: scheduler opera como processo próprio e executa bootstrap coordenado.
 - requirements.txt
   - Motivo da leitura: confirmar a stack Python operacional além do pyproject.
-  - Comportamento confirmado: FastAPI, Uvicorn, LangGraph, Dramatiq, APScheduler, Redis, Psycopg, Qdrant e Azure Search fazem parte da stack ativa.
+  - Comportamento confirmado: FastAPI, Uvicorn, LangGraph, APScheduler, Redis, Psycopg, Qdrant e Azure Search fazem parte da stack ativa. `Dramatiq` continua listado no `requirements.txt`, mas nenhum módulo de `src/` o importa — é dependência morta, não wiring ativo; o transporte de jobs é `job_core_polling`.

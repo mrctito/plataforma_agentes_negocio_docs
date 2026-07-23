@@ -51,11 +51,13 @@ Isso importa porque o canal externo e o webchat cumprem papéis diferentes.
 
 O disparo temporal nasce no processo scheduler-only, iniciado por app/scheduler_main.py e app/runners/scheduler_runner.py.
 
-O bootstrap central fica em RuntimeBootstrap. Quando liderança e configuração permitem, ele sobe o maintenance scheduler e agenda o job universal-scheduler-dispatcher.
+O bootstrap central fica em RuntimeBootstrap. Quando liderança e configuração permitem, ele sobe o `SchedulerAgendaFeederRuntime`: uma única thread daemon dedicada (`scheduler-agenda-feeder`) que, a cada `UNIVERSAL_SCHEDULER_AGENDA_INTERVAL_SECONDS`, roda `SchedulerAgendaMaintenanceJob.run()`. Não existe mais um `JobScheduler` local genérico executando rotinas de manutenção inline: esse componente (`src/core/job_scheduler.py`) foi removido do bootstrap.
 
 ### 2.4. Execução real
 
-O scheduler universal publica uma reserva canônica. O handler específico BackgroundExecutionSchedulerJobHandler projeta um run no domínio background e chama o worker handler. O runtime agentic oficial só roda a partir desse ponto.
+`SchedulerAgendaMaintenanceJob` chama `SchedulerAgendaService.submit_next_occurrences`, que lê as agendas vencidas em `scheduler.scheduled_jobs`, monta uma `SchedulerOccurrence` determinística (id via `uuid5`) para cada uma e delega a `AsyncJobSchedulerWorkPublisher.confirm_or_publish_occurrence`. Esse publisher resolve o `JobProcessDescriptor` pelo `process_key` da ocorrência no **mesmo** `JobProcessRegistry` genérico do Job Core e publica um `JobEnvelope`/`QueuedJobEnvelope` comum pelo `AsyncJobPublisherPort` canônico — não existe handler, dispatcher ou registry específicos do scheduler.
+
+A partir da publicação, o job da agenda é um job do Job Core como qualquer outro: o worker o reivindica por `route_kind + dispatch_mode` (`"background_execution"` + `"scheduler_execution"` no caso do agendamento agentic), instancia o `JobProcess` registrado (`BackgroundExecutionSchedulerProcess`) e delega para `BackgroundExecutionProcessService.execute(...)`. O runtime agentic oficial só roda a partir desse ponto. Não existem mais `BackgroundExecutionSchedulerJobHandler` nem `BackgroundExecutionWorkerHandler`: esses arquivos foram removidos porque decidiam lifecycle (`running`/`waiting_hil`/`completed`/`failed`) fora do Job Core, violando a Parte 4 de `src/CLAUDE.md`. Hoje só o `JobCoreExecutor` decide o status final, a partir do `ProcessOutcome` devolvido ou da exceção propagada pelo processo.
 
 ### 2.5. Continuação HIL
 
@@ -104,7 +106,7 @@ BackgroundExecutionScheduleSpec aceita apenas:
 - interval, com interval_seconds obrigatório e positivo;
 - cron, com cron_expression obrigatória e validada por croniter.
 
-O timezone é validado por ZoneInfo. Misfire e concorrência existem no modelo, mas a tool atual de criação não expõe esses campos. No caminho atual da tool, os defaults do modelo permanecem ativos.
+O timezone é validado por ZoneInfo. `misfire_policy` (default `fire_once`) já é usado de verdade pelo `SchedulerAgendaService` para decidir se um backlog perdido dispara uma única vez, é ignorado (`skip`) ou é recuperado (`catch_up`); a tool atual de criação não expõe esse campo, então o default do modelo é o que sempre roda no caminho da tool.
 
 ## 4. O que “agendamento com NL” significa no código lido
 
@@ -141,32 +143,26 @@ O limite real também precisa ficar explícito: o contrato declarativo de async_
 
 ### 5.1. Domínio background
 
-O schema agent_background continua sendo o ledger do domínio, com tabelas para:
+O schema agent_background é o ledger de fatos do domínio, hoje com apenas estas tabelas efetivamente lidas/escritas por `PostgresBackgroundExecutionRepository` (`src/agentic_layer/background_execution/postgres_repository.py`):
 
-- background_execution_targets;
-- background_execution_requests;
-- background_execution_runs;
-- background_execution_events;
-- agent_hil_approval_requests;
-- background_execution_outbox.
+- background_execution_targets (alvo habilitado por tenant/target_type/target_ref);
+- background_execution_runs (fatos de execução: contexto, resultado, falha);
+- background_execution_outbox (fila de comunicação para o webchat, via `communication_outbox_repository.py`);
+- agent_hil_approval_requests (pedido HIL durável, inalterado — `hil_background_approval_service.py`).
 
-Essas estruturas guardam alvo habilitado, solicitação, execução, eventos auditáveis, pedidos HIL e outbox.
+Não existe mais uma tabela própria para a "solicitação" (`background_execution_requests`) nem uma tabela de eventos auditáveis do domínio (`background_execution_events`): o comando completo (`BackgroundExecutionScheduledRequest`) fica embutido no próprio `payload` da agenda em `scheduler.scheduled_jobs`, e a trilha de eventos auditáveis é o ledger genérico `job_core.job_run_events`, não uma tabela paralela do domínio.
 
 ### 5.2. Agenda universal
 
-A agenda canônica usada pelo caminho atual é gravada no schema scheduler, especialmente em scheduled_jobs e job_executions.
+A agenda canônica é gravada inteiramente no schema scheduler, na única tabela scheduled_jobs (`PostgresSchedulerRepository`, `src/scheduler_layer/postgres_repository.py`). Não existe mais tabela scheduler.job_executions: o conceito de "execução" do scheduler foi substituído pela ocorrência determinística (`SchedulerOccurrence`) que vira diretamente um job do Job Core.
 
-Na criação da solicitação, o repositório insere o request no domínio background e registra a agenda em scheduler.scheduled_jobs com handler_key background_execution_request, queue_name background_execution e payload contendo request_id.
+Na criação da solicitação, `BackgroundExecutionService.schedule_request` não grava linha própria em agent_background: ele chama `scheduler.create_schedule(definition=...)` com uma `SchedulerJobDefinition` cujo `process_key` é `BACKGROUND_SCHEDULER_PROCESS_KEY` (`"background_execution:scheduler_execution"`) e cujo `payload` já é o `BackgroundExecutionScheduledRequest.to_payload()` inteiro.
 
-### 5.3. Importante: coexistência de superfícies
+### 5.3. Sem coexistência: o caminho legado foi removido
 
-O script SQL histórico ainda materializa agent_background.background_execution_schedules e a classe de repositório mantém métodos do dispatcher legado baseados nessa superfície.
+Os arquivos que materializavam o dispatcher legado (`src/scheduler_layer/handler_registry.py`, `src/scheduler_layer/handlers/background_execution_job_handler.py`, `etl_job_handler.py`, `ingestion_job_handler.py` e `src/api/services/scheduler_dispatch_maintenance_job.py`) foram apagados do repositório. Não há mais um segundo caminho de scheduling para ignorar: o único caminho ativo é a agenda factual descrita em 5.2, publicando sempre no ledger único do Job Core.
 
-Mas o bootstrap atual registra explicitamente que o dispatcher legado de background é ignorado e que o scheduler universal é a única fonte canônica de scheduling.
-
-Na prática, o caminho ativo lido para criação de agenda usa scheduler.scheduled_jobs e job_executions, não um agendador paralelo local do domínio background.
-
-Essa coexistência é uma lacuna de convergência técnica e documental que precisa ser tratada como tal, não como dois caminhos igualmente válidos.
+Lacuna documental herdada: `docs/tecnico/README-SCHEMA-BANCO.md` ainda descreve `background_execution_requests`, `background_execution_events`, `background_execution_schedules` e `scheduler.job_executions` como se fossem lidos pelo runtime atual. Esse documento não está no escopo de edição desta rodada; ver "divergências reportadas" no retorno desta tarefa.
 
 ## 6. Pipeline técnico ponta a ponta
 
@@ -174,7 +170,7 @@ Essa coexistência é uma lacuna de convergência técnica e documental que prec
 
 A tool schedule_background_execution_request:
 
-1. monta BackgroundExecutionScheduleSpec;
+1. monta SchedulerScheduleSpec (`src/scheduler_layer/models.py`);
 2. monta BackgroundExecutionRequestCommand;
 3. calcula yaml_snapshot e yaml_snapshot_hash;
 4. delega ao BackgroundExecutionService.schedule_request.
@@ -185,99 +181,82 @@ O serviço:
 
 1. valida o scope;
 2. valida o comando;
-3. busca o target habilitado para tenant, tipo e referência;
-4. calcula next_run_at;
-5. chama create_request_with_schedule.
+3. busca o target habilitado para tenant, tipo e referência (facts.get_enabled_target);
+4. monta o `SchedulerJobDefinition` com o comando inteiro no payload;
+5. chama scheduler.create_schedule.
 
-Sem target habilitado, a operação falha antes de persistir.
+Sem target habilitado, a operação falha antes de persistir. Não há mais uma segunda escrita no domínio background nesta etapa — é uma escrita única, na agenda.
 
-### 6.3. Repositório grava request e schedule
+### 6.3. Repositório grava só a agenda
 
-O repositório grava:
+O repositório do scheduler (`PostgresSchedulerRepository`) grava a definição inteira em scheduler.scheduled_jobs, com process_key `background_execution:scheduler_execution` e o payload contendo o `BackgroundExecutionScheduledRequest` serializado (request_id, target, requested_command, yaml_snapshot etc.). Não existe gravação em agent_background nesta etapa.
 
-1. a solicitação em agent_background.background_execution_requests;
-2. o agendamento canônico em scheduler.scheduled_jobs.
+### 6.4. Processo scheduler-only alimenta a agenda no Job Core
 
-O payload do job canônico contém request_id. O job_type e o handler_key ficam como background_execution_request.
-
-### 6.4. Processo scheduler-only dispara o dispatcher universal
-
-O RuntimeBootstrap sobe o maintenance scheduler apenas quando:
+O RuntimeBootstrap sobe o `SchedulerAgendaFeederRuntime` apenas quando:
 
 1. a política de startup permite scheduler;
 2. o processo é líder, quando liderança Redis está habilitada;
-3. pelo menos uma rotina de manutenção está habilitada por configuração (o catálogo está em 7.3.2).
+3. `UNIVERSAL_SCHEDULER_AGENDA_ENABLED` está ligado.
 
-O dispatcher universal em si só entra no maintenance scheduler quando o próprio flag está ligado e UNIVERSAL_SCHEDULER_DSN está presente. Sem o DSN, o bootstrap registra a inibição e agenda apenas as demais rotinas habilitadas.
+O feeder é uma única thread daemon dedicada (não é mais uma rotina dentro de um `JobScheduler` genérico compartilhado com outras manutenções). Ela chama `SchedulerAgendaMaintenanceJob.run()` a cada `UNIVERSAL_SCHEDULER_AGENDA_INTERVAL_SECONDS`.
 
-Se background_execution_dispatcher_enabled estiver ligado, o bootstrap apenas emite warning de que o dispatcher legado é ignorado.
+### 6.5. A rodada da agenda materializa ocorrências no Job Core
 
-### 6.5. Dispatcher universal claima e publica
+`SchedulerAgendaService.submit_next_occurrences`:
 
-SchedulerDispatchMaintenanceJob:
+1. lista agendas vencidas (`list_pending_occurrences`);
+2. para cada uma, cria uma `SchedulerOccurrence` determinística (`SchedulerOccurrenceFactory`, id via uuid5 — replay-safe);
+3. aplica a política de misfire (`skip`, `fire_once` ou `catch_up`) quando há atraso;
+4. confirma a ocorrência no Job Core via `AsyncJobSchedulerWorkPublisher.confirm_or_publish_occurrence`;
+5. avança a agenda por CAS (`advance_schedule`), calculando o próximo `next_run_at`.
 
-1. resolve UNIVERSAL_SCHEDULER_DSN;
-2. cria repositório do scheduler universal;
-3. chama dispatch_due_executions;
-4. chama reconcile_pending_dispatches.
+O publisher resolve o `JobProcessDescriptor` pelo `process_key` no `JobProcessRegistry` genérico, monta um `JobEnvelope`/`QueuedJobEnvelope` comum e publica pelo `AsyncJobPublisherPort` canônico — o mesmo caminho usado por ingestão, ETL e demais jobs. Não existe mais claim/reserva própria do scheduler nem `SchedulerExecutionReservation`.
 
-O resultado é uma lista de reservas canônicas publicadas para o worker oficial.
+### 6.6. O Job Core claima e executa como qualquer outro job
 
-### 6.6. Handler projeta o run no domínio background
+O worker reivindica o job por `route_kind + dispatch_mode` (`"background_execution"` + `"scheduler_execution"`), resolve o `JobProcessDescriptor` correspondente e instancia `BackgroundExecutionSchedulerProcess` (`src/scheduler_layer/job_processes.py`). Não existem mais `BackgroundExecutionSchedulerJobHandler` nem `create_projection_run_for_scheduler_execution`: o worker do Job Core é o único coordenador e o único executor, sem uma camada intermediária de "handler de scheduler".
 
-BackgroundExecutionSchedulerJobHandler:
+### 6.7. O processo de domínio delega ao runtime, sem decidir lifecycle
 
-1. recebe SchedulerExecutionReservation;
-2. extrai request_id do payload da reserva;
-3. usa create_projection_run_for_scheduler_execution;
-4. cria runtime e worker handler;
-5. executa o worker handler em thread dedicada.
+`BackgroundExecutionSchedulerProcess.execute` reconstrói `BackgroundExecutionRunContext` a partir do payload da ocorrência e chama `BackgroundExecutionProcessService.execute(context)` (`src/agentic_layer/background_execution/services.py`), que:
 
-Esse ponto é importante: o scheduler continua sendo coordenador. O worker handler continua sendo o executor.
+1. checa cancelamento (`context.host`/`ProcessHostReporter`) e grava o fato `record_execution_context`;
+2. reporta progresso via `ProgressFact` (`stage="background.context_recorded"`, etc.) sem nunca escrever status no ledger;
+3. chama `runtime.execute_context(...)`;
+4. grava `write_result_fact` ou `write_failure_fact` conforme o desfecho;
+5. se o resultado for final (`outcome_kind == "completed"`), enfileira a comunicação para o webchat.
 
-### 6.7. Worker marca running e chama o runtime agentic
-
-BackgroundExecutionWorkerHandler:
-
-1. marca o run como running;
-2. chama runtime.execute_run;
-3. se o resultado vier waiting_hil, marca o run como waiting_hil;
-4. se vier final, marca completed;
-5. em exceção, marca failed.
+Este processo **não decide** `running`/`waiting_hil`/`completed`/`failed`: ele só devolve `ProcessOutcome` (sucesso) ou deixa a exceção propagar. Quem traduz isso em lifecycle é exclusivamente o `JobCoreExecutor`, exatamente como a Parte 4 de `src/CLAUDE.md` exige. A violação antes documentada aqui (`BackgroundExecutionWorkerHandler` decidindo lifecycle sozinho) foi corrigida: esse arquivo foi removido.
 
 ### 6.8. Runtime reconstrói o contexto e executa
 
-AgenticBackgroundExecutionRuntime:
+AgenticBackgroundExecutionRuntime.execute_context:
 
 1. carrega BackgroundExecutionRunContext;
-2. exige yaml_snapshot, sem fallback implícito;
-3. injeta correlation_id, user_email, tenant_id e client_code no YAML de execução;
-4. reidrata security_keys redigidas usando ClientDirectory e expand_placeholders;
-5. resolve thread_id;
-6. escolhe AgentSupervisor, DeepAgentSupervisor ou WorkflowOrchestrator;
-7. executa requested_command.
+2. exige yaml_snapshot, sem fallback implícito (`BackgroundExecutionValidationError` se ausente);
+3. reidrata security_keys redigidas via `rehydrate_execution_yaml_snapshot`/`ExecutionYamlIdentity` (`src/security/execution_yaml_snapshot.py`), injetando correlation_id, tenant_id, client_code, user_email e user_code na identidade de execução;
+4. resolve thread_id;
+5. seleciona o alvo por target_ref dentro de multi_agents (DeepAgent) ou workflows (Workflow) e ajusta selected_entrypoint;
+6. executa via DeepAgentSupervisor ou WorkflowOrchestrator, em thread separada (`asyncio.to_thread`).
+
+O módulo antigo `src/agentic_layer/background_execution/yaml_snapshot.py` foi removido; a reidratação de snapshot é hoje um utilitário compartilhado em `src/security/execution_yaml_snapshot.py`, usado também pelos caminhos diretos de agent/workflow/RAG assíncronos.
 
 ### 6.9. Normalização do resultado
 
-O runtime normaliza o resultado agentic em BackgroundExecutionResult.
-
-Se metrics.status for paused, metrics.requires_human for true ou houver bloco hil no payload, o status lógico vira waiting_hil. Caso contrário, vira completed.
+O runtime normaliza o resultado agentic em BackgroundExecutionResult com `outcome_kind` (`"completed"` ou `"approval_requested"`, não mais `"waiting_hil"` como texto de status de job): se `metrics.status` for `paused`, `metrics.requires_human` for `true` ou houver bloco `hil` no payload, `outcome_kind` vira `approval_requested`. Isso é só um dado funcional do resultado — não é status do Job Core.
 
 ### 6.10. HIL assíncrono em background
 
-Se o run ficar waiting_hil e existir dispatcher HIL configurado no runtime, o BackgroundExecutionHilApprovalDispatcher tenta criar um pedido HIL durável.
+Se `outcome_kind` for `approval_requested`, o runtime exige um `hil_approval_dispatcher` configurado (senão levanta `BackgroundExecutionHilDispatchError`); `BackgroundExecutionHilApprovalDispatcher` cria o pedido HIL durável.
 
-Ele converte o bloco hil do resultado em AgentHilResponse, chama HilBackgroundApprovalService e, quando houver sucesso, injeta um resumo hil_async_approval em result_payload e telemetry.
+Ele converte o bloco hil do resultado em AgentHilResponse, chama HilBackgroundApprovalService e, quando houver sucesso, injeta um resumo hil_async_approval em result_payload e telemetry. **O job do Job Core termina normalmente (sucesso) neste ponto** — pedir aprovação não é uma pausa de lifecycle, é o desfecho funcional do primeiro job. Isso implementa literalmente a regra "HIL usa duas execuções explícitas" da Parte 4 de `src/CLAUDE.md`.
 
-### 6.11. Finalização da decisão HIL
+### 6.11. Segundo job: continuação HIL
 
-Quando a decisão é aceita pelo serviço de HIL:
+A decisão humana (por POST seguro ou bridge de canal) chega a `HilApprovalDecisionService.decide`. Para pedidos originados em background (`_is_background_record`), o serviço **não** executa a continuação inline: ele publica um **segundo job do Job Core**, `BackgroundHilContinuationProcess` (`process_key="background_execution:hil_continuation"`, `src/api/services/background_hil_continuation_process.py`), exigindo um `continuation_correlation_id` novo e inédito (nunca reaproveita o correlation_id da execução anterior — gate ativo, `_require_new_continuation_correlation_id`).
 
-1. a continuação é executada na mesma thread;
-2. o BackgroundExecutionHilRunFinalizer sincroniza o run background;
-3. se continuation.success for false, o run vira failed;
-4. se a continuação gerar nova HIL sem emissão durável vinculada ao run, o run também vira failed;
-5. se a continuação for final, o run vira completed.
+O executor desse segundo job (`BackgroundHilContinuationExecutionService`) suporta tanto agent/deepagent quanto **workflow** — a limitação antiga de bloquear retomada de workflow em background não existe mais no código: o executor é composto com `agent_continuation_service` **e** `workflow_continuation_service=WorkflowHilContinuationService()` (`src/api/services/async_job_process_catalog.py::_build_background_hil_continuation_executor`). Como qualquer job do Job Core, ele termina como `succeeded` (continuação final), `failed` (continuação malsucedida) ou pode, por sua vez, gerar um novo pedido HIL durável (nova rodada de aprovação), sem finalizador de domínio reescrevendo status do run.
 
 ## 7. Scheduler runtime em mais detalhe
 
@@ -291,43 +270,47 @@ Quando habilitada, a liderança é controlada por SchedulerLeaderElector com loc
 
 Sem liderança, jobs críticos não devem ser ativados.
 
-### 7.3. Maintenance scheduler
+### 7.3. Agenda de manutenção: não existe mais scheduler local genérico
 
-O JobScheduler local do processo scheduler-only agenda tarefas periódicas de manutenção. Entre elas, está o universal-scheduler-dispatcher.
+O componente `src/core/job_scheduler.py` (`JobScheduler`) foi removido e não é mais importado por `RuntimeBootstrap`. Não existe hoje um relógio local do processo scheduler que execute rotinas de manutenção inline, em série, dentro da própria thread.
 
-Esse JobScheduler local não é a fonte canônica do calendário dos trabalhos de negócio. Ele é o relógio interno do processo scheduler para disparar jobs de manutenção, claim e reconciliação.
+O que existe no lugar:
 
-#### 7.3.1. Como o scheduler roda os jobs (modelo de execução real)
+1. um único feeder dedicado (`SchedulerAgendaFeederRuntime`, seção 7.3.1) cuja única função é alimentar `scheduler.scheduled_jobs` no Job Core;
+2. cada rotina de manutenção (log GC, reconciliação de HIL expirado, retenção e compactação de conversas) é sincronizada como uma **entrada normal em `scheduler.scheduled_jobs`** (via `sync_*_maintenance_schedule`, chamados no startup) e **executada pelo Worker do Job Core como um job comum**, não mais inline no processo scheduler.
 
-O `JobScheduler` (`src/core/job_scheduler.py`) **não usa subprocess nem um pool de threads por job**. Ele funciona assim:
+Consequência prática: não há mais "head-of-line blocking" entre rotinas de manutenção — cada uma vira um job independente, com claim, heartbeat e concorrência do próprio Job Core, em vez de competir por uma única thread serial.
 
-- Ao iniciar (`start()`), cria **uma única thread daemon** que roda o laço interno `_run_loop`.
-- Esse laço, a cada `poll_interval`, coleta os jobs vencidos e **executa cada um em série, inline, dentro da própria thread do laço** (`_execute_job`). Se o callback é uma corrotina, ela é aguardada até o fim; se é síncrono, é chamado direto.
-- Exceções de um job são contidas por um guard interno, não derrubam o laço, e ficam registradas no log canônico com `correlation_id`.
+#### 7.3.1. Como o feeder da agenda roda (modelo de execução real)
+
+`SchedulerAgendaFeederRuntime` (`src/api/services/scheduler_agenda_maintenance_job.py`) funciona assim:
+
+- Ao iniciar (`start()`), cria **uma única thread daemon** (`scheduler-agenda-feeder`).
+- A cada `interval_seconds` (`UNIVERSAL_SCHEDULER_AGENDA_INTERVAL_SECONDS`), chama `SchedulerAgendaMaintenanceJob.run()` uma vez.
+- Uma rodada com falha (`SchedulerAgendaRoundError`) não derruba o feeder: o próximo tick é preservado e o erro fica no log canônico com `correlation_id` próprio da rodada.
+- O feeder só faz a **materialização da agenda** (ler due schedules e publicar ocorrências no Job Core); ele não executa nenhum trabalho de negócio.
 
 Consequências práticas que o operador precisa conhecer:
 
-- **Execução serial (head-of-line blocking):** enquanto um job roda, os demais vencidos esperam e o `poll_interval` não avança. Por isso, jobs de manutenção devem ser curtos e limitados; trabalho pesado e assíncrono não roda aqui — ele é **publicado para o Worker** pela rotina `universal-scheduler-dispatcher` (ver seção 6).
-- **Somente no líder:** as rotinas só sobem quando o processo é líder do scheduler (liderança Redis, seção 7.2). Sem liderança, ficam inibidas com log explícito.
-- **Cron em UTC:** as expressões cron das rotinas agendadas são interpretadas em **UTC**. Ex.: `0 6 * * *` = 06:00 UTC = **03:00 em America/Sao_Paulo** (UTC−3).
+- **Somente no líder:** o feeder só sobe quando o processo é líder do scheduler (liderança Redis, seção 7.2) e `UNIVERSAL_SCHEDULER_AGENDA_ENABLED` está ligado. Sem liderança, fica inibido com log explícito.
+- **Cron em UTC:** as expressões cron das agendas (ex.: retenção e compactação de conversas) são interpretadas em **UTC**. Ex.: `0 6 * * *` = 06:00 UTC = **03:00 em America/Sao_Paulo** (UTC−3).
+- **Trabalho pesado nunca roda no scheduler:** toda execução real (ingestão, ETL, background agentic, log GC, manutenção de HIL, retenção/compactação de conversas) roda no Worker, como job do Job Core.
 
-#### 7.3.2. Rotinas agendadas hoje (catálogo confirmado no código)
+#### 7.3.2. Rotinas de manutenção agendadas hoje (catálogo confirmado no código)
 
-Todas são registradas em `src/api/startup/runtime_bootstrap.py` e executam dentro do maintenance scheduler descrito acima. Cada rotina tem uma flag de habilitação e sua cadência própria em `src/config/settings.py`.
+Cada rotina é sincronizada em `src/api/startup/runtime_bootstrap.py` com uma flag de habilitação e cadência próprias em `src/config/settings.py`, materializada como entrada em `scheduler.scheduled_jobs` e executada pelo Worker via o `process_key` correspondente (constantes em `src/scheduler_layer/models.py`).
 
-| Rotina (nome do job) | Tipo | Cadência default | Habilitada por default | O que faz |
-| --- | --- | --- | --- | --- |
-| `log-cleanup` | intervalo | 7200s (2h) | sim | Coleta e limpa logs conforme a política de retenção de logs. |
-| `ingestion-reconciliation` | intervalo | 900s (15min) | sim | Reconcilia jobs de ingestão em estado inconsistente. |
-| `job-core-reconciliation` | intervalo | 60s | sim | Reconcilia runs "fantasma" do Job Core (travados/órfãos) além de um limite de tempo. |
-| `agent-hil-approval-maintenance` | intervalo | 300s (5min) | não | Fecha aprovações HIL expiradas (TTL vencido). |
-| `chat-conversation-retention-cleanup` | cron | `0 5 * * *` (02:00 BRT) | sim | Purga conversas do chat paradas há mais de 60 dias e apaga seus checkpoints via API oficial do LangGraph. Detalhe em **[Gestão e ciclo de vida das conversas](README-TECNICO-GESTAO-CONVERSAS-CHAT.md)**. |
-| `chat-conversation-compaction` | cron | `0 6 * * *` (03:00 BRT) | sim | Compacta o contexto das conversas DeepAgent com atividade recente (janela default de 2 dias), usando a tool oficial `compact_conversation`. Detalhe do mecanismo em **[DeepAgent Supervisor §7.8](README-TECNICO-DEEPAGENT-SUPERVISOR-COMPLETO.md)**. |
-| `universal-scheduler-dispatcher` | intervalo | 30s | sim | Faz o claim transacional dos runs agendados e os **publica para o Worker** (não executa o trabalho pesado inline). É a ponte entre o calendário e a execução assíncrona (seção 6). |
+| Rotina | Tipo | Cadência default | Habilitada por default | `process_key` | O que faz |
+| --- | --- | --- | --- | --- | --- |
+| Log GC | intervalo | configurável (`log_gc_interval_seconds`) | conforme `log_gc_enabled` | `background_execution:log_gc_maintenance` | Coleta e limpa logs conforme a política de retenção de logs. |
+| Manutenção de aprovação HIL | intervalo | 300s (5min) | não | `background_execution:hil_approval_maintenance` | Fecha aprovações HIL expiradas (TTL vencido). |
+| Retenção de conversas do chat | cron | `0 5 * * *` (02:00 BRT) | sim | `background_execution:chat_conversation_retention_maintenance` | Purga conversas do chat paradas há mais de N dias e apaga seus checkpoints via API oficial do LangGraph. Detalhe em **[Gestão e ciclo de vida das conversas](README-TECNICO-GESTAO-CONVERSAS-CHAT.md)**. |
+| Compactação de conversas do chat | cron | `0 6 * * *` (03:00 BRT) | sim | `background_execution:chat_conversation_compaction_maintenance` | Compacta o contexto das conversas DeepAgent com atividade recente, usando a tool oficial `compact_conversation`. Detalhe do mecanismo em **[DeepAgent Supervisor §7.8](README-TECNICO-DEEPAGENT-SUPERVISOR-COMPLETO.md)**. |
 
 Notas de leitura do catálogo:
 
-- **Intervalo vs cron:** rotinas de "vigília" contínua (reconciliação, dispatcher, limpeza de log) usam intervalo curto; rotinas de manutenção diária de dados (retenção e compactação de conversas) usam cron noturno em UTC para rodar fora do horário de pico.
+- A reconciliação de runs "fantasma" do Job Core (travados/órfãos) **não é** uma dessas rotinas: ela roda dentro do próprio laço de polling do Worker (`JobCoreCancelOnlyReconciler.run_if_due()`), não como job agendado — ver `docs/tecnico/README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md`.
+- Não existe mais uma rotina específica de "reconciliação de ingestão": o Job Core é a única autoridade de reconciliação, para qualquer tipo de job (ingestão, ETL, background, scheduler).
 - **Retenção antes de compactação:** a retenção roda 02:00 BRT e a compactação 03:00 BRT. A ordem é intencional: a retenção remove primeiro as conversas vencidas, e a compactação só trabalha sobre o que sobrou e teve atividade recente.
 - Todos os nomes de recurso persistente usados por essas rotinas são segregados por `ENVIRONMENT`, conforme a regra global da plataforma.
 
@@ -404,11 +387,12 @@ O slice AG-UI lido confirma emissao de interrupcoes, renderizacao de painel e co
 - SCHEDULER_LEADER_ELECTION_ENABLED controla liderança distribuída.
 - SCHEDULER_LEADER_LOCK_TTL_SECONDS controla a duração do lock.
 - SCHEDULER_LEADER_LOCK_RENEW_SECONDS controla a renovação.
-- UNIVERSAL_SCHEDULER_DISPATCHER_ENABLED liga o dispatcher canônico.
-- UNIVERSAL_SCHEDULER_DISPATCHER_INTERVAL_SECONDS define a cadência da rodada.
-- UNIVERSAL_SCHEDULER_DISPATCHER_LIMIT_PER_RUN define o volume por rodada.
-- UNIVERSAL_SCHEDULER_DISPATCHER_CLAIM_TTL_SECONDS define a janela de claim.
-- UNIVERSAL_SCHEDULER_DSN é obrigatório para o dispatcher universal.
+- UNIVERSAL_SCHEDULER_AGENDA_ENABLED liga o feeder da agenda.
+- UNIVERSAL_SCHEDULER_AGENDA_INTERVAL_SECONDS define a cadência do tick do feeder.
+- UNIVERSAL_SCHEDULER_AGENDA_LIMIT_PER_RUN define o volume de ocorrências por rodada.
+- UNIVERSAL_SCHEDULER_DSN é obrigatório para o repositório do scheduler universal.
+
+Não existe mais uma janela de claim própria do scheduler (`CLAIM_TTL_SECONDS`): a ocorrência vira diretamente um job do Job Core, e quem controla claim, TTL e heartbeat a partir daí é o próprio Job Core.
 
 ### 9.2. Domínio background
 

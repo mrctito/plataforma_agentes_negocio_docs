@@ -84,10 +84,18 @@ Depois da criação, use as abas do projeto:
 - **Visão geral**: nome, status e versão ativa;
 - **Versões**: publicar uma nova versão ou reativar uma versão publicada;
 - **Capacidades**: operações da versão ativa;
-- **Planos**: operações efetivamente ofertadas;
-- **Assinantes**: status, direitos e cancelamento.
+- **Planos**: cria plano fora do wizard, edita nome/operações/preço/moeda e transiciona
+  ativo/inativo/arquivado — o preço exibido é o real do plano, não mais um valor fixo;
+- **Assinantes**: lista paginada (com filtro por status e busca no servidor), direitos e
+  cancelamento;
+- **Uso**: métricas agregadas por operação e versão (total, sucesso, falha, duração média);
+- **Auditoria**: histórico paginado de eventos do projeto, com filtros por origem, operação, versão e
+  correlação.
 
-Trocar de YAML significa publicar outra versão. Não altere uma release publicada.
+Trocar de YAML significa publicar outra versão. Não altere uma release publicada. As abas Uso e
+Auditoria consomem endpoints que já existiam no backend; consulte
+`docs/tecnico/README-TECNICO-GESTAO-SAAS-TENANT.md` para o contrato técnico completo dessas rotas e
+da gestão de planos.
 
 ## 6. Configure canais externos quando aplicável
 

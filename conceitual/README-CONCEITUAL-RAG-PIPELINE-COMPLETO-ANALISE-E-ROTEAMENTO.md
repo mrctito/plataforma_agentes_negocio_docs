@@ -57,7 +57,6 @@ AdaptiveQueryRouter faz tres movimentos principais.
 As estrategias confirmadas no codigo sao estas.
 
 - semantic
-- bm25
 - hybrid
 - selfquery
 - hybrid_with_selfquery

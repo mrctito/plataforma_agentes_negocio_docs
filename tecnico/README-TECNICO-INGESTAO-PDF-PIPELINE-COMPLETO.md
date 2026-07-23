@@ -73,7 +73,7 @@ O fluxo confirmado nesse boundary é este:
 3. compor o YAML com `load_yaml_config_with_session`;
 4. resolver `document_parallelism` efetivo;
 5. forçar `execution_mode` suportado para `direct_async`;
-6. delegar para `schedule_prepared_ingestion_worker_job`.
+6. delegar ao publisher único `JobCoreRuntimeIngestionPublisher.publish` (`src/api/services/ingestion_job_executor.py`).
 
 Em linguagem simples: a API pública não executa o PDF. Ela prepara o contexto, publica um job pai na fila oficial e devolve um contrato HTTP de acompanhamento.
 
@@ -89,23 +89,21 @@ O detalhe importante é que esses envelopes não são equivalentes. O pai transp
 
 ### 2.3. Runtime do worker e topologia física
 
-O processo worker oficial sobe por `app/worker_main.py` e delega para `app/runners/worker_runner.py`. Nesse bootstrap, `build_worker_process_runtime` exige explicitamente `ASYNC_JOB_CONSUMER_RUNTIME=rabbitmq_polling` e `ASYNC_JOB_QUEUE_BACKEND=rabbitmq` (qualquer outro valor levanta `RuntimeError`) e valida o schema do Job Core em modo somente leitura — sem DDL, sem criar nem alterar tabela no startup — antes de iniciar `WorkerProcessRuntime`. O nome `Dramatiq` sobrevive apenas como alias legado (`DramatiqAsyncJobWorkerRuntime = RabbitMqAsyncJobWorkerRuntime`); o consumidor oficial atual é o runtime RabbitMQ com polling.
+O processo worker oficial sobe por `app/worker_main.py` e delega para `app/runners/worker_runner.py`. Nesse bootstrap, `build_worker_process_runtime` (`src/api/services/worker_process_runtime.py`) exige explicitamente `ASYNC_JOB_CONSUMER_RUNTIME='job_core_polling'` (qualquer outro valor levanta `RuntimeError`) e valida o schema do Job Core em modo somente leitura — sem DDL, sem criar nem alterar tabela no startup — antes de iniciar `WorkerProcessRuntime`. **Não existe mais RabbitMQ nem Dramatiq no transporte de jobs**: `src/api/services/async_job_dramatiq.py` e toda a topologia de actors/filas RabbitMQ foram removidas do produto antes deste manual ser sincronizado (limpeza de 13/07/2026, anterior ao plano de simplificação do Job Core). O único consumidor oficial é `JobCoreWorkerPollingRuntime` (`src/api/services/job_core_worker_runtime.py`), montado por `build_async_job_worker_runtime` (`src/api/services/async_job_worker_runtime_factory.py`).
 
-Dentro de `src/api/services/async_job_dramatiq.py`, o runtime assíncrono registra actors separados para filas de papel diferente. O contrato observado no código é:
+Não existe fila física separada para pai e filho. Pai e filho são a mesma tabela `job_core.job_runs`: o poller reivindica linhas com `claim_next_run` usando `FOR UPDATE SKIP LOCKED` sobre `(route_kind, dispatch_mode, created_at, job_id)`, e o `route_kind + dispatch_mode` do envelope decide qual handler processa aquela linha — não existe pool de actor nem canal de broker por papel.
 
-- fila pai para ingestão preparada e resolve-on-worker;
-- fila filha para `document_fanout_child`;
-- pools isolados por role, para que o consumo do pai não concorra com o consumo do filho no mesmo slot lógico.
-
-Isso é relevante porque o paralelismo do PDF não acontece por thread mágica dentro do mesmo método. Ele acontece por publicação explícita de envelopes filhos em fila separada, consumidos por workers filhos dedicados.
+Isso é relevante porque o paralelismo do PDF não acontece por thread mágica dentro do mesmo método nem por fila de mensagens com redelivery. Ele acontece por publicação explícita de envelopes filhos como novas linhas em `job_core.job_runs` (`dispatch_mode=document_fanout_child`), reivindicadas de forma atômica e exclusiva por qualquer worker compatível — cada linha só pode ser reivindicada por um worker, uma única vez, até terminar ou ser reconciliada.
 
 ### 2.4. Papel do job pai e do job filho
 
 O job pai não existe para parsear PDF. Ele existe para orquestrar o lote.
 
-No caminho atual, `IngestionParentJobHandler` delega para a execução assíncrona de ingestão. Quando o fan-out documental é elegível, `IngestionService` chama `DocumentFanoutCoordinator.build_plan`, inventaria os documentos e publica filhos até o limite operacional disponível.
+No caminho atual, `IngestionParentJobHandler` delega para a execução assíncrona de ingestão. Quando o fan-out documental é elegível, `IngestionService` chama `DocumentFanoutCoordinator.build_plan`, inventaria os documentos e publica filhos até o limite operacional (`max_active_children`) desejado — quem admite de fato é o Job Core (ver 3.4).
 
-O job filho, por sua vez, entra por `IngestionDocumentJobHandler` e delega para `DocumentFanoutChildExecutorService`. É ele quem executa uma unidade documental real, consulta a gate canônica de execução, respeita cancelamento cooperativo, persiste estado terminal e só então reconhece a mensagem como concluída.
+O job filho, por sua vez, entra por `IngestionDocumentJobHandler` e delega para `DocumentFanoutChildExecutorService`. É ele quem executa uma unidade documental real, respeita o cancelamento cooperativo do `JobCoreCancellationToken`, persiste estado terminal e só então reconhece a mensagem como concluída. Não existe mais gate própria da ingestão consultada antes de executar (ver 3.4).
+
+Essa dupla de papéis é a mesma separação normativa do Job Core (`src/CLAUDE.md` Parte 4, ponto 2, item "especialização de ingestão/PDF"): o pai age como **adaptador de submissão** (monta envelopes, planeja o fan-out, conhece só o contrato público do Job Core) e o filho age como **processo/handler de domínio**, que a meta é ele se tornar host-transparente via o contrato `JobProcess`/`HostPort` (ponto 2.1, NORMATIVO e ainda não materializado — ver README técnico do Job Core).
 
 O ponto operacional mais importante é este:
 
@@ -141,7 +139,24 @@ No primeiro nivel, se a collection/index ja existe:
 - `update` mantem o alvo fisico sem limpeza e permite que o lote continue;
 - `overwrite` remove e recria o alvo uma vez no bootstrap do lote e permite que o lote continue.
 
-No segundo nivel, o runtime resolve `document_identity_key`, prefere `pdf:sha256:<hash_binario_do_pdf>`, usa `canonical_source_key` como fallback e consulta o manifesto por `tenant_code + vectorstore_id + document_identity_key`. Se encontrar o documento, compara a versao por `pdf_binary_sha256` ou, na ausencia dele, `document_hash`.
+No segundo nivel, o runtime resolve `document_identity_key` a partir da identidade estavel da origem: prefere `source_system + external_document_id` (no Google Drive, `file_id`) e usa a URI canonica como fallback. O manifesto e consultado por `tenant_code + vectorstore_id + document_identity_key`; quando encontra o documento, o runtime compara a versao por `pdf_binary_sha256` ou, na ausencia dele, `document_hash`.
+
+No fan-out por documento, o job pai inclui no contexto de cada worker a origem comprovada
+(`source_system`, `source_uri` canonica e `external_document_id`). O dominio do projeto, como
+`dnit`, nao substitui a origem documental, como `google_drive`. A publicacao replica essa
+procedencia em `vector_active_documents` e grava nos chunks do Qdrant a identidade logica e a
+versao ativa (`document_identity_key` e `vector_document_key`). Com isso, uma futura pergunta RAG
+pode receber os `active_document_id` escolhidos na API de listagem, resolve-los no servidor e
+limitar Qdrant, FTS e BM25 ao mesmo conjunto de documentos.
+
+A rastreabilidade usa eventos canonicos em cada fronteira: o binding do worker registra
+`job_remote_pdf_source_identity_bound`; a resolucao registra
+`ingestion.telemetry.document_identity.resolved`; a publicacao registra
+`ingestion.telemetry.vector_active_publish.persisted`; e a limpeza de versoes antigas registra
+`ingestion.document.vector_supersession.cleaned`. Identificadores sensiveis nao precisam ser
+repetidos nesses eventos de decisao: fingerprints permitem comparar as etapas. A checagem
+`ingestion.vector.document.integrity.checked` confirma, por PDF, chunks esperados e gravados,
+referencias no Qdrant, FTS pronto e maior metadata persistida.
 
 - `skip` pula somente o PDF encontrado no manifesto;
 - `update` pula o PDF inalterado e reprocessa o PDF cuja versao mudou;
@@ -181,32 +196,17 @@ O código falha explicitamente quando encontra contratos antigos ou proibidos em
 
 Esse fail-fast é importante porque evita que o runtime aceite caminhos velhos e pareça funcionar por sorte.
 
-### 3.4. Gate canônica de admissão do fan-out documental
+### 3.4. Quem admite e quem cancela um filho do fan-out documental (arquitetura atual)
 
-Quando o pipeline PDF roda com paralelismo por documento, RabbitMQ e Dramatiq fazem apenas o transporte do envelope. Eles podem reentregar mensagem antiga, atrasar mensagem ou acordar um job filho depois que o pai já terminou. Isso não é bug da fila. Isso é comportamento normal de transporte assíncrono.
+Esta seção descreveu, em versão anterior, uma `DocumentFanoutExecutionGate` própria da ingestão que decidia se um filho podia executar. Essa classe foi removida do produto (plano `investigacao-simplificacao-job-core`, tarefa T10, entregue em 2026-07-17): não existe mais `src/services/document_fanout_execution_gate.py`, `fetch_document_fanout_runtime_state`, auto-recovery, auto-promotion nem promoção de `queued` fora do Job Core. A admissão e o cancelamento do filho hoje têm dois donos diferentes e nenhum deles vive na ingestão:
 
-Quem decide se o filho ainda pode trabalhar é o plano de controle durável no PostgreSQL. No código atual, essa decisão fica centralizada em `DocumentFanoutExecutionGate`, em `src/services/document_fanout_execution_gate.py`.
+**Admissão (quem entra em execução):** é decidida pelo próprio Job Core no momento do claim, não por uma consulta prévia da ingestão. O envelope do filho carrega `dispatch_mode=document_fanout_child` e o pai carrega `max_active_children` (`JobEnvelope.max_active_children`, `src/core/job_core/models.py`); o `claim_next_run` do store só libera um filho novo se o número de filhos ativos daquele pai estiver abaixo do limite — no PostgreSQL essa contagem e a reivindicação acontecem na mesma consulta atômica (`src/core/job_core/postgres_store.py`). Não existe fila de mensagens com redelivery neste caminho (ver 2.3): a linha do filho em `job_core.job_runs` só pode ser reivindicada uma vez.
 
-A gate consulta duas visões canônicas do pai antes de liberar o filho:
+**Cancelamento cooperativo (quem para um filho que já começou):** é o próprio `JobCoreCancellationToken` do Job Core, não uma gate de domínio. `AsyncJobPayloadExecutor._create_callback` (`src/api/services/async_job_worker_payload_executor.py`) instancia `JobCoreCancellationToken.from_runtime_environment(job_id=task_id, correlation_id=...)` e injeta esse token como `callback_factory` em `DocumentFanoutChildExecutorDependencies`; `DocumentFanoutChildExecutorService.execute` (`src/services/document_fanout_child_executor_service.py`) usa esse mesmo token como `cancellation_token` ao chamar `service.execute_single_document(...)`. O token consulta `job_core.job_runs` diretamente — o mesmo ledger que decide se o pai está `cancelled`/`cancel_requested` — e não mantém estado próprio.
 
-- `fetch_run_record`, para ler o run pai em `vector_ingestion_runs`.
-- `fetch_document_fanout_runtime_state`, para ler o estado agregado do fan-out.
+Se o pai não terminar de forma limpa (worker morto, heartbeat expirado), quem encerra a run órfã é o reconciliador cancel-only do Job Core (`OperationalRunReconciliationService.cancel_orphaned_run`, ver o README técnico do Job Core), nunca uma reconciliação local da ingestão. Não existe mais `auto_recovery` nem `auto_promotion` que tentem salvar ou reencaminhar um filho.
 
-Se qualquer uma dessas consultas críticas falhar, o comportamento correto é falhar fechado. Em linguagem simples: se o sistema não consegue confirmar no banco que o pai ainda está executável, o filho não baixa PDF, não faz OCR, não parseia e não republica outro filho.
-
-O contrato mínimo real da decisão é este:
-
-- `allowed`: diz se o filho pode executar ou publicar.
-- `reason_code`: explica por que a gate liberou ou bloqueou.
-- `route`: informa se a decisão foi tomada para `execute`, `auto_recovery`, `auto_promotion` ou `dispatch_candidate`.
-- `parent_status`: mostra o status canônico do pai usado na decisão.
-- `child_status`: mostra o status conhecido do filho no momento da consulta.
-- `cancel_requested`: informa se o pai já entrou em cancelamento cooperativo.
-- `result_status`: indica o status terminal padrão esperado quando a rota é bloqueada.
-
-Na prática, isso impede a família de bugs de job filho fantasma. Se uma mensagem antiga acordar depois que o pai ficou `cancelled`, `cancelling`, `completed` ou `failed`, a gate registra o motivo e o trabalho caro para ali.
-
-Essa gate precisa ser a única autoridade de admissão. O executor do filho, o auto-recovery, o auto-promotion e a promoção do próximo `queued` podem ter validações locais de infraestrutura, mas não devem manter regras paralelas para decidir se o pai ainda aceita execução.
+Em linguagem simples: antes, a ingestão perguntava "o pai ainda deixa eu trabalhar?" a cada filho. Hoje, se o filho foi reivindicado é porque o Job Core já decidiu que ele pode rodar; e se o pai for cancelado no meio do caminho, o mesmo Job Core (via `JobCoreCancellationToken`) é quem avisa o filho para parar.
 
 ## 3.1 O que “cancelar” significa de verdade no fan-out PDF
 
@@ -214,10 +214,9 @@ Neste pipeline, cancelamento é cooperativo e durável. Isso quer dizer que o pl
 
 Na prática:
 
-- `queued` e `retrying` devem ser cancelados sem iniciar OCR, parsing ou republicação;
-- mensagens antigas do broker continuam sendo tratadas como transporte atrasado, não como autorização para trabalhar;
-- `running` e `processing` só param quando chegam a um checkpoint de cancelamento ou quando o estado ativo fica stale e entra em reconciliação;
-- `broker_drain_status=unsupported_bounded` significa limitação de observabilidade física por run, não falha da regra de cancelamento.
+- um filho ainda `queued` no ledger do Job Core é cancelado diretamente, sem nunca ser reivindicado e sem iniciar OCR, parsing ou republicação;
+- não existe broker nem redelivery neste transporte (ver 2.3): a linha do filho só é reivindicada uma vez, então não há "mensagem atrasada" tentando trabalhar depois do cancelamento — só existe a checagem cooperativa do `JobCoreCancellationToken` durante a execução (ver 3.4);
+- um filho já `running` só para quando o `JobCoreCancellationToken` observa `cancel_requested`/`cancelled` num checkpoint cooperativo, ou quando o worker morre e o reconciliador cancel-only do Job Core (`cancel_orphaned_run`) encerra a run órfã diretamente como `cancelled` — nunca por retry, replay ou reenfileiramento.
 
 Essa distinção é importante para operação. Se ainda existe drenagem, isso não quer dizer que o cancelamento falhou. Quer dizer apenas que o sistema já neutralizou o trabalho novo e está encerrando, de forma segura, o que tinha começado antes do pedido de cancelamento.
 
@@ -785,42 +784,33 @@ A entrada no vector store acontece por `QdrantVectorStore.index_chunks()`, que c
 
 `DuplicationManager.check_batch_duplication()` calcula um hash do conteúdo de cada chunk. Se o chunk já estiver indexado com o mesmo conteúdo, ele é marcado como `skip` e não é regravado. Isso é importante para ingestões parciais e retomadas.
 
-**Passo 2 — Preparação do índice esparso**
+**Passo 2 — Verificação da capacidade híbrida do provider**
 
-`SparseVectorIndexManager.prepare_for_ingestion()` inicializa o vocabulário BM25 para o acervo no backend de persistência (PostgreSQL, com cache Redis). O vocabulário é o dicionário que mapeia cada palavra relevante a um número (índice), que depois é usado para construir o vetor esparso. Sem o vocabulário, não há vetor esparso.
+O adapter confirma a configuração dense+sparse da coleção Qdrant. A representação lexical pertence ao provider e usa o modelo server-side `qdrant/bm25`; a aplicação não prepara vocabulário nem índice PostgreSQL paralelo.
 
 **Passo 3 — Geração dos embeddings densos em lote**
 
 `_compute_chunk_embeddings()` chama o provider de embedding configurado em `llm.embeddings` (por exemplo, `text-embedding-3-large` da OpenAI) para todos os chunks do lote de uma vez. O resultado é uma lista de vetores numéricos de tamanho fixo (por exemplo, 1536 dimensões). Cada número no vetor representa uma "coordenada" no espaço semântico.
 
-**Passo 4 — Geração do vetor esparso por chunk**
+**Passo 4 — Preparação do documento sparse pelo provider**
 
-Para cada chunk, `SparseVectorIndexManager.build_sparse_vector()` executa:
-
-1. Tokeniza o texto do chunk: lowercase, remove stopwords em português e inglês (`a`, `o`, `e`, `de`, `do`, `da`, `em`, `com`, `para`, `por`), remove pontuação e tokens com menos de 2 caracteres.
-2. Conta a frequência de cada token (Counter).
-3. Para cada token presente no vocabulário, registra (índice_do_token, frequência) no vetor esparso.
-
-O resultado é um `SparseVectorData` com dois arrays: `indices` (posições no vocabulário) e `values` (contagens de frequência). Tokens não presentes no vocabulário são ignorados. O vetor esparso é muito compacto: num documento com 10 mil palavras no vocabulário, um chunk de 500 palavras terá apenas algumas dezenas de entradas não-zero.
+Para cada chunk, o adapter monta um `models.Document` com o texto, o modelo `qdrant/bm25` e o idioma português. O Qdrant produz a representação sparse no servidor usando o mesmo contrato aplicado depois à consulta.
 
 **Passo 5 — Montagem do ponto Qdrant**
 
 `build_point_vectors()` monta o objeto `PointStruct` que será gravado no Qdrant. Ele contém:
 
 - O vetor denso (embedding semântico).
-- O vetor esparso (BM25, se `native_sparse_enabled=True`).
+- O documento sparse provider-native BM25.
 - O payload (metadados do chunk).
 
 **Passo 6 — Upsert em lotes no Qdrant**
 
 `_batch_upsert_points()` envia os pontos para o Qdrant em lotes com retry. Cada ponto fica persistido fisicamente no Qdrant com seus dois vetores e seus metadados.
 
-**Passo 7 — Sincronização do índice BM25**
+**Passo 7 — Fechamento da indexação**
 
-`_sync_bm25_index()` chama `BM25IndexManager.update_index()` para atualizar o payload persistido do índice BM25 no backend (PostgreSQL + cache Redis). O que é atualizado depende de uma configuração:
-
-- Se `rag_system.retriever.hybrid.bm25.app_side_rerank.enabled=False` (padrão atual): só `documents` (lista de IDs únicos dos documentos do acervo) e `sparse.vocabulary` são gravados ou atualizados. O bloco `entries` (corpus textual completo) é intencionalmente vazio (`[]`). Isso reduz drasticamente o tamanho do payload — a diferença é de dezenas de megabytes para alguns kilobytes.
-- Se `rag_system.retriever.hybrid.bm25.app_side_rerank.enabled=True`: o bloco `entries` é populado com o texto e metadados de cada chunk, tornando possível o re-ranqueamento BM25 app-side após o retrieval. Este modo está desligado por padrão.
+A aplicação não persiste corpus, vocabulário nem snapshot BM25 paralelo. O Qdrant mantém a representação sparse junto do vetor dense; o Azure Search mantém o contrato textual no índice configurado com BM25.
 
 #### 17.1.3. Campos do payload gravados em cada ponto Qdrant
 
@@ -841,22 +831,15 @@ Cada ponto no Qdrant carrega os seguintes campos no payload:
 
 Para chunks multimodais (imagens), acrescentam-se `has_visual_content`, `visual_complexity`, `images` e `total_images`.
 
-#### 17.1.4. Vocabulário: o que é e por que importa
+#### 17.1.4. Contrato único de documento e consulta sparse
 
-O vocabulário é um dicionário `{token: índice_inteiro}` construído sobre o corpus completo do acervo. Ele serve para duas coisas:
-
-- Na **ingestão**: converter o texto de cada chunk em vetor esparso (token → índice → posição no vetor).
-- Na **query**: converter a pergunta do usuário em vetor esparso para que o Qdrant saiba quais posições do espaço esparso comparar.
-
-O vocabulário fica persistido no payload BM25 (campo `sparse.vocabulary`) no PostgreSQL, com cache Redis com TTL de 24 horas. Sem o vocabulário disponível, a tokenização sparse da pergunta retorna `None` e o sistema cai automaticamente para busca densa-only (seção de fail-open no guia RAG).
+Documento e consulta usam o mesmo builder provider-native, com modelo `qdrant/bm25` e idioma português. Essa simetria impede que a aplicação indexe com uma tokenização e consulte com outra. Se o vetor sparse obrigatório não estiver configurado, o runtime falha fechado; não existe fallback dense-only silencioso.
 
 #### 17.1.5. Erros comuns a evitar
 
 **"Mudei o texto de um chunk mas o vetor esparso não atualizou"**: o `DuplicationManager` usa o hash do conteúdo para pular chunks já indexados. Se o conteúdo mudou mas o hash não foi recalculado corretamente, o chunk antigo permanece. A solução é forçar reingestão com hash diferente ou apagar o ponto antes de reinserir.
 
-**"O vocabulário está desatualizado"**: o vocabulário é construído incrementalmente durante ingestões. Se novos termos técnicos aparecem em documentos novos, eles só entram no vocabulário depois da ingestão desses documentos. Documentos ingeridos antes do vocabulário ser expandido terão vetores esparsos que não cobrem esses novos termos.
-
-**"O payload BM25 ficou enorme"**: isso acontece quando `app_side_rerank.enabled=True` — o bloco `entries` guarda o corpus textual completo e pode chegar a dezenas de megabytes para acervos grandes. Se a busca híbrida nativa do Qdrant está sendo usada (que é o caso padrão), não há motivo para deixar `entries` ligado. Veja a seção de configuração.
+**"A coleção não possui sparse"**: a busca híbrida falha fechada. Corrija a coleção no lifecycle oficial e reingira o acervo; não habilite um fallback dense-only para esconder a incompatibilidade.
 
 ## 18. O que acontece em caso de sucesso
 
@@ -900,10 +883,10 @@ No caminho feliz, os sinais de sucesso técnico são:
 ### 20.1. Onde olhar primeiro
 
 1. logs do boundary HTTP de `POST /rag/ingest`, para confirmar composição do YAML, `task_id` e `document_parallelism` efetivo;
-2. logs de `schedule_prepared_ingestion_worker_job` e da reserva de `worker_execution_correlation_id`, para confirmar que o job pai realmente foi publicado;
-3. logs do worker pai, para confirmar se o envelope caiu na fila correta e se houve decisão de fan-out;
-4. telemetria durável do run pai e de `vector_ingestion_run_documents`, para confirmar quantos filhos foram inventariados, enfileirados e finalizados;
-5. logs do worker filho e da `DocumentFanoutExecutionGate`, para diferenciar execução autorizada, cancelamento cooperativo e mensagem atrasada do broker;
+2. logs do publisher único `JobCoreRuntimeIngestionPublisher.publish` (`src/api/services/ingestion_job_executor.py`) e da reserva de `worker_execution_correlation_id`, para confirmar que o job pai realmente foi publicado no ledger do Job Core;
+3. logs do worker pai (claim/execução em `job_core.job_runs`), para confirmar se o envelope foi reivindicado e se houve decisão de fan-out;
+4. telemetria durável do run pai e de `vector_ingestion_run_documents`, para confirmar quantos filhos foram inventariados, publicados e finalizados — lembrando que essas tabelas guardam só fatos/resultado do PDF, não fila nem claim (ver README técnico do Job Core);
+5. logs do worker filho e do `JobCoreCancellationToken`, para diferenciar execução autorizada, cancelamento cooperativo e cancelamento por orfandade decidido pelo reconciliador do Job Core;
 6. só depois disso olhar os logs internos de `process_document`, OCR documental, parsing, `execution_manifest`, `multimodal_status_details` e chunking.
 
 ### 20.2. Como diferenciar causas
@@ -941,7 +924,7 @@ vector store recusando chunks ou falha ao persistir documento processado.
 
 Causa provável: o problema está antes do slice PDF, no boundary assíncrono, no enqueue ou no worker pai.
 
-Como confirmar: revisar `task_id`, `correlation_id`, `worker_log_file_name`, a submissão do job pai e se o worker estava ativo no runtime do worker (`rabbitmq_polling`).
+Como confirmar: revisar `task_id`, `correlation_id`, `worker_log_file_name`, a submissão do job pai e se o worker estava ativo no runtime do worker (`consumer_runtime='job_core_polling'`).
 
 Ação recomendada: confirmar primeiro a publicação do job pai e a inicialização do processo worker. Sem esse passo, não faz sentido depurar OCR, parsing ou chunking.
 
@@ -998,7 +981,7 @@ Ação recomendada: revisar a ordem das estratégias e o estado do texto final a
 O código confirma que o pipeline PDF roda dentro da esteira oficial de ingestão assíncrona. O que está confirmado no slice lido é este caminho mínimo de validação:
 
 1. a API precisa expor `POST /rag/ingest`;
-2. o processo worker precisa subir `WorkerProcessRuntime` com Dramatiq + RabbitMQ;
+2. o processo worker precisa subir `WorkerProcessRuntime` com `JobCoreWorkerPollingRuntime` (`consumer_runtime='job_core_polling'`, polling durável sobre `job_core.job_runs`; sem RabbitMQ nem Dramatiq);
 3. a requisição deve devolver `task_id`, `correlation_id`, `polling_url`, `stream_url` e `worker_log_file_name`;
 4. o status deve mostrar progresso do job pai e, quando elegível, evolução agregada do fan-out;
 5. o documento só entra no slice PDF depois que um worker filho consome o envelope documental e chama o executor especializado.
@@ -1052,18 +1035,18 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
 
 - `src/api/services/ingestion_http_prepared_async_service.py`
   - Motivo da leitura: agendamento do job pai preparado.
-  - Símbolo relevante: `schedule_prepared_ingestion_worker_job`.
-  - Comportamento confirmado: reserva run pai, valida telemetria durável, previne conflito no vectorstore e publica envelope `prepared_yaml`.
+  - Símbolo relevante: `PreparedAsyncIngestionExecutionService.__call__`, que delega ao publisher único `JobCoreRuntimeIngestionPublisher.publish` (`src/api/services/ingestion_job_executor.py`).
+  - Comportamento confirmado: reserva run pai, valida telemetria durável, previne conflito no vectorstore e publica envelope `prepared_yaml`. A antiga função `schedule_prepared_ingestion_worker_job` foi removida (plano de simplificação do Job Core, T8, 2026-07-17): não existe mais um segundo publisher — `rag_runtime_ingestion_compat.ingest_content` e este serviço convergem para o mesmo `JobCoreRuntimeIngestionPublisher`.
 
 - `src/api/services/ingestion_async_enqueue_support.py`
   - Motivo da leitura: contratos dos envelopes assíncronos.
   - Símbolo relevante: `build_prepared_ingestion_job_envelope`, `build_resolve_on_worker_ingestion_job_envelope`, `build_document_fanout_child_ingestion_job_envelope`.
   - Comportamento confirmado: diferencia job pai preparado, job pai resolve-on-worker e job filho documental.
 
-- `src/api/services/async_job_dramatiq.py`
-  - Motivo da leitura: topologia real das filas e actors.
-  - Símbolo relevante: `DramatiqAsyncJobWorkerRuntime.start` e `_build_async_job_actors`.
-  - Comportamento confirmado: cria consumidores separados para pai e filho, com contrato versionado e falha fechada para payload em fila errada.
+- `src/api/services/async_job_worker_runtime_factory.py` e `src/api/services/job_core_worker_runtime.py`
+  - Motivo da leitura: topologia real do consumo de jobs (substituiu o antigo `async_job_dramatiq.py`, removido do produto em 13/07/2026, antes do plano de simplificação do Job Core).
+  - Símbolo relevante: `build_async_job_worker_runtime` e `JobCoreWorkerPollingRuntime`.
+  - Comportamento confirmado: exige `consumer_runtime='job_core_polling'` (qualquer outro valor levanta `RuntimeError`); não existe RabbitMQ, Dramatiq, fila nem actor separado por papel — pai e filho são linhas de `job_core.job_runs` reivindicadas por `FOR UPDATE SKIP LOCKED` conforme `route_kind + dispatch_mode`.
 
 - `src/api/services/async_job_worker_payload_executor.py`
   - Motivo da leitura: despacho do envelope assíncrono dentro do worker.
@@ -1073,7 +1056,7 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
 - `src/api/services/worker_process_runtime.py`
   - Motivo da leitura: runtime unificado do processo worker.
   - Símbolo relevante: `build_worker_process_runtime` e `WorkerProcessRuntime.start`.
-  - Comportamento confirmado: exige `consumer_runtime=rabbitmq_polling` + backend `rabbitmq`, valida o schema do Job Core em modo somente leitura (sem DDL no startup), sobe control plane e runtime assíncrono e expõe `fan_out_active` no ready log.
+  - Comportamento confirmado: exige `consumer_runtime='job_core_polling'`, valida o schema do Job Core em modo somente leitura (sem DDL no startup), sobe control plane e runtime assíncrono e expõe `fan_out_active` no ready log. Readiness deriva da saúde real do poller (`is_running`/`fatal_error`), não de flag histórica de start.
 
 - `app/runners/worker_runner.py`
   - Motivo da leitura: bootstrap do processo worker.
@@ -1088,17 +1071,17 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
 - `src/services/document_fanout_coordinator.py`
   - Motivo da leitura: coordenação do lote paralelo por documento.
   - Símbolo relevante: `build_plan` e `_dispatch_plan_internal`.
-  - Comportamento confirmado: inventaria documentos, persiste estados iniciais e publica envelopes filhos somente para fontes elegíveis.
+  - Comportamento confirmado: inventaria documentos, persiste fatos iniciais e submete os filhos ao Job Core com o `max_active_children` desejado. Não existe mais slot lease, promoção nem enforcement de paralelismo no coordinator (removidos em T10 do plano de simplificação do Job Core, 2026-07-17): o controle de admissão é inteiramente do Job Core.
 
 - `src/services/document_fanout_child_executor_service.py`
   - Motivo da leitura: execução real do documento filho.
   - Símbolo relevante: `DocumentFanoutChildExecutorService.execute`.
-  - Comportamento confirmado: consulta gate canônica, respeita cancelamento cooperativo, executa um documento por vez e persiste estado terminal antes do ACK.
+  - Comportamento confirmado: recebe o filho já admitido pelo Job Core (ver 3.4), usa `JobCoreCancellationToken` como `cancellation_token` cooperativo, executa um documento por vez e persiste estado terminal antes do ACK. Não consulta mais nenhuma gate própria de domínio.
 
-- `tests/integration/test_03-01-08_async_job_rabbitmq_real_flow.py`
-  - Motivo da leitura: evidência executável do fluxo assíncrono.
-  - Símbolo relevante: `test_runtime_real_consumes_parent_and_child_queues`.
-  - Comportamento confirmado: valida consumo real de envelopes pai e filho em filas Dramatiq separadas.
+- `tests/integration/test_03-01-23_job_core_runtime_durable_ledger.py`
+  - Motivo da leitura: evidência executável do fluxo assíncrono real via Job Core (substituiu `test_03-01-08_async_job_rabbitmq_real_flow.py`, removido junto com a topologia RabbitMQ/Dramatiq).
+  - Símbolo relevante: cobertura de `document_fanout_child` sobre `PostgresJobRunStore` real.
+  - Comportamento confirmado: prova gravação real de pai/filho no schema `job_core` via polling PostgreSQL, sem broker de mensagens.
 
 - `src/ingestion_layer/processors/pdf_processor.py`
   - Motivo da leitura: host principal do runtime PDF.
@@ -1138,7 +1121,7 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
 - `src/ingestion_layer/pdf_tools/deterministic_lego_pdf_parsing_engine.py`
   - Motivo da leitura: semântica da resolução de engine única por YAML.
   - Símbolo relevante: `DeterministicLegoPdfParsingEngine`.
-  - Comportamento confirmado: handoff entre engines, score de melhor resultado e failure policy final.
+  - Comportamento confirmado: executa exatamente UMA engine (construtor rejeita mais de uma opção); erro real de parsing aborta sem handoff para outra engine (fila multi-opção removida); falha de `PdfParsingResourceExhaustedError`/`TimeoutError` relança para o boundary documental converter em `skipped` terminal; `failure_policy` é sempre `"strict_first_success"` (não existe mais `best_effort`).
 
 - `src/ingestion_layer/processors/pdf_text_processing_application_service.py`
   - Motivo da leitura: pipeline textual pós-extração.
@@ -1219,7 +1202,7 @@ O timeout padrão é `180.0s` (`_DEFAULT_TIMEOUT_SECONDS`), mas pode ser sobresc
 
 ### 27.3. O que acontece quando o tempo esgota
 
-Quando o subprocesso ultrapassa o timeout, o runner levanta `PdfParsingResourceExhaustedError`. Essa exceção tem classificação `RESOURCE` — ela sinaliza esgotamento de recurso, não falha de lógica. O orquestrador determinístico (`DeterministicLegoPdfParsingEngine`) trata esse tipo de exceção de forma especial: **recoloca o documento na fila sem rebaixar a engine**. Em linguagem simples, timeout não é sinal de que a engine está errada; é sinal de que o documento precisava de mais tempo. A engine permanece disponível para o próximo documento.
+Quando o subprocesso ultrapassa o timeout, o runner levanta `PdfParsingResourceExhaustedError`. Essa exceção tem classificação `RESOURCE` — ela sinaliza esgotamento de recurso, não falha de lógica. O executor determinístico de engine única (`DeterministicLegoPdfParsingEngine`) registra a falha da tentativa e **relança** a exceção para o boundary documental, que a converte em `skipped` terminal: **não existe requeue nem nova tentativa** do mesmo documento. Em linguagem simples, timeout não é sinal de que a engine está errada — é sinal de que o documento precisou de mais tempo do que o configurado —, mas o documento pulado só volta ao ciclo se o usuário pedir nova ingestão (skip legítimo, `src/CLAUDE.md` Parte 3, regra `vector_store.if_exists`). A engine permanece disponível para o próximo documento; o que não se repete é a tentativa deste documento nesta rodada.
 
 ### 27.4. Comunicação entre processo pai e filho
 

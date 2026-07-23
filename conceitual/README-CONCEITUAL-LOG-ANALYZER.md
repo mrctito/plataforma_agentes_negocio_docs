@@ -10,9 +10,10 @@ O módulo oferece dois modos de operação com propósitos diferentes:
 
 - **Análise profunda** (`LogAnalyzerService`): carrega todos os registros de um log em
   memória via Pandas, executa seus plugins analíticos e retorna um relatório completo com
-  métricas de erros, performance, tempo entre as etapas (`stage`) do pipeline, eventos e
-  atividade por componente, além da seção `problems` que acusa problemas de integridade
-  (ex.: `correlation_id` estranho no meio do log).
+  métricas de erros, warnings explicáveis, performance, janela da requisição, lanes
+  concorrentes, tempo entre as etapas (`stage`), eventos e atividade por componente, além
+  da seção `problems` que acusa problemas de integridade (ex.: `correlation_id` estranho
+  no meio do log).
 
 - **Consulta rápida** (`LogQueryService`): lê o log registro a registro via iterador e
   para assim que a resposta puder ser determinada, sem carregar nada em memória. Responde
@@ -158,6 +159,41 @@ São os dois contratos de saída do módulo:
 
 Ambos retornam `success=True/False` e nunca levantam exceção para o chamador.
 
+### Janela da requisição, total e lanes
+
+Uma família de logs pode continuar recebendo trabalho assíncrono depois de a resposta
+HTTP terminar. Por isso, o analyzer não usa o primeiro e o último evento do arquivo como
+total da requisição.
+
+O cálculo correto:
+
+1. recorta a janela entre o início e o primeiro terminal HTTP compatível;
+2. prefere o `duration_ms` medido pelo terminal;
+3. mantém a telemetria do worker em lane assíncrona separada;
+4. informa uma lacuna quando não há limites ou vínculo causal suficientes.
+
+Em linguagem simples: o trabalho de background continua visível, mas não é somado ao
+tempo que o usuário esperou pela resposta.
+
+### Cache de documentos e cache de resposta
+
+O cache semântico do RAG reutiliza **documentos recuperados**, não a resposta final.
+Depois de um hit, a LLM ainda precisa gerar a resposta. Isso é comportamento esperado,
+não desperdício detectado pelo analyzer.
+
+Os campos `cache_payload_kind=documents` e `generation_required=true` tornam essa
+diferença explícita. Este contrato não cria nem promete cache de resposta.
+
+### Warning explicado e schema gap
+
+Um warning útil precisa dizer o que aconteceu sem obrigar o operador a abrir o JSONL.
+O analyzer procura contexto canônico em `error_message`, `reason`, `event_name` e
+`message`, nessa ordem, e mostra qual campo sustentou a explicação.
+
+Se nenhum deles existir, o warning continua na contagem e pode aparecer nas
+amostras de `warning_schema_gaps`, indicando que o emissor precisa publicar contexto
+pelo builder canônico. O analyzer registra a ausência; não inventa uma frase.
+
 ## 7. Decisões técnicas e trade-offs
 
 **Por que dois serviços separados?**
@@ -208,6 +244,17 @@ qualquer diretório, portável entre ambientes e sem acoplamento a configuraçõ
 
 - **O módulo não lê `.env` nem variáveis de ambiente:** tudo é recebido via parâmetro.
   `logs_dir` deve ser informado explicitamente.
+
+- **Duração de stage não é duração direta da operação:** a sequência de stages mede
+  intervalos dentro da lane recortada. Para atribuir custo a Qdrant, permissão ou outra
+  chamada, use o `duration_ms` publicado pelo produtor. Um gap posterior é mostrado como
+  gap, não rebatizado como custo da etapa anterior.
+
+- **Log técnico não é auditor factual universal:** resposta não vazia, fontes,
+  documentos permitidos, cache, status e ausência de erro provam invariantes técnicos.
+  Não provam sozinhos a factualidade completa da resposta, o frescor universal do corpus
+  nem a correção semântica de cada frase. Essa avaliação exige um oracle documental ou
+  de negócio separado.
 
 ## 9. Impacto técnico
 

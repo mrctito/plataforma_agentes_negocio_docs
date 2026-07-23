@@ -46,7 +46,6 @@ Em termos praticos, isso permite responder perguntas operacionais como estas.
 
 - Quantos retrievers foram tentados?
 - Qual deles retornou documentos?
-- O FTS foi chamado?
 - O cache foi hit ou miss?
 - Houve erro no retriever ou apenas zero resultados?
 
@@ -59,7 +58,6 @@ Blocos confirmados no codigo:
 - roteamento
 - analise_query
 - expansao_query
-- bm25
 - processadores_dominio
 - resultado_retrieval
 - controle_acesso
@@ -95,7 +93,6 @@ Riscos praticos que essa etapa ajuda a detectar:
 - rewrite rejeitado por baixa similaridade;
 - router escolhendo estrategia inesperada;
 - retriever sem resultados;
-- falha de FTS;
 - cache devolvendo resultado reutilizado;
 - ACL removendo todos os documentos;
 - LLM lento ou indisponivel.
@@ -110,7 +107,7 @@ Sequencia pratica sugerida com base no codigo:
 2. Verificar pipeline_mode e motivo em QAQuestionProcessor.
 3. Inspecionar routing_decision e query_analysis no payload final.
 4. Ler retrieval_trace para entender quais tentativas aconteceram.
-5. Confirmar se houve FTS, fusao, cache ou fallback.
+5. Confirmar se houve fusao, cache ou fallback.
 6. Verificar access_control e denied_count.
 7. Confirmar llm_generation_time e token_usage.
 

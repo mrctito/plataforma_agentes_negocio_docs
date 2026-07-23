@@ -40,7 +40,7 @@ Pergunta: Onde sobe o worker oficial do produto?
 Resposta:
 O worker oficial não nasce no router nem no processor do PDF.
 Ele sobe por um entrypoint próprio e depois inicializa o runtime unificado do processo worker.
-Esse runtime exige Dramatiq e RabbitMQ para aceitar jobs assíncronos de ingestão e ETL.
+Esse runtime exige `ASYNC_JOB_CONSUMER_RUNTIME='job_core_polling'` (polling durável sobre o ledger PostgreSQL `job_core.job_runs`) para aceitar jobs assíncronos de ingestão e ETL — não há mais RabbitMQ nem Dramatiq nesse caminho.
 Se esse processo não estiver de pé, a API aceita o pedido, mas o trabalho não anda.
 
 Onde no código:
@@ -123,17 +123,17 @@ Onde no código:
 - `src/api/services/async_job_worker_payload_executor.py`
 
 ### 2.3.1
-Pergunta: Quando eu uso `IngestionJobExecutor` em vez de `schedule_prepared_ingestion_worker_job`?
+Pergunta: Quando eu uso `PreparedAsyncIngestionExecutionService` em vez de `IngestionJobExecutor`?
 
 Resposta:
-Use `schedule_prepared_ingestion_worker_job` quando a borda HTTP já tem o YAML pronto e quer publicar `prepared_yaml`.
+Use `PreparedAsyncIngestionExecutionService` quando a borda HTTP já tem o YAML pronto e quer publicar `prepared_yaml`.
 Use `IngestionJobExecutor` quando a borda ainda vai mandar o payload criptografado e deixar a resolução final para o worker com `resolve_on_worker`.
-Os dois caminhos continuam dentro do mesmo mecanismo canônico de jobs.
-O erro seria criar um terceiro publish local fora desses dois boundaries.
+Os dois caminhos continuam dentro do mesmo mecanismo canônico de jobs e hoje convergem para o mesmo publisher, `JobCoreRuntimeIngestionPublisher.publish` (`src/api/services/ingestion_job_executor.py`) — não existem mais dois publishers separados.
+O erro seria criar um terceiro publish local fora desse único boundary.
 
 Onde no código:
-- `src/api/services/ingestion_http_prepared_async_service.py` - `schedule_prepared_ingestion_worker_job`
-- `src/api/services/ingestion_job_executor.py`
+- `src/api/services/ingestion_http_prepared_async_service.py` - `PreparedAsyncIngestionExecutionService`
+- `src/api/services/ingestion_job_executor.py` - `JobCoreRuntimeIngestionPublisher.publish`
 
 ### 2.3.2
 Pergunta: O que o worker faz quando recebe `resolve_on_worker`?
@@ -167,12 +167,19 @@ Pergunta: Quando o fan-out documental é bloqueado?
 Resposta:
 Ele pode ser bloqueado antes e depois da publicação do filho.
 Antes, o coordenador barra fontes não elegíveis, como filesystem local não compartilhado.
-Depois, a gate canônica barra filhos quando o pai já terminou, falhou ou entrou em cancelamento.
+Depois, o próprio Job Core decide: o limite `max_active_children` do envelope controla quantos filhos daquele pai podem estar ativos ao mesmo tempo, e o `JobCoreCancellationToken` (o mesmo ledger que sabe se o pai está `cancelled`) barra um filho que acorda depois que o pai já terminou ou entrou em cancelamento.
 Isso evita filho fantasma rodando trabalho caro sem autorização válida do run pai.
+Não existe mais uma gate própria da ingestão para essa decisão — a antiga `DocumentFanoutExecutionGate` foi removida (2026-07-17); a admissão e o cancelamento são sempre do Job Core.
 
 Onde no código:
 - `src/services/document_fanout_coordinator.py`
-- `src/services/document_fanout_execution_gate.py` - `DocumentFanoutExecutionGate`
+- `src/core/job_core/models.py` - `JobEnvelope.max_active_children`
+- `src/api/services/async_job_worker_payload_executor.py` - `JobCoreCancellationToken.from_runtime_environment`
+
+Regra de fundo (nível 101): a ingestão só **planeja** o lote (quais documentos, quantos filhos
+quer); quem **controla** admissão e cancelamento é sempre o Job Core — nenhum outro domínio de
+background decide isso por conta própria. Detalhe técnico:
+`docs/tecnico/README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md`.
 
 ## 3. Execução, erros e logs
 
@@ -235,12 +242,12 @@ Pergunta: Como eu diferencio erro de API, fila, worker pai, worker filho e pipel
 Resposta:
 Olhe a falha como uma escada, não como um bloco único.
 Primeiro valide o boundary HTTP e o enqueue do job pai.
-Depois confirme o roteamento do payload no runtime Dramatiq e, por fim, a execução do filho e do pipeline PDF.
-Esse corte evita perder tempo depurando OCR quando o job nem chegou à fila certa.
+Depois confirme o claim do payload no runtime `job_core_polling` (não existe mais RabbitMQ/Dramatiq nesse transporte) e, por fim, a execução do filho e do pipeline PDF.
+Esse corte evita perder tempo depurando OCR quando o job nem chegou a ser reivindicado pelo worker.
 
 Onde no código:
 - `src/api/services/ingestion_http_prepared_async_service.py`
-- `src/api/services/async_job_dramatiq.py`
+- `src/api/services/job_core_worker_runtime.py` - `JobCoreWorkerPollingRuntime`
 - `src/services/document_fanout_child_executor_service.py`
 - `src/ingestion_layer/processors/pdf_processor.py`
 

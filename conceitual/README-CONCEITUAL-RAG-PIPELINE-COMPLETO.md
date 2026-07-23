@@ -34,7 +34,6 @@ Incluído neste escopo:
 - retrieval tradicional, híbrido, self-query e multi-query;
 - especialização para JSON e Excel quando confirmada no código;
 - cache semântico;
-- FTS;
 - fusão de resultados;
 - rerank;
 - ACL pós-retrieval;
@@ -58,7 +57,7 @@ Para liderança, esta feature importa porque reduz incerteza operacional. Em um 
 
 - A pergunta pode ter sido reescrita ou preservada.
 - O router pode ter escolhido busca híbrida, semântica, estruturada ou multi-query.
-- O FTS pode ter enriquecido ou não o resultado.
+- O router pode ter escolhido o híbrido nativo (dense+sparse) ou não.
 - A ACL pode ter removido os melhores documentos.
 - O cache semântico pode ter reaproveitado um resultado anterior.
 - O reranker pode ter reordenado o conjunto final.
@@ -114,13 +113,13 @@ O router é a peça que escolhe a estratégia de recuperação. Em vez de aplica
 
 A busca semântica tenta encontrar documentos por proximidade de significado. Ela é forte para perguntas abertas e conceituais, mas pode falhar quando a pergunta depende muito de termos exatos.
 
-### 7.6. BM25 e FTS
+### 7.6. BM25 provider-native
 
-BM25 e FTS são mecanismos lexicais. Eles são especialmente úteis quando o usuário busca nomes exatos, códigos, normas, colunas, siglas ou frases importantes. No projeto, o léxico não substitui o vetor. Ele complementa a recuperação.
+BM25 é o mecanismo lexical do projeto. Ele é especialmente útil quando o usuário busca nomes exatos, códigos, normas, colunas, siglas ou frases importantes. No projeto, o léxico não substitui o vetor: ele complementa a recuperação, e roda inteiramente dentro do vector store (Qdrant ou Azure Search) — não existe mais índice, vocabulário ou motor de busca textual (FTS) mantido pela aplicação em PostgreSQL.
 
 ### 7.7. Busca híbrida
 
-Busca híbrida combina sinais diferentes, normalmente vetor e léxico. O código suporta tanto uma forma nativa, quando o vector store sabe fazer hybrid search sozinho, quanto uma forma manual, em que o sistema combina resultados e aplica fusão depois.
+Busca híbrida combina sinais diferentes, vetor denso e sinal lexical (BM25), dentro do próprio vector store. O código resolve isso apenas pela capacidade nativa do provider configurado em `vector_store.type` (Qdrant ou Azure Search); não existe mais um caminho manual em que a aplicação combina resultados de retrievers separados fora do provider.
 
 ### 7.8. Self-query
 
@@ -156,7 +155,7 @@ O fluxo canônico começa em uma fachada de serviço que recebe a pergunta, reso
 4. A query é analisada semanticamente.
 5. O router decide a estratégia de recuperação.
 6. O retrieval é executado com o processador escolhido.
-7. O sistema pode aplicar cache, FTS, fusão, deduplicação e rerank.
+7. O sistema pode aplicar cache, fusão, deduplicação e rerank.
 8. A ACL remove documentos proibidos.
 9. O LLM recebe contexto formatado e gera a resposta.
 10. O serviço enriquece o retorno com diagnósticos, telemetria e fontes.
@@ -205,7 +204,7 @@ Esta é a etapa que efetivamente busca documentos. O runtime suporta múltiplos 
 
 ### 9.7. [Pós-retrieval](README-CONCEITUAL-RAG-PIPELINE-COMPLETO-POS-RETRIEVAL.md)
 
-Depois de recuperar documentos, o sistema ainda pode fundir rankings, deduplicar chunks, acionar FTS, aplicar cache, reordenar resultados e filtrar por ACL.
+Depois de recuperar documentos, o sistema ainda pode fundir rankings, deduplicar chunks, aplicar cache, reordenar resultados e filtrar por ACL.
 
 ### 9.8. [Geração final](README-CONCEITUAL-RAG-PIPELINE-COMPLETO-GERACAO-FINAL.md)
 
@@ -213,7 +212,7 @@ Só então a resposta é gerada com LLM. A geração recebe contexto formatado, 
 
 ### 9.9. [Diagnóstico e observabilidade](README-CONCEITUAL-RAG-PIPELINE-COMPLETO-DIAGNOSTICO-E-OBSERVABILIDADE.md)
 
-Ao final, o payload carrega métricas, decisão de roteamento, traço de retrieval, status de hybrid retry quando presente, estatísticas BM25 e resumo de controle de acesso. Isso faz parte da feature, não é detalhe cosmético.
+Ao final, o payload carrega métricas, decisão de roteamento, traço de retrieval, status de hybrid retry quando presente e resumo de controle de acesso. Isso faz parte da feature, não é detalhe cosmético.
 
 ## 10. Pipeline principal
 
@@ -247,8 +246,7 @@ Comparando com o padrão de mercado mais simples, o projeto está acima do RAG i
 
 - Tem query preprocessing real, não apenas embedding da pergunta original.
 - Tem query router, em vez de uma única estratégia fixa.
-- Tem busca híbrida explícita, com forma nativa e manual.
-- Tem FTS como enriquecimento ou fallback lexical.
+- Tem busca híbrida nativa explícita (dense+sparse), resolvida pela capacidade do provider (Qdrant/Azure).
 - Tem cache semântico na camada de retrieval.
 - Tem especialização para dados estruturados JSON e Excel.
 - Tem ACL pós-retrieval.
@@ -294,10 +292,9 @@ O mais importante aqui é a filosofia geral: o projeto evita esconder indisponib
 O pipeline foi desenhado para deixar rastros úteis.
 
 - O QuestionService extrai retrieval_metrics para log.
-- O PipelineDiagnosticsBuilder resume BM25, métodos de retrieval, resultado do retrieval e efeito da ACL.
+- O PipelineDiagnosticsBuilder resume roteamento, métodos de retrieval, resultado do retrieval e efeito da ACL.
 - O orchestrator anexa retrieval_trace com cada tentativa relevante.
 - O cache semântico registra hit, miss e motivo.
-- O FTS registra quando foi ignorado, acionado ou finalizado.
 - O JSON/Excel especializado registra detector, modo de coleta e falhas de completude.
 
 Na prática, isso permite responder perguntas operacionais como:
@@ -305,7 +302,6 @@ Na prática, isso permite responder perguntas operacionais como:
 - a pergunta foi reescrita ou não;
 - o router escolheu híbrido, semântico ou estruturado;
 - houve cache hit;
-- o FTS entrou como augment ou fallback;
 - a ACL removeu todos os documentos;
 - a especialização Excel foi acionada ou descartada.
 
@@ -335,7 +331,7 @@ Estrategicamente, esta é uma das peças que mais fortalecem a plataforma como p
 
 Cenário: o usuário pede explicação sobre um conceito técnico sem citar norma nem código.
 
-O pipeline tende a manter a pergunta no caminho semântico. O router entende que não há sinal forte de busca literal. O resultado esperado é recuperação vetorial tradicional, possível enriquecimento FTS se configurado e resposta final com fontes.
+O pipeline tende a manter a pergunta no caminho semântico. O router entende que não há sinal forte de busca literal. O resultado esperado é recuperação vetorial tradicional e resposta final com fontes.
 
 ### 20.2. Pergunta com código normativo ou termo exato
 
@@ -382,9 +378,9 @@ Isso é melhor do que mandar a pergunta direto para o redator porque o redator s
 
 ### Sintoma: resposta vazia ou sem documentos
 
-Causa provável: estratégia de retrieval inadequada, query pobre, FTS não acionado ou ACL removendo tudo.
+Causa provável: estratégia de retrieval inadequada, query pobre ou ACL removendo tudo.
 
-Como confirmar: verificar resultado_retrieval, bm25, retrieval_trace e controle_acesso nos diagnósticos.
+Como confirmar: verificar resultado_retrieval, retrieval_trace e controle_acesso nos diagnósticos.
 
 ### Sintoma: pergunta sobre Excel retorna erro explícito
 
@@ -394,7 +390,7 @@ Como confirmar: verificar logs e metadados do JSONSpecializedRAGExcel, especialm
 
 ### Sintoma: latência irregular
 
-Causa provável: ausência de cache hit, uso de multi-query, rerank, busca híbrida nativa com retry ou FTS acionado.
+Causa provável: ausência de cache hit, uso de multi-query, rerank ou busca híbrida nativa com retry.
 
 Como confirmar: verificar retrieval_trace, hybrid_retry_status, métricas de pipeline e telemetria do cache.
 
@@ -412,7 +408,7 @@ Como confirmar: comparar source_documents, sources e resposta final; inspecionar
 - Entendi por que o router escolhe estratégias diferentes.
 - Entendi a diferença entre busca semântica, híbrida, multi-query e self-query.
 - Entendi a especialização para JSON e Excel.
-- Entendi o papel de FTS, cache semântico, fusão e rerank.
+- Entendi o papel do BM25 provider-native, cache semântico, fusão e rerank.
 - Entendi o papel da ACL pós-retrieval.
 - Entendi os limites do tratamento de PDF no lado de recuperação.
 - Entendi como diagnosticar problemas no pipeline.
@@ -437,8 +433,8 @@ Como confirmar: comparar source_documents, sources e resposta final; inspecionar
 
 - src/qa_layer/rag_engine/retrieval_engine.py
   - Motivo da leitura: execução das estratégias de retrieval.
-  - Símbolo relevante: execute_hybrid_processor, execute_self_query_processor, execute_multi_query_processor, execute_json_processor, maybe_enrich_with_fts.
-  - Comportamento confirmado: híbrido nativo/manual, self-query, multi-query, FTS, cache semântico, JSON/Excel especializado.
+  - Símbolo relevante: execute_hybrid_processor, execute_self_query_processor, execute_multi_query_processor e execute_json_processor.
+  - Comportamento confirmado: híbrido provider-native, self-query, multi-query, cache semântico e JSON/Excel especializado.
 
 - src/qa_layer/rag_engine/query_analyzer.py
   - Motivo da leitura: análise semântica da pergunta.

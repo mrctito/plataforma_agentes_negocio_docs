@@ -189,6 +189,87 @@ const client = new RAGAPIClient('http://localhost:8000');
 })();
 ```
 
+## 🔑 Acesso por API Key (YAML governado no servidor — sem enviar YAML)
+
+### O que é
+
+Além do modo em que o cliente envia o YAML (cifrado ou inline), a plataforma suporta um modo mais simples para o integrador: o YAML fica **publicado dentro da plataforma** (tabela `tenant_yaml`, versionado e imutável após publicado) e vinculado a uma **API key** emitida pelo administrador. O cliente não vê, não envia e não gerencia YAML nenhum — só apresenta a chave no header `X-API-Key`, e o servidor resolve sozinho o tenant e a configuração.
+
+Use este modo quando o consumidor da API for um cliente externo: ele recebe apenas a chave, e toda a governança da configuração (conteúdo, versão, troca de versão, revogação) fica do lado da plataforma.
+
+### Como funciona por baixo
+
+1. O administrador publica o YAML na plataforma (nova linha em `tenant_yaml`, com `status='active'` e `published_at` preenchido) e emite uma chave no formato `pk_<ambiente>_<aleatório>` vinculada a essa versão (`key_kind='tenant_yaml'`). O banco guarda apenas o hash SHA-256 da chave — o segredo é exibido uma única vez na emissão.
+2. A cada request com `X-API-Key`, o servidor localiza a chave pelo hash, valida tenant ativo, vínculo íntegro (mesmo tenant e ambiente) e YAML publicado, e carrega o `yaml_content` do banco como configuração da execução.
+3. A mesma chave também autentica a permissão da operação (ex.: permissão `rag` autoriza `rag.ask`, `rag.ingest` etc. pela hierarquia de permissões).
+
+Importante: a chave funciona somente no ambiente em que foi emitida (`pk_prod_...` só na API de produção) e só enquanto o tenant estiver ativo, a chave não estiver revogada/expirada e o YAML vinculado continuar publicado.
+
+### Exemplo — pergunta RAG com curl
+
+```bash
+curl -X POST "https://SUA-URL-DA-API/rag/execute" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: pk_prod_SUA_CHAVE_AQUI" \
+  -d '{
+    "operation": "ask",
+    "payload": {
+      "question": "Qual a espessura mínima de revestimento asfáltico prevista na norma?",
+      "user_email": "usuario@cliente.com.br"
+    }
+  }'
+```
+
+Repare: **nenhum campo de YAML** (`encrypted_data`, `yaml_inline_content`, `yaml_config_path`) é enviado. É a ausência de YAML explícito + presença da chave que aciona a resolução governada.
+
+### Exemplo — Python
+
+```python
+import requests
+
+API_URL = "https://SUA-URL-DA-API"
+API_KEY = "pk_prod_SUA_CHAVE_AQUI"
+
+resposta = requests.post(
+    f"{API_URL}/rag/execute",
+    headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
+    json={
+        "operation": "ask",
+        "payload": {
+            "question": "Qual a espessura mínima de revestimento asfáltico prevista na norma?",
+            "user_email": "usuario@cliente.com.br",
+        },
+    },
+    timeout=120,
+)
+resposta.raise_for_status()
+dados = resposta.json()
+print(dados["answer"])            # resposta gerada
+print(dados["correlation_id"])    # guarde para suporte/auditoria
+for fonte in dados.get("sources", []):
+    print("Fonte:", fonte)
+```
+
+### Campos relevantes da resposta
+
+| Campo | O que é |
+|---|---|
+| `answer` | Resposta final gerada |
+| `correlation_id` | Identificador da execução — **sempre** guarde/logue; é a referência para suporte e auditoria |
+| `sources` / `source_documents` | Fontes usadas na resposta |
+| `task_id`, `polling_url`, `stream_url` | Presentes quando a execução cair no modo assíncrono |
+
+### Erros a evitar
+
+- **Esquecer o header** → `401` com "Cabeçalho X-API-Key é obrigatório".
+- **Chave errada, revogada ou de outro ambiente** → `403` (a mensagem indica a permissão exigida e a chave mascarada).
+- **Chave sem binding de YAML** (`key_kind` comum de tenant) → a resolução governada rejeita com motivo explícito (ex.: `key_without_yaml_binding`, `yaml_unpublished`); peça ao administrador para emitir uma chave do tipo correto.
+- **Enviar YAML junto com a chave esperando o binding**: se o request trouxer YAML explícito, ele tem precedência — o binding só é usado quando nenhum YAML vem no payload.
+
+### Governança de versões (lado administrador)
+
+Linha publicada de `tenant_yaml` é **imutável** (trigger rejeita UPDATE/DELETE quando referenciada por release). Para mudar a configuração do cliente: publicar **nova linha** (nova versão) e **religar** a chave (`tenant_access_keys.tenant_yaml_id`) para a nova versão — a chave do cliente continua a mesma, sem redistribuição. Emissão operacional: `.claude/scripts/postgresql/issue_tenant_yaml_access_key.py` (o segredo sai uma única vez, em arquivo sob `.sandbox/tmp/`).
+
 ## 🔒 Entendendo a Criptografia (ELI5)
 
 Pense assim: o YAML é um pacote sensível. Você coloca esse pacote em um cofre (Fernet), e depois coloca a chave do cofre em um envelope lacrado para o servidor (RSA-OAEP). Só o servidor consegue abrir esse envelope.

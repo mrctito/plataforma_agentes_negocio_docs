@@ -136,7 +136,8 @@ ingênuo.
   faixa C?", o trecho certo pode **não** ser o mais próximo da pergunta em linguagem natural.
 - **Gap de vocabulário.** O usuário pergunta com as palavras dele; a norma usa o termo técnico. Os
   vetores não casam. E há identificadores **exatos** (número da norma, código de ensaio, sigla) que
-  **só** correspondência de palavra-chave (BM25/FTS) acerta — busca puramente vetorial erra.
+  **só** correspondência de palavra-chave (o BM25 esparso nativo do vector store) acerta — busca
+  puramente vetorial erra.
 - **Sem rerank**, o top-k vem com ruído e o trecho certo fica em 8º lugar — **fora** da janela de
   contexto que vai pro LLM.
 - **Só vetor** perde o casamento exato; **só palavra-chave** perde a paráfrase. Sem **busca híbrida**,
@@ -179,7 +180,7 @@ aparece cedo**. A coluna "dor que resolve" remete às camadas da seção 2-A.2.
 | **Reescrita da consulta** (query rewrite) — RAG §9.4 | (6) pergunta curta/ambígua; (5) gap de vocabulário | Reescreve/expande a pergunta do usuário para o vocabulário do acervo antes de buscar. |
 | **Análise + roteamento** (query analysis/router) — RAG §9.5 | (6) toda pergunta tratada igual | Distingue factual × analítica × tabular e manda cada uma pelo caminho certo. |
 | **Self-query / multi-query** — RAG §7.8/§7.9 | (5) um ângulo de busca não basta | Recupera por **vários ângulos**/filtros, aumentando a chance de achar o trecho certo. |
-| **Busca híbrida (semântica + BM25/FTS)** — RAG §7.6/§7.7, §9.6 | (5) cosseno perde o exato; keyword perde a paráfrase | Casa **paráfrase** (vetor) **e** identificador exato (número da norma, código de ensaio, sigla) ao mesmo tempo. |
+| **Busca híbrida nativa (vetor denso + BM25 esparso do próprio vector store)** — RAG §7.6/§7.7, §9.6 | (5) cosseno perde o exato; keyword perde a paráfrase | Casa **paráfrase** (vetor) **e** identificador exato (número da norma, código de ensaio, sigla) ao mesmo tempo. |
 | **Rerank pós-retrieval** — RAG §7.11, §9.7 | (5) trecho certo fora do top-k | Reordena os candidatos e **puxa o trecho certo para dentro** da janela de contexto. |
 | **Cache semântico** — RAG §7.10 | custo e latência | Reaproveita respostas de perguntas semanticamente equivalentes. |
 | **ACL pós-retrieval** — RAG §7.12 | (6) vazamento entre escopos | Garante que cada resposta só use documentos que aquele usuário/projeto pode ver. |
@@ -261,24 +262,28 @@ OCR básico complementar é um passo posterior, acionado no fluxo rico quando o 
 
 ### 6.4. Engine determinística
 
-Engine determinística significa que a ordem de tentativa de parsing vem do YAML, e não de ifs escondidos no core. O resolvedor monta uma fila ordenada e cada engine só leva à próxima quando falha, devolve resultado insuficiente ou está indisponível conforme a política configurada.
+Engine determinística significa que **qual** engine roda vem do YAML (`processing.parsing.engine`), e não de ifs escondidos no core. O resolvedor canônico constrói **sempre uma única opção**: a engine escolhida roda uma vez, sem fila de alternativas e sem fallback. Se ela falhar de verdade, o documento aborta — nenhuma outra engine é chamada em seu lugar (`src/ingestion_layer/pdf_tools/deterministic_lego_pdf_parsing_engine.py`).
 
 ### 6.4.1. Arquitetura plug-and-play de engines
 
-No contexto deste projeto, plug-and-play não significa plugar qualquer biblioteca arbitrária e esperar que o core descubra sozinho como usá-la. Significa outra coisa, mais disciplinada: o runtime PDF foi desenhado para compor engines compatíveis dentro de uma fila ordenada por YAML, usando um contrato comum de options, modes, gatilhos e política de falha.
+No contexto deste projeto, plug-and-play não significa plugar qualquer biblioteca arbitrária e esperar que o core descubra sozinho como usá-la. Significa outra coisa, mais disciplinada: o runtime PDF conversa com qualquer engine compatível através de um contrato comum (`PdfParsingEngine`), e a escolha de qual delas roda é declarativa, feita no YAML.
 
-Na prática, isso cria uma arquitetura de composição. O parser comum lê a fila declarada, o resolvedor transforma cada item em uma engine suportada, a engine determinística decide quando a próxima deve entrar e o restante do pipeline continua neutro em relação ao nome da engine escolhida. O ganho operacional é importante: a plataforma pode reordenar, combinar, desativar ou tornar obrigatória uma engine sem reescrever o fluxo principal de PDF.
+Na prática, isso cria uma arquitetura de substituição, não de encadeamento. O resolvedor transforma a engine declarada em uma implementação suportada, o executor determinístico a roda, e o restante do pipeline continua neutro em relação ao nome da engine escolhida. O ganho operacional é trocar de engine sem reescrever o fluxo principal de PDF.
 
-Esse desenho também protege contra dois erros comuns. O primeiro erro seria hardcode no orquestrador, do tipo se a engine anterior for X, rode Y. O segundo erro seria fallback implícito por conveniência. O código observado evita os dois: a fila vem do contrato canônico, a passagem para a próxima engine depende de sinais objetivos e a política de falha fica explícita.
+Esse desenho protege contra dois erros comuns. O primeiro seria hardcode no orquestrador, do tipo se a engine anterior for X, rode Y. O segundo seria fallback implícito por conveniência — justamente o que a remoção da fila multi-opção eliminou: hoje não existe handoff entre engines por capacidade, e um erro real nunca é mascarado pela tentativa seguinte.
 
 O limite importante é este: a composição plug-and-play só vale para engines compatíveis com o contrato do runtime e efetivamente suportadas no resolvedor. Não existe promessa honesta de que qualquer engine externa entra sem implementação dedicada.
 
 ### 6.5. Failure policy
 
-Failure policy é a regra que decide o que fazer quando nenhuma engine alcança sucesso formal.
+Failure policy é a regra que decide o que fazer quando a engine não alcança sucesso formal. Hoje ela é **sempre** `strict_first_success` — o valor é fixo no código e existe apenas como campo de telemetria. **`best_effort` não existe mais**: não há resultado parcial aceito por conveniência.
 
-- `strict_first_success` aborta quando ninguém entrega sucesso aceitável.
-- `best_effort` permite devolver o melhor resultado parcial disponível.
+Os quatro desfechos possíveis, todos explícitos:
+
+- **sucesso formal** — o resultado normalizado da engine é retornado;
+- **erro real de parsing** (exceção genérica ou `parse()` devolvendo `None`) — aborta o documento, com a causa registrada; nenhuma outra engine é tentada;
+- **falha de recurso** (`PdfParsingResourceExhaustedError` ou `TimeoutError`, tipicamente estouro do timeout do subprocesso) — a tentativa é registrada e a exceção é relançada para o boundary documental, que converte o documento em `skipped` terminal. **O documento não volta para fila e não existe nova tentativa nesta rodada**; ele só reentra no ciclo se o usuário pedir nova ingestão (skip legítimo — ver `src/CLAUDE.md`, Parte 3, regra `vector_store.if_exists`);
+- **PDF só-scan sem texto extraível** com `skip_scanned_pdf=true` — skip limpo (`PdfScannedDocumentSkippedError`), categoria distinta de erro real. Sem esse toggle, o mesmo caso aborta.
 
 ### 6.6. Fluxo rico
 
@@ -333,9 +338,11 @@ Quando o fan-out documental é elegível, esse job inventaria os documentos, gra
 
 ### 7.3. O que o job filho faz
 
-O job filho executa uma unidade documental real. Ele recebe a referência do documento, valida se o pai ainda autoriza execução, respeita cancelamento cooperativo e só então chama a esteira especializada do PDF.
+O job filho executa uma unidade documental real. Ele recebe a referência do documento, respeita cancelamento cooperativo e chama a esteira especializada do PDF. Ele não pergunta "posso executar?" antes de começar: quem decide se um filho entra em execução é sempre o motor genérico de jobs (Job Core), no momento em que reivindica o trabalho — a ingestão não guarda essa decisão para si.
 
-Na prática, quando alguém fala que o sistema está processando PDFs em paralelo, o código atual quer dizer isto: vários jobs filhos podem estar executando documentos diferentes ao mesmo tempo, cada um passando pela mesma esteira PDF.
+Na prática, quando alguém fala que o sistema está processando PDFs em paralelo, o código atual quer dizer isto: vários jobs filhos podem estar executando documentos diferentes ao mesmo tempo, cada um passando pela mesma esteira PDF, sob controle do mesmo motor genérico de jobs. Esse motor é compartilhado por qualquer processamento em background da plataforma (ingestão, ETL, agendamento) — não é exclusivo do PDF. Visão conceitual completa:
+`docs/conceitual/README-CONCEITUAL-SISTEMA-JOBS-WORKER-PARALELISMO.md`; detalhe técnico:
+`docs/tecnico/README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md`.
 
 ### 7.4. Quando existe paralelismo de verdade
 
@@ -667,25 +674,25 @@ Esse encadeamento é o que impede o sistema de tratar todo PDF como se fosse igu
   - Símbolo relevante: `ingest_content`.
   - Comportamento confirmado: compõe YAML, resolve paralelismo, agenda o job pai e devolve contrato HTTP de acompanhamento.
 
-- `src/api/services/ingestion_http_prepared_async_service.py`
+- `src/api/services/ingestion_http_prepared_async_service.py` e `src/api/services/ingestion_job_executor.py`
   - Motivo da leitura: confirmar o agendamento do job pai preparado.
-  - Símbolo relevante: `schedule_prepared_ingestion_worker_job`.
-  - Comportamento confirmado: cria a linha do job na fila única (`SimpleAsyncPdfJobStore`, `job_type=ingestion_pdf`), abre o run de negócio vetorial compartilhado e envia ao dispatcher um sinal curto de wakeup via RabbitMQ.
+  - Símbolo relevante: `PreparedAsyncIngestionExecutionService.__call__`, que delega ao publisher único `JobCoreRuntimeIngestionPublisher.publish` (a antiga `schedule_prepared_ingestion_worker_job` foi removida quando os dois publishers convergiram para um só, 2026-07-17).
+  - Comportamento confirmado: persiste o envelope completo do job pai no ledger único do Job Core e devolve o acompanhamento sem executar o trabalho dentro da resposta HTTP.
 
-- `src/api/services/simple_async_pdf_dispatcher_rabbitmq.py`
-  - Motivo da leitura: entender o transporte assíncrono real da ingestão PDF.
-  - Símbolo relevante: `RabbitMqSimpleAsyncPdfDispatcherWakeupPublisher` e `SimpleAsyncPdfDispatcherRabbitMqRuntime`.
-  - Comportamento confirmado: a API só publica um sinal curto (wakeup) no RabbitMQ; o runtime do dispatcher, dentro do worker, consome esse sinal e aciona a linha de job já gravada na fila única.
+- `src/api/services/job_core_job_queue.py`
+  - Motivo da leitura: entender o transporte durável real da ingestão PDF.
+  - Símbolo relevante: `JobCoreJobQueue.publish_job_envelope`.
+  - Comportamento confirmado: o PostgreSQL recebe o envelope imutável e passa a ser fila e estado do job, sem sinal paralelo. Não existe RabbitMQ nem Dramatiq nesse caminho.
 
-- `src/api/services/simple_async_pdf_job_runtime.py`
+- `src/api/services/job_core_worker_runtime.py`
   - Motivo da leitura: entender como o job vira processamento paralelo real.
-  - Símbolo relevante: `dispatch_pending_simple_async_pdf_jobs` e `execute_simple_async_pdf_job_process`.
-  - Comportamento confirmado: o dispatcher executa a linha alvo, sobe um processo de job líder do process-group e cria vários *runners* em subprocesso; o paralelismo por documento nasce desses runners, não de filas pai/filha separadas.
+  - Símbolo relevante: `JobCoreWorkerPollingRuntime`.
+  - Comportamento confirmado: o worker faz claim atômico (`FOR UPDATE SKIP LOCKED`) apenas das rotas suportadas e executa os handlers com concorrência limitada e shutdown drenado.
 
 - `src/api/services/worker_process_runtime.py`
   - Motivo da leitura: confirmar o runtime oficial do worker.
   - Símbolo relevante: `build_worker_process_runtime` e `WorkerProcessRuntime.start`.
-  - Comportamento confirmado: exige backend e consumer RabbitMQ (`rabbitmq_polling`), valida o schema do ledger do Job Core e sobe o runtime unificado do worker, que compõe o dispatcher da fila simples de PDF e o runtime genérico de jobs.
+  - Comportamento confirmado: valida o schema do ledger e sobe o polling genérico do Job Core no processo worker.
 
 - `app/runners/worker_runner.py`
   - Motivo da leitura: entender o bootstrap do processo worker.
@@ -707,10 +714,9 @@ Esse encadeamento é o que impede o sistema de tratar todo PDF como se fosse igu
   - Símbolo relevante: `DocumentFanoutChildExecutorService.execute`.
   - Comportamento confirmado: executa um documento por vez, consulta a gate canônica e persiste estado terminal antes do ACK.
 
-- `tests/integration/test_03-01-34_simple_async_pdf_job_e2e.py`
-  - Motivo da leitura: confirmar o fluxo assíncrono real da ingestão PDF com evidência executável.
-  - Símbolo relevante: `test_quando_submit_offline_e_executado_entao_cria_job_pending_e_envia_wakeup_sem_processar`, `test_quando_dispatcher_roda_offline_entao_processa_pdfs_reais_e_fecha_job_com_success` e `test_dispatcher_cria_processo_do_job_nao_daemon_e_runners_daemon`.
-  - Comportamento confirmado: o submit grava o job pendente e envia o wakeup sem processar; o dispatcher processa PDFs reais e fecha o job com sucesso; o processo do job é não-daemon e os runners são daemons.
+- `tests/integration/test_03-01-23_job_core_runtime_durable_ledger.py`
+  - Motivo da leitura: confirmar o fluxo durável real do Job Core com evidência executável.
+  - Comportamento confirmado: criação, claim, execução e auditoria usam o mesmo ledger PostgreSQL.
 
 - `src/ingestion_layer/processors/pdf_processor.py`
   - Motivo da leitura: entrypoint real, bootstrap, decisões de OCR básico, multimodalidade, chunking e checkpoint.
@@ -745,7 +751,7 @@ Esse encadeamento é o que impede o sistema de tratar todo PDF como se fosse igu
 - `src/ingestion_layer/pdf_tools/deterministic_lego_pdf_parsing_engine.py`
   - Motivo da leitura: semântica de tentativa e sucesso das engines.
   - Símbolo relevante: `DeterministicLegoPdfParsingEngine`.
-  - Comportamento confirmado: tenta engines em ordem, decide handoff e aplica `strict_first_success` ou `best_effort`.
+  - Comportamento confirmado: executa exatamente UMA engine (o resolvedor constrói sempre uma única opção); erro real aborta sem handoff para outra engine; falha de recurso é relançada e vira `skipped` terminal sem nova tentativa; `failure_policy` é sempre `strict_first_success`.
 
 - `src/ingestion_layer/processors/pdf_multimodal_application_service.py`
   - Motivo da leitura: trilha multimodal do PDF.

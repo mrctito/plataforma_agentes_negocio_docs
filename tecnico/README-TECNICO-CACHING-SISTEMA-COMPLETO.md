@@ -244,7 +244,7 @@ Pense no epoch como o "número da temporada" do cache. Toda chave de cache persi
 
 ### Em quais caches o epoch entra
 
-Apenas nos caches que vivem no Redis e sobrevivem a restart: RAG semântico, embeddings, BM25, cache de YAML, LLM cache, web scraping, deduplicação, mídia WhatsApp e documentos do Drive. Caches em memória de processo **não** recebem o epoch (eles já morrem no restart; quem os invalida é o sinal de timestamp da seção 11).
+Apenas nos caches que vivem no Redis e sobrevivem a restart: RAG semântico, embeddings, cache de YAML, LLM cache, web scraping, deduplicação, mídia WhatsApp e documentos do Drive. Caches em memória de processo **não** recebem o epoch (eles já morrem no restart; quem os invalida é o sinal de timestamp da seção 11).
 
 ### O que o epoch NÃO toca
 
@@ -273,7 +273,6 @@ O router administrativo de cache expõe endpoints para:
 - rotacionar o epoch global de cache (descartar a geração corrente — ver seção 11.1);
 - resetar cache de credential manager;
 - flush de Redis;
-- reset de BM25;
 - invalidar cache de LLM;
 - invalidar tools;
 - invalidar YAML;
@@ -324,8 +323,7 @@ O snapshot Redis administrativo confirma contagem e alguns agrupamentos para:
 
 - embeddings, agrupados por namespace;
 - mídias de WhatsApp;
-- progress_registry;
-- cache BM25, incluindo prefixes e detalhes por vectorstore.
+- progress_registry.
 
 Esse ponto é importante porque mostra que o Redis do projeto abriga mais de uma família de cache observável, e que a operação administrativa já diferencia esses grupos.
 
@@ -518,12 +516,12 @@ O código deste projeto prefere depósitos especializados, com chaves previsíve
 - src/api/services/admin/cache_service.py
   - Motivo da leitura: confirmar composição do payload operacional.
   - Símbolos relevantes: get_cache_stats, get_memory_snapshot.
-  - Comportamento confirmado: visão por tenant, por categoria em memória e por grupos Redis como embeddings, mídias, progresso e BM25.
+  - Comportamento confirmado: visão por tenant, por categoria em memória e por grupos Redis como embeddings, mídias e progresso.
 
 - src/api/routers/admin/admin_runtime_router.py
   - Motivo da leitura: confirmar taxonomia administrativa das chaves Redis.
   - Símbolos relevantes: _collect_redis_cache_stats.
-  - Comportamento confirmado: Redis stats agrupando namespaces de embeddings, WhatsApp media, progress registry e BM25.
+  - Comportamento confirmado: Redis stats agrupando namespaces de embeddings, WhatsApp media e progress registry.
 
 ## 23. Catálogo de tipos de cache (o que cada um guarda e como se comporta)
 
@@ -537,7 +535,6 @@ São os que sobrevivem a restart e são descartados pela rotação de epoch. Tod
 | --- | --- | --- |
 | Cache semântico (RediSearch / Qdrant / Azure Search) | Resposta+documentos já recuperados para uma pergunta equivalente; evita refazer embedding da pergunta e o retrieval inteiro | Alto (re-embedding + retrieval) |
 | Cache de embeddings | Vetores já calculados (texto → vetor); evita rechamar a API de embeddings | Alto (custo de API e latência) |
-| Cache BM25 | Índice BM25 serializado (vocabulário e tokenização) por vector store | Alto (re-tokeniza e recalcula IDF) |
 | Cache de YAML resolvido | Configuração YAML já parseada/resolvida, indexada por hash do conteúdo | Médio (reparse) |
 | Cache de LLM | Resposta do modelo para um par (prompt, assinatura); evita rechamar o LLM | Alto (chamada ao LLM) |
 | Cache de web scraping | Resultado de scraping por URL | Médio |

@@ -101,16 +101,24 @@ publicadas no manifesto e oferecidas pelo plano viram produto.
 ![4. Planos, assinaturas e entitlements — APLICADO](../assets/diagrams/docs-tecnico-readme-schema-banco-diagrama-04.svg)
 
 O entitlement físico é por projeto e operação: `agent`, `rag`, `ingest` ou `etl`.
-Não existe `agent_id`, `workflow_id`, supervisor ou subagente nessas tabelas. O plano não
-define preço/moeda/gateway final; `provider_config_json` mantém o DDL provider-neutral até a
-decisão comercial. Preferências aceitam apenas escalares JSON e não podem virar prompt livre.
+Não existe `agent_id`, `workflow_id`, supervisor ou subagente nessas tabelas. O DDL de `saas_plans`
+continua provider-neutral (preço/moeda/operações vivem em `provider_config_json`, jsonb), mas o
+boundary HTTP já expõe `PATCH .../plans/{plan_id}` e `POST .../plans/{plan_id}/status`
+(`src/api/services/saas_http_service.py:update_plan/set_plan_status`), que fazem `UPDATE` puro nesse
+jsonb — sem DDL — para editar nome/operações/preço/moeda e transicionar
+`active/inactive/archived`. Preferências aceitam apenas escalares JSON e não podem virar prompt livre.
 Em produção existe o catálogo-base de cinco planos `simulated-free`. As jornadas reais também
 deixaram registros auditáveis de prova: projetos arquivados, assinaturas canceladas,
 entitlements revogados e eventos do provider. O estado inspecionado após a rodada funcional de
 2026-07-12 contém nove assinaturas, quatro ativas, 22 eventos e 24 entitlements, dos quais dez
 ativos. Esses registros não
-são ofertas com cobrança real. O provider T12 é somente `simulated`, R$ 0,00, sem rede,
-cobrança ou dado de cartão.
+são ofertas com cobrança real. O provider T12 é somente `simulated`, e o `SaasCommercialService`
+recusa operar (`_require_prod`) quando `ENVIRONMENT` do processo não é `prod` — checkout, transição
+de assinatura e concessão/revogação de entitlement só existem hoje em produção. As leituras
+administrativas de projeto/release/plano, por outro lado, já derivam `environment` do segregador
+canônico do processo (`SaasHttpRepository.environment`), não de um literal fixo. Preço/moeda por
+plano deixaram de ser fixos em zero: o boundary aceita `UPDATE` de `provider_config_json` por
+`PATCH .../plans/{plan_id}`, mas o catálogo-base seed permanece R$ 0,00 até alguém editar.
 
 O tenant `pdv-vendas` possui exatamente uma linha em `tenant_security_keys`, identificada por
 `pdv-vendas-agentic-v1`. Seu `keys_json` contém somente sete referências `${ENV}`; nenhum valor
@@ -483,7 +491,7 @@ Exemplo: Ana assina o plano do projeto DNIT. Os entitlements permitem `rag` e `i
 resolve a release ativa e executa Q&A. Publicar release 2 não muda a assinatura de Ana; rollback
 para release 1 troca apenas o ponteiro ativo.
 
-### Estado do modelo de ingestão vetorial `vector_*` (comprovado em runtime — 2026-07-10)
+### Estado do modelo de ingestão vetorial `vector_*` (comprovado em runtime — 2026-07-20)
 
 Existe um **modelo novo de ingestão vetorial** (família `vector_*`: `vector_dataset_master`,
 `vector_ingestion_runs`, `vector_ingestion_run_documents`, `vector_active_documents` e tabelas
@@ -491,7 +499,7 @@ filhas de chunks/páginas). Após a migração `migracao-modelo-vetorial-ingesta
 **comprovado na fonte de verdade real** (PostgreSQL) é:
 
 - **Escrita ligada e provada:** o caminho assíncrono de ingestão de PDF (com fan-out por
-  documento) GRAVA no modelo novo — abre o run de negócio, registra os documentos vistos no
+  documento) GRAVA no modelo novo — abre o registro factual do lote, registra os documentos vistos no
   lote (com `publication_action`) e publica o acervo vivo. Provado para o dataset de TESTE
   `dnit_teste` (tenant `engenharia_dnit`): `vector_ingestion_runs`=1,
   `vector_ingestion_run_documents`=11, `vector_active_documents`=5.
@@ -502,13 +510,11 @@ filhas de chunks/páginas). Após a migração `migracao-modelo-vetorial-ingesta
 - **Produção materializada:** `dnit_producao` possui 510 documentos ativos no modelo novo.
   A fonte de verdade do acervo é `vector_active_documents`; páginas, chunks e imagens usam as
   respectivas filhas `vector_active_document_*`.
-- **Separação atual confirmada:** `vector_*` concentra o modelo de negócio e o controle do
-  fan-out. O lease de execução vive de forma compacta em
-  `vector_ingestion_run_documents.metadata.document_fanout_execution_lease`; a aquisição é
-  serializada por uma trava transacional curta no respectivo `vector_ingestion_runs`.
-  Os fluxos operacionais de run e documento já foram cortados integralmente para essas tabelas.
-  Configuração manual de domínio permanece no YAML; somente `auto_config` específico do dataset
-  é persistido em `vector_dataset_master.metadata.domain_specific_processing`.
+- **Separação atual confirmada:** `vector_*` concentra somente o modelo de negócio e os fatos
+  documentais. Paralelismo, claim, fila, lease, heartbeat, cancelamento e terminalização vivem
+  exclusivamente no Job Core. Configuração manual de domínio permanece no YAML; somente
+  `auto_config` específico do dataset é persistido em
+  `vector_dataset_master.metadata.domain_specific_processing`.
 
 ## Que problema este manual resolve
 
@@ -548,12 +554,11 @@ contratos espalhados.
 - O tipo `public.ingestion_document_type` é uma dependência obrigatória para as tabelas de ingestão que o utilizam.
 - Há colunas geradas automaticamente pelo banco:
 - `ingestion_document_manifest.status` espelha `ingestion_status`.
-- `vector_active_document_chunks.fts_content` gera o índice textual a partir de `chunk_text`.
 - `interaction_runs.total_tokens` soma `input_tokens` e `output_tokens`.
 
 ## Regra de Integridade do Dataset de Ingestão
 
-- Para o produto, BM25, PostgreSQL e banco vetorial formam um único dataset operacional do acervo.
+- Para o produto, PostgreSQL e banco vetorial formam um único dataset operacional do acervo. O BM25 roda dentro do próprio banco vetorial (`qdrant/bm25` no Qdrant, `BM25SimilarityAlgorithm` no Azure Search) e não tem materialização, vocabulário ou índice lexical próprio em PostgreSQL.
 - O eixo lógico desse dataset é `tenant_code + vectorstore_id`.
 - O parâmetro `vector_store.if_exists` deve reger o conjunto vivo inteiro do acervo, e não apenas o provider vetorial.
 - Regra obrigatória de identidade: `vectorstore_id` é sempre o identificador lógico do acervo. Ele não é o nome físico garantido do provider.
@@ -565,32 +570,28 @@ contratos espalhados.
 - Regra de compatibilidade: target físico legado já persistido continua válido enquanto estiver ativo no lifecycle. O runtime não pode recalcular o nome físico por conveniência nem substituir silenciosamente o valor salvo no banco.
 - Em termos práticos, `overwrite`, `update` e `skip` precisam produzir o mesmo efeito semântico sobre:
 - projeção ativa `vector_active_documents` e suas tabelas filhas,
-- índice BM25 persistido,
-- banco vetorial ativo, seja Qdrant ou Azure Search.
-- Regra operacional de `overwrite`: a limpeza destrutiva do dataset vivo remove o acervo `vector_*` publicado (`vector_active_documents` e filhas) e o BM25 materializado.
-- Histórico operacional, auditoria, runs e evidências de execução não fazem parte da limpeza destrutiva do dataset vivo e devem seguir política própria de retenção.
-- Consequência prática de `overwrite`: `vector_ingestion_runs` e `vector_ingestion_run_documents` permanecem preservados como trilha operacional; `vector_active_documents` e filhas representam o acervo publicado.
+- banco vetorial ativo, seja Qdrant ou Azure Search (já inclui o sparse BM25 nativo).
+- Regra operacional de `overwrite`: a limpeza destrutiva do dataset vivo remove o acervo `vector_*` publicado (`vector_active_documents` e filhas); o BM25 é removido junto com o próprio alvo vetorial (collection Qdrant / índice Azure Search), sem materialização separada em PostgreSQL.
+- Histórico factual de lotes e documentos não faz parte da limpeza destrutiva do dataset vivo e deve seguir política própria de retenção. O histórico de execução pertence ao ledger do Job Core.
+- Consequência prática de `overwrite`: `vector_ingestion_runs` e `vector_ingestion_run_documents` permanecem preservados como trilha factual; `vector_active_documents` e filhas representam o acervo publicado.
 - Consequência obrigatória: o sistema não pode considerar sucesso quando apenas uma dessas materializações foi atualizada e as demais ficaram antigas.
-- A auditoria operacional atual compara cada PDF ativo com suas materializações no PostgreSQL/FTS,
-  BM25 e provider vetorial. O Analyze Log registra e resume inconsistências observadas durante a
-  ingestão; a tela Vector Store v3 também executa uma leitura atual do dataset e lista nominalmente
-  os PDFs divergentes, permitindo reprocessar somente os documentos afetados.
-- Em `vector_active_document_chunks`, `fts_content IS NOT NULL` prova que a projeção FTS foi
-  materializada. Um `tsvector` materializado sem lexemas continua íntegro, mas é informado
-  separadamente como não pesquisável. Assim, texto sem termos indexáveis não vira falso positivo de
-  corrupção.
+- A auditoria operacional atual compara cada PDF ativo com suas materializações no PostgreSQL e no
+  provider vetorial (que já inclui o sparse BM25 nativo). O Analyze Log registra e resume
+  inconsistências observadas durante a ingestão; a tela Vector Store v3 também executa uma leitura
+  atual do dataset e lista nominalmente os PDFs divergentes, permitindo reprocessar somente os
+  documentos afetados.
 
 ## Relações Principais
 
 - `vector_dataset_master` é a entidade central do dataset vivo por `tenant_code` e `vectorstore_id`.
-- `vector_ingestion_runs` materializa o histórico de negócio de cada lote publicado ou tentado no modelo novo.
-- `vector_ingestion_runs` representa a execução pai e `vector_ingestion_run_documents` guarda o detalhe de cada documento, inclusive o lease efêmero de execução do fan-out em metadata.
+- `vector_ingestion_runs` materializa identidade, origem e agregados factuais de cada lote publicado ou tentado no modelo novo.
+- `vector_ingestion_run_documents` guarda o resultado terminal factual de cada documento; nenhum dos dois governa execução, lease ou lifecycle.
 - `interaction_runs` representa a execução principal de uma interação e `interaction_run_events` guarda os eventos associados.
 - O schema `job_core` concentra o ledger canônico do runtime assíncrono de jobs, por meio de `job_core.job_runs` e `job_core.job_run_events`.
 - O schema `ag_ui` concentra o replay durável do protocolo AG-UI, separando a trilha visual de runs e threads do ledger de background e do histórico genérico de interação.
-- O schema `scheduler` concentra a agenda canônica e o ledger canônico de execução, por meio de `scheduler.scheduled_jobs` e `scheduler.job_executions`.
+- O schema `scheduler` mantém a agenda factual em `scheduler.scheduled_jobs`. A estrutura física histórica `scheduler.job_executions`, quando presente, não possui caminho ativo de claim/status/retry/terminalização e não é fonte de runtime; ocorrências são submetidas idempotentemente ao Job Core.
 - `agent_hil_approval_requests` representa a pausa Human-in-the-Loop assíncrona de agentes em background, guardando o pedido de aprovação, o canal esperado, o token seguro, a decisão e a trilha mínima de auditoria para retomada.
-- O schema `agent_background` concentra a capacidade de Execução Agentic em Background, separando alvo autorizado, solicitação criada por prompt, projeção compatível de run, eventos, HIL durável ligado ao run e outbox operacional.
+- O schema `agent_background` preserva fatos do domínio de Execução Agentic em Background: alvo autorizado, solicitação, identidade do agregado, eventos, HIL durável e outbox. Nenhuma tabela desse schema governa lifecycle de job.
 - `user_accounts` é a entidade central da conta pessoal do usuário.
 - `user_auth_identities`, `user_password_credentials` e `user_account_payment_cards` dependem de `user_accounts`.
 - `tenants` é a entidade central do domínio de organizações.
@@ -605,32 +606,11 @@ contratos espalhados.
 
 ## Domínio Estado e Checkpoints
 
-### bm25_indexes
-
-- Finalidade prática: persistir o índice BM25 pela materialização física da geração ativa ou preparada.
-- Papel no dataset vivo: esta tabela faz parte do mesmo conjunto operacional do acervo controlado por `tenant_code + vectorstore_id`, mas a chave operacional do BM25 é física, não lógica. Na prática, ela representa o índice textual da geração materializada apontada pelo lifecycle do dataset.
-- Chave primária: `bm25_target_id`.
-- Colunas:
-- `bm25_target_id`: identificador físico do índice BM25 materializado para uma geração específica.
-- `tenant_code`: tenant dono do índice materializado.
-- `vectorstore_id`: identificador lógico do acervo, mantido para diagnóstico e filtros operacionais.
-- `generation_id`: geração do dataset à qual este índice BM25 pertence.
-- Leitura correta em 101: apesar do nome histórico, `generation_id` já funciona no contrato novo
-  como token opaco de identidade/publicação do alvo BM25. Ele não deve mais ser tratado como
-  foreign key obrigatória para `ingestion_dataset_generations`.
-- `schema_version`: versão do formato persistido.
-- `entries_count`: quantidade de entradas no índice.
-- `documents_count`: quantidade de documentos representados.
-- `checksum`: hash de integridade do índice persistido.
-- `owner_email`: e-mail do responsável, quando existir.
-- `payload`: conteúdo serializado do índice em `bytea`.
-- `created_at`: criação do registro.
-- `updated_at`: última atualização do registro.
-- `detection_keywords`: palavras auxiliares de detecção em `jsonb`.
-- `query_expansion_vocabulary`: vocabulário auxiliar para expansão em `jsonb`.
-- `vocabulary_stats`: estatísticas do vocabulário em `jsonb`.
-- `last_vocabulary_at`: última atualização do vocabulário derivado.
-- Índices e restrições: PK em `bm25_target_id`; índice operacional por `tenant_code, vectorstore_id, generation_id`. O nome `generation_id` foi preservado por compatibilidade, mas o contrato atual já o trata como token opaco e não mais como FK mandatória do lifecycle antigo.
+> `bm25_indexes` (índice BM25 materializado por `bm25_target_id`, com vocabulário/estatísticas em
+> `jsonb`) foi removida do PostgreSQL. Confirmado na fonte física: `information_schema.tables` não
+> lista mais essa tabela. O BM25 passou a ser provider-native (roda dentro do Qdrant/Azure Search,
+> sem persistência lexical separada em PostgreSQL) — ver `README-TECNICO-RAG-PIPELINE-COMPLETO.md`
+> seção 5.5.
 
 ### checkpoint_migrations
 
@@ -690,26 +670,36 @@ contratos espalhados.
 
 ## Domínio Job Core
 
+O schema `job_core` materializa um único modelo genérico: uma entidade de job em
+`job_core.job_runs` e seu ledger de fatos em `job_core.job_run_events`. A segunda
+tabela não representa outro tipo de job nem outro processador; ela existe para que o histórico
+auditável não seja sobrescrito toda vez que o snapshot corrente muda. Eventos são acrescentados
+durante o lifecycle e só são removidos quando o próprio job terminal é excluído pela FK em cascata.
+
+O runtime, lifecycle e os boundaries estão descritos em
+[`README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md`](README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md).
+O schema não contém coluna específica de ingestão, ETL, PDF, backup, conciliação ou relatório.
+
 ### job_core.job_runs
 
-- Finalidade prática: registrar o ciclo de vida canônico de cada job assíncrono aceito pelo Job Core V1.
-- Papel operacional: esta tabela é o ledger principal do runtime assíncrono. Em termos simples, ela responde qual job entrou, qual handler ficou responsável, de qual correlação esse job faz parte, se ele é raiz ou filho, em que estado está e como terminou.
-- Relação com o transporte: o publish oficial monta `QueuedJobEnvelope`, o worker consome esse envelope e o Job Core persiste a evolução do job aqui. Isso separa claramente transporte de mensageria de estado operacional do trabalho.
+- Finalidade prática: registrar o ciclo de vida canônico de qualquer job aceito pelo Job Core.
+- Papel operacional: esta tabela é o snapshot principal e também a fila durável PostgreSQL. Ela responde qual job entrou, qual processo foi declarado, de qual correlação faz parte, se é raiz ou filho, qual worker possui o claim, em que estado está e como terminou.
+- Relação com o worker: o publish oficial persiste o envelope completo nesta tabela. O worker faz claim atômico com `FOR UPDATE SKIP LOCKED` e executa somente routing keys para as quais registrou capacidade. O Job Core não mantém uma segunda fila de estado em Redis, RabbitMQ ou tabela de domínio.
 - Evolução de schema já existente: o DDL oficial não depende apenas de `CREATE TABLE IF NOT EXISTS`. Ele também executa `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` e adiciona checks faltantes quando necessário, para impedir falso verde em ambiente onde o schema `job_core` já existia sem o envelope completo.
 - Chave primária: `job_id`.
 - Colunas:
 - `job_id`: identificador único do job.
-- `route_kind`: categoria operacional do envelope, usada junto com `dispatch_mode` para resolver o handler correto no runtime.
-- `dispatch_mode`: modo operacional do envelope, usado para distinguir fluxos como `prepared_yaml`, `resolve_on_worker`, `document_fanout_child`, `background_execution_run` e equivalentes.
+- `route_kind`: categoria operacional do envelope, usada junto com `dispatch_mode` para resolver o `JobProcessDescriptor` correto no runtime.
+- `dispatch_mode`: modo operacional opaco do envelope. Junto com `route_kind`, forma a routing key do catálogo único.
 - `job_type`: tipo lógico do job recebido pelo envelope.
-- `handler_key`: chave do handler resolvido pelo runtime para executar o job.
-- `correlation_id`: identificador lógico único da execução de ponta a ponta.
+- `handler_key`: nome físico histórico da coluna; no contrato atual carrega a chave declarada do processo e não cria um contrato de handler paralelo.
+- `correlation_id`: identificador obrigatório da execução correlacionada de ponta a ponta. Existe índice, mas não existe constraint `UNIQUE`; execuções independentes não podem reutilizá-lo, enquanto jobs da mesma execução podem compartilhar a correlação definida pelo boundary.
 - `parent_job_id`: job pai, quando este registro representa um job filho.
 - `root_job_id`: identificador do job raiz da árvore.
 - `envelope_payload`: payload bruto e opaco do envelope recebido pelo worker, em `jsonb`.
 - Observação operacional sobre `envelope_payload`: é aqui que continuam aparecendo campos especializados do transporte e do domínio, como `worker_execution_correlation_id`, `run_id`, `encrypted_data`, `parent_run_id`, `execution_id` e equivalentes. Eles não viram colunas top-level do ledger genérico.
-- `envelope_metadata`: metadados originais do envelope, em `jsonb`.
-- `status`: estado atual do job. O DDL confirma os valores `queued`, `claimed`, `running`, `cancelling`, `cancel_requested`, `cancelled`, `succeeded`, `partial_success`, `failed`, `stale`, `orphaned` e `reconciled_failed`.
+- `envelope_metadata`: metadados originais do envelope, em `jsonb`. As consultas administrativas usam daqui `environment`, `tenant_id`, `requested_by` e, quando presente, `concurrency_key`.
+- `status`: estado atual do job. O DDL confirma os valores `queued`, `claimed`, `running`, `waiting_children`, `cancelling`, `cancel_requested`, `cancelled`, `succeeded`, `partial_success`, `failed`, `stale`, `orphaned` e `reconciled_failed`. `waiting_children` indica que o processo pai terminou e a árvore ainda possui filho não terminal; não representa worker ativo nem ocupa vaga no cap direto. `stale`, `orphaned` e `reconciled_failed` permanecem no check constraint para leitura histórica, mas nenhum caminho de produção atual os grava: o reconciliador ativo cancela run órfã comprovada diretamente para `cancelled`.
 - `final_reason`: motivo final registrado para encerramento, quando existir.
 - `output_payload`: saída estruturada do job em `jsonb`.
 - `metadata`: metadados estruturados do runtime em `jsonb`.
@@ -717,15 +707,20 @@ contratos espalhados.
 - `claimed_at`: instante em que o worker reservou o job no ledger.
 - `last_heartbeat_at`: instante do último heartbeat persistido pelo runtime para provar liveness.
 - `created_at`: instante de criação do registro.
-- `started_at`: instante em que o handler iniciou a execução.
+- `started_at`: instante em que o processo iniciou a execução.
 - `finished_at`: instante em que a execução terminou.
 - Índices e restrições:
 - PK em `job_id`.
 - Índice `ix_job_runs_correlation_id` em `correlation_id` para investigação por correlação.
 - Índice `ix_job_runs_root_job_created_at` em `root_job_id, created_at desc` para reconstruir árvores de execução.
+- Índice parcial `ix_job_runs_claim_fifo` em `route_kind, dispatch_mode, created_at, job_id` para o claim FIFO de linhas `queued`.
+- Índice `ix_job_runs_tenant_requester_route_created_at` em `tenant_id`, solicitante normalizado, `route_kind`, `created_at desc`, `job_id desc` para listagem e gestão escopadas.
+- Índice `ix_job_runs_concurrency_key_created_at` em `concurrency_key`, `created_at`, `job_id` para localizar a execução ativa que ocupa uma chave genérica.
+- Índice parcial `ix_job_runs_parent_status` em `parent_job_id, status`, apenas para filhos, para contar com baixo custo os irmãos que ocupam vaga durante a admissão atômica por pai.
 - Check `job_runs_status_check` limitando `status` aos estados canônicos do runtime.
 - Checks `job_runs_envelope_payload_json_check`, `job_runs_envelope_metadata_json_check`, `job_runs_output_payload_json_check` e `job_runs_metadata_json_check` exigindo objeto JSON.
 - Check `job_runs_finished_after_started_check` impedindo término anterior ao início.
+- Limite físico importante: o DDL exige que `envelope_metadata` seja objeto JSON, mas não exige a presença de `environment`, `tenant_id` ou `requested_by`, e o índice de gestão não inclui `environment`. O store filtra explicitamente essas chaves; portanto o isolamento depende também do boundary montar metadados completos e não deve ser confundido com uma constraint inexistente.
 
 ### job_core.job_run_events
 
@@ -736,136 +731,64 @@ contratos espalhados.
 - Colunas:
 - `event_id`: identificador UUID do evento.
 - `job_id`: job dono do evento.
-- `event_name`: nome canônico do evento. O DDL confirma eventos como `job_core.envelope.received`, `job_core.envelope.validated`, `job_core.envelope.rejected`, `job_core.execution.claimed`, `job_core.execution.executed`, `job_core.execution.stale`, `job_core.execution.orphaned`, `job_core.execution.reconciled_failed`, `job_core.execution.cancelled`, `job_core.execution.failed`, `job_core.execution.partial_success` e `job_core.execution.succeeded`.
+- `event_name`: nome canônico do evento. O DDL confirma eventos como `job_core.envelope.received`, `job_core.envelope.validated`, `job_core.envelope.rejected`, `job_core.execution.claimed`, `job_core.execution.executed`, `job_core.execution.stale`, `job_core.execution.orphaned`, `job_core.execution.reconciled_failed`, `job_core.execution.cancelled`, `job_core.execution.failed`, `job_core.execution.partial_success` e `job_core.execution.succeeded`. Como em `status`, `job_core.execution.stale`, `job_core.execution.orphaned` e `job_core.execution.reconciled_failed` seguem permitidos pelo check por compatibilidade histórica, mas não são mais emitidos pelo reconciliador ativo.
 - `status`: estado associado ao evento. O conjunto válido repete os estados canônicos do runtime.
 - `event_payload`: detalhes estruturados do evento em `jsonb`.
 - `created_at`: instante de criação do evento.
 - Índices e restrições:
 - PK em `event_id`.
 - FK `job_run_events_job_fk` para `job_core.job_runs(job_id)` com `ON DELETE CASCADE`.
-- Índice `ix_job_run_events_job_created_at` em `job_id, created_at desc` para leitura cronológica por job.
+- Índice `ix_job_run_events_job_created_at` em `job_id, created_at desc`. A consulta de replay devolve ordem crescente e usa a precedência causal do catálogo quando dois fatos possuem o mesmo timestamp; UUID é apenas identidade, não relógio causal.
 - Check `job_run_events_event_name_check` limitando o conjunto de eventos canônicos.
 - Check `job_run_events_status_check` limitando `status` aos estados válidos do runtime.
 - Check `job_run_events_payload_json_check` exigindo objeto JSON.
 
-### job_core.async_jobs
+### Migração do ledger legado
 
-- Finalidade prática: guardar a fila persistida simples da spec 101 para jobs assíncronos de ingestão de PDF.
-- Papel operacional: esta tabela não substitui `job_core.job_runs`. Ela é um ledger simplificado e específico do fluxo de PDFs, usado para registrar o pedido aceito, o estado operacional básico do job e o resumo final sem introduzir a semântica completa do Job Core genérico.
-- Relação com o runtime simples: o submit cria uma linha `pending` aqui e envia apenas um wakeup curto ao dispatcher. O dispatcher, hospedado no worker, lê os jobs pendentes desta tabela, faz o claim lógico mudando o estado para `processing`, executa os PDFs do job e fecha a linha em `success`, `error` ou `cancelled`. Quando um cancelamento é solicitado, o Killer muda o estado para `cancelling`, localiza o processo do job e só então fecha a linha em `cancelled`.
-- Fonte de verdade da tela: para um job de PDF da spec 101, o estado desta tabela prevalece sobre o
-  status do Job Core genérico que apenas aceitou/enfileirou o pedido. Esse job externo pode terminar
-  antes dos runners; a deduplicação do dashboard substitui esse overlay pela linha de
-  `job_core.async_jobs`, evitando exibir “Concluída” enquanto PDFs ainda estão sendo processados.
-- Contadores derivados do log: o total `resolved` inclui sucesso, erro e pulado. Em “PDFs por
-  runner”, `processed` também significa todo desfecho terminal do runner (sucesso + erro + pulado),
-  e a interface mostra as três parcelas. O contador global histórico `processed` permanece sucesso +
-  erro; use `resolved` para medir o avanço real do lote.
-- Proteção contra pendências fantasmas: o processo raiz do job nasce com `spawn`, apropriado para o
-  Worker multithread. O dispatcher executa a reconciliação na chegada de um wakeup e também a cada
-  30 segundos enquanto a fila está ociosa; portanto, um job órfão não depende da submissão de outro
-  lote para ser percebido. A reconciliação cobre jobs sem heartbeat pelo limite geral e jobs que
-  entraram em `processing`, tocaram a linha apenas nos primeiros segundos e não produziram atividade
-  sustentada dentro da janela de startup. O resultado é terminal `error`, com mensagem explícita,
-  liberando a fila sem apagar a evidência operacional nem iniciar jobs pendentes por efeito colateral.
-- Chave primária: `job_id`.
-- DDL oficial atual:
-
-```sql
-CREATE SCHEMA IF NOT EXISTS job_core;
-
-CREATE TABLE IF NOT EXISTS job_core.async_jobs (
-    job_id TEXT NOT NULL PRIMARY KEY,
-    job_type TEXT NOT NULL,
-    job_params_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    started_at TIMESTAMPTZ NULL,
-    finished_at TIMESTAMPTZ NULL,
-    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    correlation_id TEXT NOT NULL,
-    requested_by TEXT NULL,
-    parallelism INTEGER NOT NULL DEFAULT 1,
-    runner_pgid INTEGER NULL,
-    final_message TEXT NULL,
-    error_message TEXT NULL,
-    tenant_code TEXT NULL,
-    vectorstore_id TEXT NULL,
-    CONSTRAINT async_jobs_status_check CHECK (
-        status IN ('pending', 'processing', 'success', 'error', 'cancelling', 'cancelled')
-    ),
-    CONSTRAINT async_jobs_job_params_json_check CHECK (jsonb_typeof(job_params_json) = 'object'),
-    CONSTRAINT async_jobs_parallelism_positive_check CHECK (parallelism >= 1),
-    CONSTRAINT async_jobs_started_after_created_check CHECK (
-        started_at IS NULL OR started_at >= created_at
-    ),
-    CONSTRAINT async_jobs_finished_after_started_check CHECK (
-        finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at
-    )
-);
-
-CREATE INDEX IF NOT EXISTS ix_async_jobs_status_created_at
-    ON job_core.async_jobs (status, created_at ASC);
-
-CREATE INDEX IF NOT EXISTS ix_async_jobs_correlation_id
-    ON job_core.async_jobs (correlation_id);
-
-CREATE INDEX IF NOT EXISTS ix_async_jobs_tenant_code_created_at
-    ON job_core.async_jobs (tenant_code, created_at DESC);
-```
-
-- Evolução de schema já existente: as colunas `tenant_code` e `vectorstore_id` foram adicionadas depois da criação original da tabela, via migração `scripts/sql/20260618_add_tenant_scope_to_simple_async_pdf_jobs.sql` com `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. Depois, a migração `scripts/sql/20260621_add_cancellation_to_simple_async_pdf_jobs.sql` adicionou `runner_pgid` e ampliou o `CHECK` de `status` para suportar o cancelamento simples via Killer. Em ambiente onde a tabela já existia, essas migrações ajustam o schema sem recriar a tabela.
-
-- Colunas:
-- `job_id`: identificador único do job simples. É a chave usada pelo submit, pelo dispatcher e pela leitura de status.
-- `job_type`: tipo lógico do job. Na implementação atual da spec 101, o valor usado é `ingestion_pdf`.
-- `job_params_json`: payload estruturado do job em `jsonb`. Aqui entram os parâmetros necessários para executar o trabalho, como snapshot do YAML, formato de saída, paralelismo, dados cifrados e outros campos específicos do fluxo.
-- `status`: estado atual do job simples. O conjunto válido é fechado em `pending`, `processing`, `success`, `error`, `cancelling` e `cancelled`.
-- `created_at`: instante em que a linha do job foi criada.
-- `started_at`: instante em que o dispatcher conseguiu promover o job para processamento.
-- `finished_at`: instante de encerramento do job, seja com sucesso total, erro terminal ou cancelamento confirmado.
-- `last_activity_at`: último instante de atividade relevante do job. Serve para provar movimentação recente da linha durante submit, claim, progresso e finalização.
-- `correlation_id`: correlação canônica do fluxo. É o campo usado para ligar essa linha aos logs e aos demais artefatos operacionais da mesma execução.
-- `requested_by`: identidade textual de quem solicitou o job, quando disponível. Na implementação atual, normalmente recebe o e-mail do usuário.
-- `parallelism`: quantidade de runners paralelos permitida para o job simples. O check do schema impede valores menores que 1.
-- `runner_pgid`: process-group id do runtime do job. Em linguagem simples, é o identificador persistido do grupo de processos do job para o Killer conseguir encerrar o processo mesmo se o registro em memória do worker tiver se perdido.
-- `final_message`: resumo textual final do job quando ele termina. Em linguagem simples, é a mensagem curta de fechamento para consumo operacional.
-- `error_message`: mensagem textual do erro terminal quando o job fecha com falha.
-- `tenant_code`: tenant dono do job. É a fronteira de segurança usada pelo dashboard de ingestão para escopar a leitura dos jobs da spec 101 por tenant. Linhas antigas anteriores a esta coluna ficam com `tenant_code` NULL e, por isso, não aparecem em nenhum escopo de tenant na leitura do dashboard.
-- `vectorstore_id`: identificador lógico do acervo alvo da ingestão, preservado no submit para diagnóstico e exibição no dashboard.
-- Índices e restrições:
-- PK em `job_id`.
-- Índice `ix_async_jobs_status_created_at` em `status, created_at ASC` para buscar jobs pendentes ou em processamento em ordem cronológica.
-- Índice `ix_async_jobs_correlation_id` em `correlation_id` para investigação por correlação.
-- Índice `ix_async_jobs_tenant_code_created_at` em `tenant_code, created_at DESC` para a leitura do dashboard por tenant, do mais recente para o mais antigo.
-- Check `async_jobs_status_check` limitando `status` a `pending`, `processing`, `success`, `error`, `cancelling` e `cancelled`.
-- Check `async_jobs_job_params_json_check` exigindo que `job_params_json` seja um objeto JSON.
-- Check `async_jobs_parallelism_positive_check` exigindo `parallelism >= 1`.
-- Check `async_jobs_started_after_created_check` impedindo início anterior à criação.
-- Check `async_jobs_finished_after_started_check` impedindo término anterior ao início quando ambos existirem.
+- O DDL canônico é `scripts/sql/20260514_create_job_core_schema.sql`. Ele cria o schema, garante a extensão `pgcrypto` e define `job_runs` e `job_run_events` como tabelas canônicas do Job Core.
+- `scripts/sql/20260715_add_job_core_waiting_children_status.sql` acrescenta manualmente `waiting_children` aos dois checks de status em uma única transação, sem criar tabela ou coluna.
+- `scripts/sql/20260713_unify_job_core_ledger.sql` é a migração manual e destrutiva que encerra o ledger paralelo antigo.
+- Antes do apply, `scripts/sql/20260713_precheck_unify_job_core_ledger.sql` mostra contagens por estado, escopo ausente e colisões. Depois, `scripts/sql/20260713_postcheck_unify_job_core_ledger.sql` prova ausência de `job_core.async_jobs`, presença do ledger/índices e segregação do histórico migrado.
+- Ela exige `environment` explícito, bloqueia se houver job legado ativo, valida tenant, vector store, JSON, estados e timestamps e recusa colisões de `job_id` com correlação divergente.
+- Linhas históricas sem `job_id` existente são inseridas em `job_runs`; o payload original permanece em `envelope_payload` e o contexto de ambiente, tenant, alvo e origem fica em `envelope_metadata`.
+- Se o `job_id` já existir no Job Core, a linha canônica não é sobrescrita. A migração só aceita a colisão quando o `correlation_id` é o mesmo.
+- Para cada linha efetivamente inserida, um evento terminal é acrescentado em `job_run_events`. Depois de provar que todo histórico tem correspondente canônico, a migração remove a tabela legada dentro da mesma transação.
+- A execução é reentrante no estado final: se a tabela antiga já não existir, a migração registra `job_core.ledger_migration.already_applied` e mantém apenas os índices canônicos.
+- Os scripts são aplicados manualmente, fora do runtime. API, worker e scheduler apenas validam o schema de forma read-only e nunca executam DDL.
 
 ### Como o processamento paralelo agnóstico usa o schema `job_core`
 
-- Escopo correto: o mecanismo genérico e agnóstico de jobs paralelos usa diretamente apenas `job_core.job_runs` e `job_core.job_run_events` como ledger durável do worker. Tabelas como `vector_ingestion_runs`, `vector_ingestion_run_documents`, `agent_background.*` e `scheduler.*` pertencem a especializações ou a slices produtores, e não substituem o ledger canônico do runtime genérico.
-- O que entra em `job_core.job_runs` no primeiro write: `PostgresJobRunStore.create_run(...)` persiste a identidade mínima do envelope aceito pelo worker, gravando `job_id`, `route_kind`, `dispatch_mode`, `job_type`, `handler_key`, `correlation_id`, `parent_job_id`, `root_job_id`, `envelope_payload`, `envelope_metadata`, `status`, `final_reason`, `output_payload`, `metadata`, `owner_worker_id`, `claimed_at`, `last_heartbeat_at`, `created_at`, `started_at` e `finished_at`.
-- Em termos práticos de ingestão, isso significa que o job pai `prepared_yaml`, o job pai `resolve_on_worker` e o filho `document_fanout_child` entram no mesmo ledger e se diferenciam por `route_kind + dispatch_mode` e pelo conteúdo opaco de `envelope_payload`.
+- Escopo correto: o mecanismo genérico usa diretamente apenas `job_core.job_runs` e `job_core.job_run_events`. Tabelas como `vector_ingestion_runs`, `vector_ingestion_run_documents`, `agent_background.*` e `scheduler.*` pertencem a produtores, projeções ou domínios externos e não substituem o ledger do núcleo.
+- O que entra em `job_core.job_runs` no primeiro write: `PostgresJobRunStore.create_run(...)` persiste a identidade e o envelope opaco, normalmente em `queued`. Campos de claim, execução e terminalização permanecem nulos até a transição correspondente.
 - O que muda ao longo da execução: `PostgresJobRunStore.transition_status(...)` atualiza `status` como fonte de verdade do lifecycle. Quando o job entra em execução, o método preenche `started_at`. Quando termina, também grava `finished_at`, `final_reason`, `output_payload` e o `metadata` operacional mais recente.
+- Quando um processo devolve `ChildWorkPlan`, o `JobCoreExecutor` valida/materializa o plano e `complete_run(...)` persiste os filhos junto com a conclusão do pai. Se ainda houver descendente não terminal, o pai fica `waiting_children`; o último filho agrega os estados e terminaliza os ancestrais prontos atomicamente.
 - O que entra em `job_core.job_run_events`: `PostgresJobRunStore.append_event(...)` cria a trilha estruturada com `job_id`, `event_name`, `status`, `event_payload` e `created_at`. Essa tabela é usada para reconstruir a narrativa do job sem depender só de log bruto.
-- A sequência canônica de eventos nasce do `JobCoreExecutor`, do `OperationalRunReconciliationService` e do catálogo `JobCoreEventName`. Em linguagem simples, o banco guarda a trilha `received -> validated -> claimed -> executed -> terminal` e, quando o worker some sem heartbeat, também registra `stale/orphaned -> reconciled_failed` para fechar o lifecycle sem requeue implícito.
+- O claim pelo polling atualiza owner/status/heartbeat e cria `job_core.execution.claimed` na mesma transação. Em seguida, o executor acrescenta `envelope.received`, `envelope.validated`, `execution.executed` e o evento terminal aplicável. A ordem de replay é temporal, com desempate causal para timestamps iguais; não se deve reordenar a história por UUID.
+- `JobCoreCancelOnlyReconciler` seleciona run não terminal comprovadamente órfã pela política canônica `evaluate_job_run_liveness` e chama `PostgresJobRunStore.cancel_orphaned_run`. A operação grava estado/evento terminal `cancelled` diretamente — nunca `stale`, `orphaned` ou `reconciled_failed`. Seus outcomes `won`, `already_terminal` e `conflict` impedem terminalização duplicada; a mesma transação cancela a subárvore órfã e consolida ancestrais prontos.
+- O pedido de cancelamento de um job `queued` grava `cancelled` e o evento terminal na mesma operação. Em job ativo, persiste `cancel_requested`; o processo observa apenas o `ProcessHostPort` entregue no contexto, sem consultar o ledger.
 - Colunas que sustentam o paralelismo genérico:
-- `route_kind` + `dispatch_mode`: formam a chave operacional que o runtime usa para localizar o handler correto. Em linguagem simples, são os dois campos que dizem “para qual trilho esse envelope vai”.
+- `route_kind` + `dispatch_mode`: formam a chave operacional usada pelo `JobProcessRegistry` para localizar o descritor. Em linguagem simples, são os dois campos que dizem “para qual trilho esse envelope vai”.
 - `parent_job_id` + `root_job_id`: materializam a árvore pai-filhos. Isso permite rastrear fan-out, agregação e investigações por lote sem criar tabela extra só para a hierarquia.
-- `correlation_id`: costura todos os jobs da mesma execução lógica. Quando vários jobs filhos correm em paralelo, é esse campo que permite juntar banco, logs e eventos sob a mesma investigação.
+- `envelope_metadata.max_active_children`: persiste o cap de filhos diretos declarado pelo plano. A admissão PostgreSQL usa advisory lock transacional por pai, relê capacidade/contagem de irmãos ativos e grava claim/evento na mesma transação curta.
+- `envelope_metadata.not_before_at`: representação persistida do campo tipado `JobEnvelope.not_before_at`; mantém o job futuro em `queued` até o due time sem representar retry.
+- `correlation_id`: costura ledger e logs da mesma execução. O campo não é globalmente único por constraint física, por isso a unicidade entre execuções independentes é contrato do boundary.
 - `status`, `claimed_at`, `last_heartbeat_at`, `started_at`, `finished_at` e `final_reason`: formam o estado observável do job. Em termos simples, respondem se o job só foi enfileirado, se algum worker já assumiu o claim, se ainda existe prova recente de liveness, como terminou e quando isso aconteceu.
 - `envelope_payload`, `envelope_metadata`, `output_payload`, `metadata` e `event_payload`: carregam o conteúdo opaco de entrada, saída e telemetria por especialização. O core genérico não tenta abrir coluna própria para cada domínio; ele preserva esses dados em `jsonb` e mantém fixa só a casca operacional comum.
 - Decisão arquitetural importante: identificadores especializados, como `execution_id`, `schedule_id`, `request_id`, `run_id`, `manifest_id` ou `run_document_id`, não viram colunas top-level do ledger genérico. Eles entram no `envelope_payload` quando a especialização precisa deles. Isso mantém o Job Core agnóstico ao domínio e evita que o schema canônico cresça a cada novo tipo de job.
 - Leitura operacional mínima do runtime genérico:
 - `get_run(job_id=...)` lê o estado terminal ou intermediário de um job específico.
 - `list_stale_runs(...)` identifica jobs ativos cujo heartbeat expirou e que precisam de reconciliação explícita.
-- `list_events(job_id=...)` reconstrói a sequência `received -> validated -> executed -> terminal` do job.
+- `list_events(job_id=...)` reconstrói a sequência temporal do job, incluindo claim,
+  recebimento/validação, execução, reconciliação quando aplicável e terminalização.
 - o índice `ix_job_runs_correlation_id` sustenta investigação transversal por correlação.
 - o índice `ix_job_runs_root_job_created_at` sustenta reconstrução rápida da árvore de jobs mais recente sob a mesma raiz.
-- Limites explícitos do V1: o DDL oficial e seus testes confirmam que o ledger genérico não modela `retry_wait`, `dead_letter` nem `serialize`. Esses conceitos não fazem parte do contrato canônico do Job Core atual e não devem ser inferidos como colunas ausentes “a completar”.
+- o índice `ix_job_runs_claim_fifo` sustenta o claim ordenado e concorrente da fila PostgreSQL.
+- os índices `ix_job_runs_tenant_requester_route_created_at` e `ix_job_runs_concurrency_key_created_at` sustentam gestão escopada e exclusividade genérica.
+- Gestão escopada: `JobRunAccessScope` exige `environment`, `tenant_id` e `requested_by`; `route_kind` é opcional. Exclusão individual ou em lote só remove jobs terminais dentro desse escopo, e a FK apaga seus eventos em cascata. Os adapters de dashboard/gestão atuais fixam `route_kind=ingestion`, mas essa é uma especialização fora do schema e não uma regra do Job Core.
+- Progresso e cancelamento: o Core não persiste percentual nem usa callback. `ProgressFact` trafega como `DomainFact` não autoritativo pelo mesmo `ProcessHostPort.emit`; o token/store concretos ficam encapsulados no host do executor.
+- Observabilidade: logs canônicos são evidência complementar, não terceira tabela. Cada execução deve reconciliar `correlation_id`, snapshot, eventos, decisão do worker e artefato do processo.
+- Testes: a família oficial usa marker `job_core`, flag pública `--with-job-core` e target `backend.job_core`; testes de integração/E2E acumulam também o marker de família correspondente.
+- Limites explícitos: o DDL e o código atual não modelam retry automático de job, dead-letter, requeue, progresso percentual, quotas comerciais, weighted fairness nem streaming/paginação de plano de filhos. Esses conceitos não devem ser inferidos como colunas ausentes “a completar”.
 
 ## Domínio Autenticação e Login
 
@@ -921,7 +844,6 @@ CREATE INDEX IF NOT EXISTS ix_async_jobs_tenant_code_created_at
 - `active_generation_id`: geração hoje exposta para leitura no acervo vivo.
 - `physical_vector_target`: alvo físico do banco vetorial preparado ou ativo, quando existir. Este campo é a fonte de verdade do provider em runtime e pode apontar tanto para target novo tenantizado quanto para target legado preservado por compatibilidade.
 - Explicação 101: este campo responde à pergunta “qual recurso físico real o provider deve abrir agora?”. No Azure Search, é daqui que nasce o `index_name` usado em runtime. No Qdrant, é daqui que nasce a `collection_name`.
-- `physical_bm25_target`: alvo físico do BM25 preparado ou ativo, quando existir.
 - `metadata`: metadados do lifecycle em `jsonb`.
 - `created_at`: criação do dataset lógico.
 - `updated_at`: última atualização do dataset lógico.
@@ -943,7 +865,6 @@ CREATE INDEX IF NOT EXISTS ix_async_jobs_tenant_code_created_at
 - Uso atual na ingestão de PDF: o runtime oficial **não** deve mais criar nem consultar gerações aqui para decidir o que está publicado.
 - O que ainda guarda: número/status de geração, alvos físicos antigos, `created_by_run_id`, `correlation_id` e metadata útil para reconstrução forense.
 - Para que serve hoje: rastreabilidade histórica do lifecycle antigo e compatibilidade temporária com tabelas técnicas que ainda não foram aposentadas.
-- Relação com BM25: enquanto existir resíduo técnico acoplado a `generation_id`, trate essa ligação como legado operacional, não como contrato principal do acervo vivo.
 - Chave primária: `generation_id`.
 - Colunas:
 - `generation_id`: identificador UUID da geração.
@@ -955,7 +876,6 @@ CREATE INDEX IF NOT EXISTS ix_async_jobs_tenant_code_created_at
 - `status`: estado da geração, como `preparing`, `active`, `failed`, `aborted` ou `superseded`.
 - `physical_vector_target`: alvo físico do banco vetorial usado por essa geração. Em datasets novos, ele deve seguir a convenção física tenantizada do provider; em datasets antigos, ele pode continuar refletindo o target legado já persistido até que uma nova geração válida o substitua.
 - Explicação 101: a geração guarda o nome físico que foi realmente preparado para aquele momento do acervo. Isso evita recalcular nome por adivinhação e protege a compatibilidade com targets antigos já existentes.
-- `physical_bm25_target`: alvo físico do BM25 usado por essa geração.
 - `created_by_run_id`: run que originou a geração, quando existir.
 - `correlation_id`: correlação canônica do fluxo que criou a geração.
 - `metadata`: metadados da geração em `jsonb`.
@@ -989,9 +909,9 @@ CREATE INDEX IF NOT EXISTS ix_async_jobs_tenant_code_created_at
 - `tenant_code`: código lógico do tenant.
 - `vectorstore_id`: coleção de destino.
 - `source_system`: origem do documento.
-- `document_identity_key`: identidade lógica canônica do documento. Para PDF, o formato canônico é `pdf:sha256:<pdf_binary_sha256>`.
+- `document_identity_key`: identidade lógica canônica e estável do documento. Ela usa `source_system + external_document_id` quando a origem fornece um ID estável (por exemplo, `google_drive:external:<file_id>`) e usa a URI canônica apenas como fallback.
 - `pdf_binary_sha256`: SHA-256 dos bytes brutos do PDF, calculado antes de OCR, parser e chunking. Quando ausente para PDF, o runtime deve falhar fechado.
-- `canonical_source_key`: identidade canônica da fonte lógica observada por último. Ela continua útil como provenance operacional, mas não é mais a chave única do manifesto para PDF.
+- `canonical_source_key`: identidade canônica da fonte lógica observada por último e base da identidade lógica do documento.
 - `document_hash`: hash do conteúdo/versionamento efetivo persistido para o documento.
 - `document_path`: caminho original do documento.
 - `document_name`: nome amigável do arquivo.
@@ -1036,12 +956,12 @@ CREATE INDEX IF NOT EXISTS ix_async_jobs_tenant_code_created_at
 
 Regra de identidade do manifesto:
 
-- `document_identity_key` é a identidade lógica do documento. Para PDF, ela responde a pergunta “qual é o chassi binário deste arquivo?”.
-- `canonical_source_key` é a identidade da ocorrência de fonte. Ela responde a pergunta “em qual origem esse PDF foi encontrado?”.
+- `document_identity_key` é a identidade lógica do documento. Para PDF, ela responde “qual item estável da origem é este?”, independentemente da versão atual de seus bytes.
+- `canonical_source_key` é a identidade da ocorrência de fonte e alimenta `document_identity_key`. Ela responde “qual sistema e qual ID externo são donos deste PDF?”.
 - O lookup e o upsert do manifesto de PDF devem sempre usar `document_identity_key`.
-- `document_hash` continua essencial para detectar reprocessamento idempotente e mudança real de conteúdo, mas não pode mais decidir sozinho a identidade lógica do PDF.
+- `pdf_binary_sha256` — ou `document_hash` quando aplicável — identifica a versão do conteúdo; ele não pode decidir a identidade lógica do PDF.
 - `active_document_version_id` aponta qual edição de conteúdo está oficialmente publicada para aquele documento lógico naquele momento.
-- Consequência prática: duas fontes diferentes com o mesmo PDF colidem no mesmo manifesto lógico; a provenance operacional deve ficar nas tabelas do run e no documento ativo publicado.
+- Consequência prática: o mesmo ID externo com bytes novos atualiza o mesmo documento lógico; IDs externos diferentes continuam sendo documentos diferentes mesmo que os bytes sejam iguais.
 
 ### ingestion_document_versions
 
@@ -1252,9 +1172,9 @@ Como ler na prática:
 >   (`dnit_teste`) e para PRODUÇÃO (`dnit_producao`). O estado comprovado registrado neste
 >   manual é de 510 documentos ativos em produção. O guard do RAG é estrito onde o acervo está
 >   populado e tolerante apenas para datasets ainda vazios.
-> - **Tabelas antigas `ingestion_*`:** continuam existindo e servindo ao control plane do Job
->   Core, streaming/status ao vivo, worker e manutenção; deixaram de ser a fonte de verdade do
->   histórico/acervo de NEGÓCIO no caminho da tela.
+> - **Tabelas antigas `ingestion_*`:** quando ainda existem fisicamente, preservam somente
+>   histórico/rollback do modelo anterior. Não servem ao control plane do Job Core, não governam
+>   status/heartbeat/retry e não são fonte do acervo vivo.
 > - O DDL abaixo é o **DDL real, extraído do banco** via `information_schema` e `pg_constraint`
 >   (reconstruído a partir dos metadados físicos). Não há índice extra além dos que dão suporte às
 >   constraints (7 PRIMARY KEY + 5 UNIQUE).
@@ -1284,8 +1204,10 @@ O modelo novo parte de uma regra simples e legível:
 Quatro tabelas centrais e três tabelas de detalhe de conteúdo ativo:
 
 - `vector_dataset_master`: ficha master do acervo. Responde qual é o acervo, de qual tenant,
-  qual o alvo vetorial, qual o alvo BM25 e qual foi o último run que alterou o acervo publicado.
-- `vector_ingestion_runs`: histórico de execuções de ingestão do acervo (o "boletim" de cada lote).
+  qual o alvo vetorial e qual foi o último run que alterou o acervo publicado. O BM25 roda dentro
+  do próprio alvo vetorial (Qdrant/Azure Search) e não tem alvo físico separado nesta tabela.
+- `vector_ingestion_runs`: registro factual de cada lote documental, com identidade, origem e
+  agregados de resultado; não é fila, ledger nem fonte de lifecycle da execução.
 - `vector_ingestion_run_documents`: lista de documentos observados dentro de cada run (tudo o
   que o lote viu, processou, pulou, falhou ou substituiu).
 - `vector_active_documents`: projeção explícita do que está vivo agora no acervo,
@@ -1302,11 +1224,9 @@ Quatro tabelas centrais e três tabelas de detalhe de conteúdo ativo:
 > ajustada para respeitar dependências de FK ao recriar do zero (master e runs antes das tabelas
 > que as referenciam).
 >
-> Auto-DDL no código-fonte: o bootstrap canônico do modelo `vector_*` agora roda em
-> `src/telemetry/ingestion/vector_active_archive_repository.py`, que garante criação do schema,
-> tabelas-base, evolução de colunas opcionais e o índice/coluna de FTS de
-> `vector_active_document_chunks`. Isso fecha o gap em que o runtime já lia/escrevia `vector_*`,
-> mas a autoproteção de DDL ainda estava concentrada só no legado.
+> O runtime não cria nem evolui este schema. Todo DDL é aplicado manualmente, em janela
+> controlada, pelos scripts versionados em `scripts/sql/`; o repositório da aplicação somente
+> valida e utiliza o contrato físico já instalado.
 
 ```sql
 CREATE TABLE vector_dataset_master (
@@ -1315,11 +1235,8 @@ CREATE TABLE vector_dataset_master (
     vectorstore_id TEXT NOT NULL,
     vector_provider TEXT NOT NULL,
     vector_target TEXT NOT NULL,
-    bm25_provider TEXT,
-    bm25_target TEXT,
     status TEXT NOT NULL,
     last_published_run_id UUID,
-    last_completed_run_id UUID,
     last_sync_at TIMESTAMPTZ,
     if_exists_policy TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -1337,19 +1254,14 @@ CREATE TABLE vector_ingestion_runs (
     source_system TEXT,
     trigger_mode TEXT,
     if_exists_policy TEXT NOT NULL,
-    status TEXT NOT NULL,
     correlation_id TEXT,
     task_id TEXT,
-    queued_at TIMESTAMPTZ,
-    started_at TIMESTAMPTZ,
-    finished_at TIMESTAMPTZ,
     total_documents INTEGER NOT NULL DEFAULT 0,
     processed_documents INTEGER NOT NULL DEFAULT 0,
     skipped_documents INTEGER NOT NULL DEFAULT 0,
     failed_documents INTEGER NOT NULL DEFAULT 0,
     total_chunks INTEGER NOT NULL DEFAULT 0,
     error_summary TEXT,
-    status_message TEXT,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1409,7 +1321,6 @@ CREATE TABLE vector_active_documents (
     document_hash TEXT,
     total_pages INTEGER,
     vector_document_key TEXT,
-    bm25_document_key TEXT,
     status TEXT NOT NULL,
     published_at TIMESTAMPTZ NOT NULL,
     removed_at TIMESTAMPTZ,
@@ -1451,7 +1362,6 @@ CREATE TABLE vector_active_document_chunks (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    fts_content tsvector GENERATED ALWAYS AS (to_tsvector('portuguese'::regconfig, COALESCE(chunk_text, ''::text))) STORED,
     CONSTRAINT vector_active_document_chunks_pkey PRIMARY KEY (active_chunk_id),
     CONSTRAINT ux_vector_active_document_chunks UNIQUE (active_document_id, chunk_index),
     CONSTRAINT vector_active_document_chunks_active_document_id_fkey FOREIGN KEY (active_document_id) REFERENCES vector_active_documents(active_document_id) ON DELETE CASCADE,
@@ -1474,10 +1384,6 @@ CREATE TABLE vector_active_document_images (
     CONSTRAINT vector_active_document_images_active_document_id_fkey FOREIGN KEY (active_document_id) REFERENCES vector_active_documents(active_document_id) ON DELETE CASCADE,
     CONSTRAINT vector_active_document_images_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES vector_dataset_master(dataset_id) ON DELETE CASCADE
 );
-
-CREATE INDEX ix_vector_active_document_chunks_fts
-    ON vector_active_document_chunks
-    USING gin (fts_content);
 ```
 
 ### De-para de tabelas
@@ -1487,7 +1393,7 @@ Tabelas substituídas pelo modelo novo:
 | Tabela substituída            | Tabela oficial                    | Regra de destino                                                                                  |
 | ----------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `ingestion_datasets`          | `vector_dataset_master`          | Vira a ficha master do acervo.                                                                    |
-| `ingestion_runs`              | `vector_ingestion_runs`          | Continua como histórico de run, mas passa a ser ligado explicitamente ao master.                  |
+| `ingestion_runs`              | `vector_ingestion_runs`          | Vira registro factual do lote, ligado explicitamente ao master e sem lifecycle de execução.       |
 | `ingestion_run_documents`     | `vector_ingestion_run_documents` | Continua como detalhe do lote, mas perde a ambiguidade com manifesto.                             |
 | `ingestion_document_manifest` | `vector_active_documents`        | Deixa de ser manifesto híbrido e vira lista explícita de documentos publicados.                   |
 | `ingestion_document_images`   | `vector_active_document_images`  | Passa a ligar ao documento ativo publicado.                                                       |
@@ -1498,7 +1404,7 @@ Tabelas atuais cujo conteúdo deixa de ser contrato principal:
 | --------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
 | `ingestion_dataset_generations`         | morre como entidade principal                                      | o modelo novo usa `last_published_run_id` e publicação explícita, sem camada de geração separada.            |
 | `ingestion_document_versions`           | morre como entidade principal                                      | versionamento implícito passa a viver no próprio documento publicado e na relação com o item do run.        |
-| `bm25_indexes`                          | permanece como tabela técnica de materialização física            | continua útil para operação física do índice, mas não define o acervo publicado.                            |
+| `bm25_indexes`                          | removida do schema físico                                          | BM25 passou a ser provider-native (Qdrant/Azure Search); não existe mais materialização lexical em PostgreSQL. |
 
 ### De-para de campos (por tabela)
 
@@ -1510,17 +1416,19 @@ Tabelas atuais cujo conteúdo deixa de ser contrato principal:
 | `tenant_code`            | `tenant_code`                 | mantém semântica.                                                                                  |
 | `vectorstore_id`         | `vectorstore_id`              | mantém semântica.                                                                                  |
 | `physical_vector_target` | `vector_target`               | vira nome explícito do alvo vetorial.                                                              |
-| `physical_bm25_target`   | `bm25_target`                 | vira nome explícito do alvo BM25.                                                                  |
 | `status`                 | `status`                      | mantém semântica de estado do acervo.                                                              |
 | `if_exists_policy`       | `if_exists_policy`            | mantém semântica operacional.                                                                      |
 | `active_generation_id`   | `last_published_run_id`       | deixa de apontar para geração e passa a apontar para o último run que alterou o acervo publicado.  |
 | `updated_at`             | `last_sync_at` e `updated_at` | `last_sync_at` marca a última sincronização com mudança real; `updated_at` continua trilha da linha. |
 
-`ingestion_runs` -> `vector_ingestion_runs`: mantém praticamente todos os campos com a mesma
-semântica (`run_id`, `tenant_code`, `vectorstore_id`, `source_system`, `task_id`, `queued_at`,
-`started_at`, `finished_at`, contadores, `status`, `correlation_id`, `error_summary`,
-`status_message`, `metadata`). Mudança principal: o `dataset_id`, antes indireto, passa a ser
-**FK explícita obrigatória** para `vector_dataset_master`.
+`vector_dataset_master` chegou a ter `bm25_provider`/`bm25_target` (par simétrico ao alvo vetorial). Ambas as colunas foram removidas do schema físico junto da remoção do BM25/FTS manual: o BM25 não tem mais alvo físico próprio, porque roda dentro do próprio `vector_target` (Qdrant/Azure Search).
+
+`ingestion_runs` -> `vector_ingestion_runs`: preserva apenas identidade, proveniência e fatos do
+lote (`run_id`, `dataset_id`, `tenant_code`, `vectorstore_id`, `source_system`, `trigger_mode`,
+`if_exists_policy`, `correlation_id`, `task_id`, contadores, `error_summary`, `metadata` e trilha
+de criação/atualização). `dataset_id` é **FK explícita obrigatória** para
+`vector_dataset_master`. `status`, `status_message`, `queued_at`, `started_at` e `finished_at`
+foram removidos; o lifecycle é lido exclusivamente do Job Core.
 
 `ingestion_run_documents` -> `vector_ingestion_run_documents`: mantém os campos descritivos do
 item do lote (`run_document_id`, `run_id`, `tenant_code`, `vectorstore_id`, `document_path`,
@@ -1548,9 +1456,10 @@ item do lote (`run_document_id`, `run_id`, `tenant_code`, `vectorstore_id`, `doc
 | `last_ingested_at`           | `published_at`           | passa a marcar a publicação atual no acervo.                                       |
 | `active_document_version_id` | morre                    | não existe mais camada separada de versão ativa.                                   |
 | sem equivalente              | `source_run_document_id` | nasce para apontar o item de lote que originou a publicação atual.                 |
-| sem equivalente              | `vector_document_key`    | nasce para identificar o documento no banco vetorial quando existir esse conceito. |
-| sem equivalente              | `bm25_document_key`      | nasce para identificar o documento no índice BM25 quando existir esse conceito.    |
+| sem equivalente              | `vector_document_key`    | identifica a mesma versão documental no PostgreSQL e nos payloads do banco vetorial. |
 | sem equivalente              | `removed_at`             | nasce para deleção lógica ou retirada do acervo.                                   |
+
+`vector_active_documents` também chegou a ter `bm25_document_key`, removida do schema físico junto da remoção do BM25/FTS manual (mesma razão: o BM25 não tem mais índice/documento lexical próprio fora do vector store).
 
 (Os campos comuns de descrição — `tenant_code`, `vectorstore_id`, `source_system`,
 `document_path`, `document_name`, `document_type`, `mime_type`, `file_size_bytes`,
@@ -1570,7 +1479,7 @@ Morrem no novo contrato principal: `ingestion_datasets.active_generation_id`,
 geração, manifesto híbrido e versão ativa separada deixa de ser o centro do modelo.
 
 Nascem: em `vector_dataset_master` — `vector_provider`, `vector_target`, `bm25_provider`,
-`bm25_target`, `last_published_run_id`, `last_completed_run_id`, `last_sync_at`. Em
+`bm25_target`, `last_published_run_id`, `last_sync_at`. Em
 `vector_ingestion_run_documents` — `source_uri`, `external_document_id`, `content_fingerprint`,
 `publication_action`. Em `vector_active_documents` — `canonical_document_key`, `current_run_id`,
 `source_run_document_id`, `content_fingerprint`, `vector_document_key`, `bm25_document_key`,
@@ -1581,28 +1490,73 @@ Nascem: em `vector_dataset_master` — `vector_provider`, `vector_target`, `bm25
 - `vector_dataset_master`: uma linha única por `tenant_code + vectorstore_id`, criada no
   bootstrap do acervo. Atualizar `vector_target`/`bm25_target` quando o acervo físico mudar;
   `last_published_run_id` só quando um run alterar de fato o acervo publicado;
-  `last_completed_run_id` quando o run terminar com sucesso (mesmo sem publicar nada novo);
   `last_sync_at` só quando o estado publicado mudar de verdade.
-- `vector_ingestion_runs`: uma linha por execução pai, com `dataset_id` obrigatório; status
-  atualizado ao longo do run; contadores fechados no término. Nunca é leitura primária do
-  acervo vivo.
+- `vector_ingestion_runs`: uma linha factual por lote, com `dataset_id` obrigatório, identidade,
+  origem e agregados documentais. Não contém status, fila, heartbeat, cancelamento nem timestamps
+  de lifecycle. A execução pertence exclusivamente a `job_core.job_runs`; a leitura operacional
+  combina o lifecycle do Job Core com estes fatos sem dual-write.
 - `vector_ingestion_run_documents`: uma linha por item observado. `status` conta o que aconteceu
-  no processamento; `publication_action` conta o efeito sobre o acervo ativo
+  no processamento e aceita apenas resultados terminais factuais (`success`, `inconsistent`,
+  `skipped`, `error`, `cancelled`); `publication_action` conta o efeito sobre o acervo ativo
   (`published`/`updated`/`unchanged`/`removed`/`skipped`/`failed`). O vínculo com o documento
   ativo não é gravado aqui — é resolvido por `source_run_document_id` em `vector_active_documents`.
   `content_fingerprint` representa o conteúdo físico processado, não a identidade de origem.
-  Durante o fan-out, `metadata.document_fanout_execution_lease` guarda somente estado, worker,
-  correlação, tentativa, heartbeat e expiração da permissão atual. A renovação exige o mesmo
-  worker e um lease ainda vigente; estados terminais substituem o objeto por uma liberação sem
-  expiração. O limite é calculado contando leases vigentes do mesmo `control_plane_run_id`.
+  É proibido guardar em `metadata` lease, heartbeat, owner, retry, cancelamento ou qualquer outro
+  estado de execução do host.
 - `vector_active_documents`: uma linha ativa por `dataset_id + canonical_document_key`. Conteúdo
   novo do mesmo documento atualiza a mesma linha e troca `current_run_id`,
   `source_run_document_id`, `content_fingerprint`, `document_hash` e `published_at`. Remoção
   lógica marca `status` e `removed_at` antes de qualquer passo destrutivo físico. É a tabela que
-  a UI deve usar para contar documentos vivos.
+  a UI deve usar para contar documentos vivos. Na ingestão de PDF, `vector_document_key` recebe o
+  mesmo valor determinístico de `document_version_id`, calculado a partir da identidade lógica e
+  do fingerprint da versão. Para PDFs, a identidade lógica vem do ID estável da origem e o
+  fingerprint da versão vem do SHA-256 do binário. A chave não depende de nome nem de caminho
+  quando a origem fornece ID externo estável.
 - Tabelas de detalhe: sempre representam a versão atualmente publicada. Ao publicar/atualizar um
   documento ativo, o detalhe físico é recriado de forma consistente e o detalhe antigo do mesmo
   `active_document_id` deixa de valer. Chunks ativos carregam `vector_point_id` quando existir.
+
+### Ponte documental PostgreSQL -> Qdrant
+
+- Cada chunk publicado no Qdrant carrega `vector_document_key` no nível superior do payload, com
+  o mesmo valor gravado em `vector_active_documents.vector_document_key`.
+- Toda collection Qdrant criada ou reconciliada pela ingestão mantém um payload index do tipo
+  `KEYWORD` para `document_identity_key` e `vector_document_key`. Isso permite localizar o
+  documento lógico e filtrar chunks por uma ou várias versões sem comparar nome, caminho ou
+  metadados textuais frágeis.
+- Depois de publicar e confirmar a nova `vector_document_key` em `vector_active_documents`, a
+  ingestão remove do Qdrant os pontos da mesma `document_identity_key` que não pertencem à versão
+  ativa. A operação é idempotente, possui retry e volta a ser tentada quando uma execução futura
+  pula o documento por já estar sincronizado.
+- O isolamento físico continua sendo definido pelo target oficial do dataset
+  (`tenant_code + vectorstore_id + environment`). A chave documental identifica a versão dentro
+  desse target; ela não substitui o isolamento do dataset.
+- Se a linha ativa for encontrada sem `vector_document_key`, o runtime não aceita o falso
+  “sincronizado”: ele reprocessa o documento para preencher PostgreSQL e Qdrant. Para acervos
+  criados pelo contrato antigo, cuja identidade de PDF era o hash binário, a migração segura é
+  recriar primeiro o acervo com `if_exists=overwrite` e somente depois voltar ao incremental.
+  Não existe DDL executado pelo runtime.
+
+### Contrato para pesquisa RAG limitada a documentos
+
+- A API que lista os documentos do acervo expõe `active_document_id`; esse é o identificador que
+  o cliente deve guardar e reenviar quando quiser limitar uma pergunta a documentos específicos.
+- Ao implementar o filtro na API de pergunta, o backend deve validar que cada
+  `active_document_id` pertence ao mesmo `tenant_code + vectorstore_id` da requisição e resolver
+  a seleção para a `vector_document_key` atualmente publicada. O cliente não precisa conhecer
+  `document_identity_key`, IDs do Google Drive nem detalhes físicos do Qdrant.
+- A busca vetorial deve aplicar um filtro `match any` no payload indexado
+  `vector_document_key`. O mesmo conjunto resolvido precisa limitar as parcelas FTS e BM25 da
+  busca híbrida; limitar apenas o Qdrant produziria respostas incoerentes.
+- A ingestão de PDF já prepara esse contrato: publica `source_system`, `source_uri` e
+  `external_document_id` em `vector_active_documents`; grava `document_identity_key`,
+  `document_version_id` e `vector_document_key` em cada payload do Qdrant; e registra a mesma
+  identidade por fingerprint nos eventos canônicos
+  `ingestion.telemetry.document_identity.resolved`,
+  `ingestion.telemetry.vector_active_publish.persisted` e
+  `ingestion.document.vector_supersession.cleaned`.
+- Ausência, vazio ou divergência dessas chaves é falha de integridade do documento, não motivo
+  para ampliar silenciosamente a consulta para todo o acervo.
 
 ### Regras de leitura (quando o corte ocorrer)
 
@@ -1611,7 +1565,8 @@ Nascem: em `vector_dataset_master` — `vector_provider`, `vector_target`, `bm25
   (`vector_ingestion_run_documents`) e quantos documentos estão vivos agora
   (`vector_active_documents`). Resumo do acervo vem de `vector_dataset_master`. É proibido
   deduzir "documentos vivos" a partir de `vector_ingestion_runs` ou "documentos do lote" a
-  partir de `vector_active_documents`.
+  partir de `vector_active_documents`. Status e lifecycle da execução vêm somente do Job Core;
+  a UI aplica esse overlay sem gravá-lo nas tabelas documentais.
 - **Backend de ingestão:** escreve o histórico do lote em `vector_ingestion_runs` e
   `vector_ingestion_run_documents`; decide publicação olhando o documento ativo por
   `dataset_id + canonical_document_key`; atualiza `vector_active_documents` só no publish do
@@ -1744,15 +1699,15 @@ Esta tabela registra o pedido formal de aprovação humana quando um agente em b
 
 Em termos conceituais, pense nela como a fila oficial de aprovações pendentes. Cada linha representa uma pausa que pode ser aprovada, editada ou rejeitada. A tabela também guarda como a notificação foi enviada, quem deveria responder, se o token ainda vale, quando a decisão chegou e qual foi o resultado final.
 
-Em linguagem simples: quando o agente para e pede ajuda humana, esta tabela vira o “protocolo” do pedido. Ela responde perguntas práticas como estas: qual execução parou, para quem o pedido foi enviado, por qual canal, se a aprovação ainda está em aberto, se já expirou, quem decidiu e quando a execução pode continuar com segurança.
+Em linguagem simples: quando o agente para e pede ajuda humana, esta tabela vira o “protocolo” do pedido. Ela responde perguntas práticas como estas: qual job produziu a pausa, para quem o pedido foi enviado, por qual canal, se a aprovação ainda está em aberto, se já expirou e quem decidiu. A decisão não reabre o mesmo lifecycle do Job Core: ela submete um segundo job, com novo `job_id` e novo `correlation_id`, ligado ao mesmo `approval_request_id`, `thread_id` e checkpoint.
 
 - Finalidade prática: materializar a pausa Human-in-the-Loop assíncrona como registro durável, auditável e seguro.
 - O que ela resolve na prática: evita depender apenas de estado efêmero em memória ou Redis para uma aprovação humana que pode precisar de rastreabilidade posterior.
 - Chave primária: `approval_request_id`.
 - Colunas:
 - `approval_request_id`: identificador UUID do pedido de aprovação.
-- `correlation_id`: correlação ponta a ponta da execução original, usada para juntar aprovação, logs e retomada.
-- `thread_id`: thread formal do runtime agentic que deverá ser retomada depois da decisão.
+- `correlation_id`: correlação do job que produziu a pausa, usada para juntar aprovação e seus logs; o job de retomada possui correlação própria.
+- `thread_id`: thread formal do runtime agentic cujo checkpoint será continuado por um novo job depois da decisão.
 - `task_id`: identificador da task assíncrona, quando a execução tiver sido iniciada em background com controle de progresso.
 - `user_email`: e-mail do usuário associado à execução original.
 - `user_code`: código interno do usuário autenticado que originou a execução.
@@ -1820,15 +1775,15 @@ Isso importa porque a integridade de HIL não depende só da aplicação. O banc
 
 ### Visão geral do schema agent_background
 
-O schema `agent_background` materializa a capacidade de executar pedidos agentic em segundo plano sem prender a API nem o chat.
+O schema `agent_background` materializa fatos necessários para executar pedidos agentic em segundo plano sem prender a API nem o chat. O lifecycle da execução fica exclusivamente em `job_core.job_runs`.
 
 Em termos práticos, ele separa sete peças que não devem ficar misturadas:
 
 - o alvo autorizado que pode ser executado;
 - a solicitação criada a partir do prompt do usuário;
 - a agenda que decide quando isso deve acontecer;
-- o run concreto que de fato foi executado;
-- os eventos persistidos do ledger operacional;
+- a identidade factual/histórica do run de domínio;
+- os eventos factuais do domínio;
 - a aprovação humana durável ligada ao run, quando houver HIL;
 - a fila de outbox para publicação e integração assíncrona.
 
@@ -1836,13 +1791,12 @@ Essa separação é importante porque pedido, agenda e execução são coisas di
 
 ### Onde este schema é usado no código
 
-- `src/agentic_layer/background_execution/services.py` usa o schema para criar solicitações, listar agendas, cancelar, reagendar e consultar runs.
-- `src/agentic_layer/background_execution/runtime.py` usa o ledger para carregar o contexto do run, persistir thread, refletir resultado e integrar HIL assíncrono.
-- `src/agentic_layer/tools/system_tools/background_execution.py` expõe as tools internas que operam esse schema sem aceitar `tenant_id` livre pelo prompt.
-- `src/api/services/admin/background_execution_service.py` e `src/api/routers/admin/background_execution_router.py` usam o schema para leitura administrativa de requests, schedules, runs, eventos e pendências HIL.
-- `src/api/services/hil_approval_decision_service.py` e `src/api/services/background_execution_hil_run_finalizer.py` sincronizam a decisão humana com o run do ledger background.
+- `src/agentic_layer/background_execution/services.py` preserva solicitação, alvo, agenda factual e consultas do agregado.
+- `src/agentic_layer/tools/system_tools/background_execution.py` expõe as tools internas sem aceitar `tenant_id` livre pelo prompt.
+- `src/api/services/admin/background_execution_service.py` e `src/api/routers/admin/background_execution_router.py` projetam fatos e snapshots do Job Core para a leitura administrativa.
+- `src/api/services/hil_approval_decision_service.py` valida/persiste a decisão humana e submete um novo job nominal de continuação.
 
-Em linguagem simples: o schema `agent_background` é o banco da história operacional completa da execução background, enquanto o código acima é o conjunto de portas e serviços que lê e escreve essa história.
+Em linguagem simples: o schema guarda fatos de pedido, resultado, evento, HIL e outbox. Status de job, heartbeat, stale, retry, claim e terminalização não são escritos nem decididos aqui. HIL liga o job original ao novo job de continuação por `approval_request_id`, `thread_id`/checkpoint e fatos duráveis; não reabre a mesma run do Core.
 
 ### background_execution_targets
 
@@ -1951,8 +1905,8 @@ Em linguagem simples: o schema `agent_background` é o banco da história operac
 
 ### background_execution_runs
 
-- Finalidade prática: registrar a projeção compatível de cada execução concreta visível para o slice background.
-- O que resolve na prática: mantém histórico operacional, HIL e APIs administrativas do domínio background sem transformar esse ledger na fonte canônica do scheduler.
+- Finalidade prática: preservar a identidade factual/histórica de execuções do slice background e o vínculo físico usado por HIL.
+- O que resolve na prática: mantém fatos e relações antigas auditáveis. Não é fila, lifecycle, retry nem projeção operacional autoritativa; estado atual de job vem do Job Core.
 - Chave primária: `run_id`.
 - Colunas:
 - `run_id`: identificador UUID do run.
@@ -1966,12 +1920,12 @@ Em linguagem simples: o schema `agent_background` é o banco da história operac
 - `planned_run_at`: janela planejada da execução.
 - `started_at`: início real do run.
 - `finished_at`: término real do run.
-- `status`: estado do run, como `queued`, `dispatching`, `running`, `waiting_hil`, `completed`, `failed`, `cancelled`, `expired` ou `skipped`.
+- `status`: coluna física histórica do modelo anterior. Seus valores não governam a execução atual e não devem ser usados para decidir vida/morte do job.
 - `correlation_id`: correlação ponta a ponta do run.
 - `thread_id`: thread formal do runtime agentic.
-- `worker_id`: worker que processou o run, quando houver.
-- `attempt_number`: tentativa corrente.
-- `max_attempts`: máximo de tentativas permitidas.
+- `worker_id`: identidade histórica do worker, quando gravada antes do corte.
+- `attempt_number`: tentativa histórica do modelo anterior; não autoriza retry de job.
+- `max_attempts`: limite histórico do modelo anterior; não é política do Job Core atual.
 - `final_response`: resposta final textual do runtime.
 - `result_payload`: resultado estruturado em `jsonb`.
 - `telemetry`: telemetria operacional em `jsonb`.
@@ -1990,10 +1944,10 @@ Em linguagem simples: o schema `agent_background` é o banco da história operac
 - Checks JSON garantindo `result_payload`, `telemetry`, `error_payload` e `metadata` como objeto.
 - Índices por tenant, usuário, `correlation_id` e runs ativos.
 - Onde é usado e como:
-- `AgenticBackgroundExecutionRuntime.execute_run(...)` lê o contexto do run e persiste thread, resultado, telemetria e erro.
-- As APIs administrativas usam essa tabela para listar runs recentes, ativos e detalhar um run específico.
-- As tools `get_background_execution_result`, `get_last_background_execution_result`, `list_recent_background_executions` e `list_running_background_agents` consultam esse ledger.
-- A verdade canônica do disparo continua em `scheduler.job_executions`; esta tabela espelha o que o slice background precisa para operar HIL e auditoria própria.
+- fatos de request/target/HIL podem preservar `run_id` como identidade do agregado;
+- superfícies administrativas combinam os fatos do domínio com snapshots tipados do Job Core;
+- nenhum caminho ativo escreve status, owner, heartbeat, retry, claim ou terminalização nesta tabela;
+- novas execuções são processos nominais do catálogo único e entram pelo publisher do Job Core.
 
 ### background_execution_events
 
@@ -2972,14 +2926,16 @@ o runtime T14 resolve `saas_project_id + operation`, pinando a release ativa e s
 
 ## Leitura Operacional do Schema
 
-- Para analisar integridade do acervo ativo no modelo oficial, primeiro leia `vector_dataset_master` para descobrir `dataset_id`, `vector_target`, `bm25_target`, `last_published_run_id` e `last_completed_run_id` do par `tenant_code + vectorstore_id`. Depois confira `vector_active_documents` e as filhas `vector_active_document_pages`, `vector_active_document_chunks` e `vector_active_document_images`. O BM25 materializado continua em `bm25_indexes`, mas o pivô do acervo vivo já não é `active_generation_id`.
+- Para analisar integridade do acervo ativo no modelo oficial, primeiro leia `vector_dataset_master` para descobrir `dataset_id`, `vector_provider`, `vector_target`, `if_exists_policy` e `last_published_run_id` do par `tenant_code + vectorstore_id`. Depois confira `vector_active_documents` e as filhas `vector_active_document_pages`, `vector_active_document_chunks` e `vector_active_document_images`. Não existe mais coluna `bm25_target` nem tabela `bm25_indexes`: o BM25 é provider-native e vive dentro do próprio alvo vetorial (`vector_target`), sem materialização lexical em PostgreSQL. O pivô do acervo vivo também já não é `active_generation_id`.
 - Para investigar divergência de dataset, use `vector_ingestion_runs` e `vector_ingestion_run_documents` como trilha histórica, não como fonte primária do estado vivo do acervo.
 - Para localizar um documento vivo no acervo vetorial, comece por `vector_active_documents`. Para ACL/autorização e identidade lógica preservada, complemente com `ingestion_document_manifest`.
 - Para localizar um documento externo do Confluence, consulte `source_system` junto com `external_document_id`.
 - Para auditoria e filtros SQL de autorização, priorize `is_restricted`, `allows_anonymous`, `permitted_groups` e `authorization_checked_at` em `ingestion_document_manifest`.
-- Para investigar a execução de uma ingestão, use `vector_ingestion_runs` e depois `vector_ingestion_run_documents`.
+- Para investigar a execução de uma ingestão, comece pelo job em `job_core.job_runs` e seus
+  eventos. Use `vector_ingestion_runs` e `vector_ingestion_run_documents` somente para os fatos
+  do lote e dos PDFs, ligados por `correlation_id`, `task_id` e identidades de run.
 - Para abrir a trilha completa de uma interação, use `interaction_runs` e depois `interaction_run_events`.
-- Para investigar Execução Agentic em Background, comece por `agent_background.background_execution_requests`, depois siga para `scheduler.scheduled_jobs` e `scheduler.job_executions`, e só então leia `agent_background.background_execution_runs` e `agent_background.background_execution_events` como projeção compatível do slice.
+- Para investigar Execução Agentic em Background, comece pelo job correspondente em `job_core.job_runs` e reconstrua o lifecycle em `job_core.job_run_events`. Use `agent_background.background_execution_requests`, `agent_background.background_execution_runs` e `agent_background.background_execution_events` apenas para fatos do domínio; `scheduler.scheduled_jobs` participa somente quando existe agenda, e `scheduler.job_executions` não é fonte ativa de runtime.
 - Para investigar uma aprovação humana assíncrona ligada a run background, priorize `agent_background.agent_hil_approval_requests`; ali estão o pedido, o run, o canal, o prazo, o status, o token em hash e a decisão final aceita pelo sistema.
 - Para validar conta pessoal e autenticação, comece por `user_accounts`, `user_auth_identities` e `user_password_credentials`.
 - Para validar configuração organizacional, comece por `tenants`, `tenant_yaml`, `tenant_access_keys`, `tenant_channels`, `tenant_security_keys` e `tenant_secrets`.
@@ -3006,7 +2962,7 @@ Causa provável: a investigação começou em `vector_ingestion_runs` ou
 vivo do dataset.
 
 Como confirmar: volte para `vector_dataset_master`,
-`vector_ingestion_runs`, `vector_active_documents` e, quando a
+`vector_active_documents` e, quando a
 investigação envolver ACL/autorização, `ingestion_document_manifest`.
 
 ### Há colisão aparente entre documentos com o mesmo conteúdo
@@ -3022,10 +2978,10 @@ Como confirmar: trate `canonical_source_key` como identidade da fonte e
 Causa provável: a consulta foi feita só em tabelas de sessão ou só em
 logs, sem juntar a trilha persistida principal.
 
-Como confirmar: para HIL em execução background, comece em
-`agent_background.background_execution_runs`, depois
-`agent_background.agent_hil_approval_requests` e
-`agent_background.background_execution_events`; para login e sessão,
+Como confirmar: para HIL em execução background, comece pelos dois jobs ligados à
+pausa e à retomada em `job_core.job_runs` e `job_core.job_run_events`; depois use
+`agent_background.agent_hil_approval_requests`, `agent_background.background_execution_runs`
+e `agent_background.background_execution_events` para os fatos do domínio. Para login e sessão,
 comece em `user_accounts`, `user_auth_identities` e nas tabelas
 correlatas do fluxo web.
 

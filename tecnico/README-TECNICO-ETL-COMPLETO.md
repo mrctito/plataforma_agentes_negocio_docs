@@ -10,10 +10,10 @@ Este documento não trata ETL como sinônimo de ingestão documental nem como si
 
 Os entry points confirmados no código são estes.
 
-1. POST de ETL dedicado na camada RAG, que recebe o request operacional.
-2. Compatibilidade de runtime que resolve YAML, correlation_id, user_email e modo de execução.
-3. Worker oficial, que consome PreparedEtlJobCommand.
-4. Coordenador de fan-out, quando mais de um pipeline real está habilitado.
+1. POST de ETL dedicado na camada RAG (`extract_transform_load_endpoint`, `src/api/routers/rag_router.py`), que recebe o request operacional.
+2. `EtlHttpApplicationService` (`src/api/services/etl_http_application_service.py`) — boundary de aplicação que resolve YAML, correlation_id, user_email e modo de execução; substituiu o antigo módulo de compatibilidade `rag_runtime_etl_compat.py`, removido do produto.
+3. Worker oficial: o `JobCoreExecutor` resolve o `JobProcessDescriptor` de `route_kind="etl"` pelo `dispatch_mode` (`prepared_yaml` ou `pipeline`) no catálogo único (`src/api/services/async_job_process_catalog.py`) e executa `PreparedEtlProcess`/`EtlPipelineProcess` (`src/api/services/etl_job_processes.py`) — não existe mais `PreparedEtlJobCommand`.
+4. `EtlPipelineFanoutCoordinator.build_plan` (`src/api/services/etl_pipeline_fanout_coordinator.py`), quando mais de um pipeline real está habilitado — hoje ele só **declara** o plano fechado de pipelines; materializar, admitir e agregar os filhos é responsabilidade do Job Core (Parte 4 de `src/CLAUDE.md`), não do coordenador.
 
 O request do ETL aceita os campos correlation_id, user_email, encrypted_data, execution_mode e estimated_duration_seconds. A resposta assíncrona usa o mesmo contrato-base das execuções monitoráveis da plataforma e devolve task_id, status, message e campos de acompanhamento.
 
@@ -28,9 +28,9 @@ O ciclo operacional confirmado no código é este.
 5. O runtime seleciona o modo de execução.
 6. O YAML é recomposto com a sessão final da execução.
 7. O job é devolvido como aceito ou executado síncronamente, conforme o modo.
-8. No caminho assíncrono, o comando preparado é entregue ao worker oficial.
-9. O worker chama o handler PreparedEtlJobHandler.
-10. O handler delega a _execute_etl_command no executor assíncrono.
+8. No caminho assíncrono, `EtlHttpApplicationService` monta o envelope (`build_prepared_etl_job_envelope`, `src/api/services/etl_async_job_envelope_builder.py`) e publica no Job Core (`route_kind="etl"`, `dispatch_mode="prepared_yaml"`).
+9. O worker reivindica a linha (`claim_next_run`) e o `JobCoreExecutor` resolve o processo pelo catálogo, instanciando `PreparedEtlProcess` (`src/api/services/etl_job_processes.py`).
+10. `PreparedEtlProcess.execute` delega a `execute_etl_async` (`src/api/services/rag_async_execution_service.py`), que chama o orquestrador de domínio; se o resultado trouxer mais de um pipeline habilitado, o processo devolve um `ChildWorkPlan` que o Job Core materializa como filhos `EtlPipelineProcess` (`dispatch_mode="pipeline"`).
 
 O detalhe importante aqui é que o ETL não depende do request bruto depois da preparação inicial. O prepared YAML passa a ser o contrato operacional da execução.
 

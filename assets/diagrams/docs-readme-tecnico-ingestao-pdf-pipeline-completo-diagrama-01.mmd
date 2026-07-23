@@ -1,22 +1,25 @@
 sequenceDiagram
   participant HTTP as API /rag/ingest
   participant PREP as PreparedAsyncIngestionExecutionService
-  participant ENQ as PreparedAsyncIngestionExecutionService.schedule
-  participant MQP as Fila pai Dramatiq
-  participant WP as Worker pai
+  participant PUB as JobCoreRuntimeIngestionPublisher.publish
+  participant LEDGER as job_core.job_runs (PostgreSQL)
+  participant WP as Worker pai (JobCoreWorkerPollingRuntime)
   participant FAN as DocumentFanoutCoordinator
-  participant MQC as Fila filha Dramatiq
-  participant WC as Worker filho
+  participant WC as Worker filho (mesmo poller)
   participant PDF as Pipeline PDF
   participant IDX as Indexacao final
 
   HTTP->>PREP: valida request e compoe YAML
-  PREP->>ENQ: schedule_prepared_ingestion_worker_job()
-  ENQ->>MQP: publica envelope prepared_yaml
-  MQP->>WP: entrega job pai
+  PREP->>PUB: publish(dispatch_mode=prepared_yaml)
+  PUB->>LEDGER: cria job pai em queued
+  WP->>LEDGER: claim_next_run (FOR UPDATE SKIP LOCKED)
+  LEDGER-->>WP: entrega job pai reivindicado
   WP->>FAN: build_plan() quando fan-out e elegivel
-  FAN->>MQC: publica envelopes document_fanout_child
-  MQC->>WC: entrega documento filho
+  FAN->>PUB: submete filhos (dispatch_mode=document_fanout_child, max_active_children)
+  PUB->>LEDGER: cria filhos em queued
+  WC->>LEDGER: claim_next_run (respeita max_active_children do pai)
+  LEDGER-->>WC: entrega documento filho reivindicado
   WC->>PDF: executa slice PDF do documento
   PDF->>IDX: devolve chunks para indexacao
   IDX-->>WC: persistencia e telemetria terminal
+  WC->>LEDGER: complete_run (estado terminal)

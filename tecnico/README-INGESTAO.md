@@ -45,21 +45,16 @@ Fan-out documental existe para throughput e isolamento. Ele permite que um lote 
 
 Mas existe uma trava anterior ao primeiro filho: para o mesmo `tenant_code + vectorstore_id`, só pode existir um run pai ativo por vez. Em termos simples, pode haver paralelismo dentro do lote, mas não pode haver dois lotes pais diferentes brigando pelo mesmo acervo vivo ao mesmo tempo.
 
-Essa regra ignora `vector_store.if_exists`. O campo ainda decide como o dataset vivo será tratado quando o lote for válido, mas ele não serve para liberar concorrência entre dois pais. Se já existe um pai ativo, o comportamento correto é rejeitar a nova admissão até o run anterior terminar ou ser reconciliado.
+Essa regra ignora `vector_store.if_exists`. O campo ainda decide como o dataset vivo será tratado quando o lote for válido (`overwrite`/`update`/`skip` — ver `src/config/vector_store_contract.py::VectorStoreContract` e `src/ingestion_layer/vector_stores/dataset_lifecycle_orchestrator.py::apply_if_exists_policy`), mas ele não serve para liberar concorrência entre dois pais. Se já existe um pai ativo, o comportamento correto é rejeitar a nova admissão até o run anterior terminar ou ser reconciliado.
 
-Mas a fila não decide regra de negócio. RabbitMQ e Dramatiq apenas transportam o envelope. Eles podem reentregar mensagem antiga ou acordar um filho atrasado. Isso é normal em sistemas assíncronos.
+**Não existe mais RabbitMQ nem Dramatiq no transporte de jobs** (limpeza anterior a 13/07/2026). Não há fila física separada para pai e filho, não há broker e não há redelivery de mensagem: pai e filho são a mesma tabela `job_core.job_runs`, e cada linha só pode ser reivindicada uma única vez por `claim_next_run` (`FOR UPDATE SKIP LOCKED`, `src/core/job_core/postgres_store.py`). Também não existe mais `DocumentFanoutExecutionGate`: essa classe própria da ingestão foi removida do produto (plano `investigacao-simplificacao-job-core`, tarefa T10, 2026-07-17).
 
-Quem decide se um filho ainda pode executar é o plano de controle durável no PostgreSQL. No código atual, essa decisão está centralizada em `DocumentFanoutExecutionGate`.
+Quem decide hoje, em dois pontos diferentes, nenhum deles vivendo na ingestão:
 
-O contrato prático é este:
+- **Admissão de um filho novo:** o próprio Job Core, no momento do `claim_next_run`. O envelope do filho carrega `dispatch_mode=document_fanout_child` e o pai carrega `max_active_children` (`JobEnvelope.max_active_children`); o `claim_next_run` só libera um filho novo se o número de filhos ativos daquele pai estiver abaixo do limite, na mesma consulta atômica que reivindica a linha.
+- **Cancelamento de um filho já em execução:** o `JobCoreCancellationToken` do Job Core, consultado cooperativamente pelo `DocumentFanoutChildExecutorService` durante o processamento do documento. Se o pai não terminar de forma limpa (worker morto, heartbeat expirado), quem encerra a run órfã é o reconciliador cancel-only do Job Core (`cancel_orphaned_run`), nunca uma reconciliação local da ingestão.
 
-- a fila entrega a mensagem;
-- a gate consulta o estado canônico do run pai e do fan-out;
-- só então o filho pode executar, republicar ou promover outro `queued`.
-
-Se o pai estiver `cancelled`, `cancelling`, `completed` ou `failed`, o filho deve ser bloqueado. Se o plano de controle estiver indisponível, o comportamento correto é falhar fechado. Em linguagem simples: sem confirmação do banco, não existe trabalho caro de PDF.
-
-Isso torna o redelivery seguro. A mensagem velha pode até acordar, mas não consegue gerar OCR, parsing, chunking ou indexação sem autorização durável.
+Em linguagem simples: antes, a ingestão perguntava "o pai ainda deixa eu trabalhar?" a cada filho, consultando uma gate própria. Hoje, se o filho foi reivindicado é porque o Job Core já decidiu que ele pode rodar; e se o pai for cancelado no meio do caminho, o mesmo Job Core avisa o filho para parar. Detalhe completo, com símbolos e eventos de log: `README-TECNICO-INGESTAO-PDF-PIPELINE-COMPLETO.md`, seções 2.3, 2.4 e 3.4.
 
 ## 5.1 Elegibilidade real do fan-out
 
@@ -79,10 +74,9 @@ Quando o operador cancela um lote com fan-out por documento, o efeito correto n�
 
 Em termos práticos, o contrato operacional é este:
 
-- filhos `queued` e `retrying` podem ser terminalizados no plano de controle sem iniciar trabalho caro;
-- mensagens antigas do broker podem até acordar, mas a gate canônica bloqueia a continuação;
-- filho já dentro de OCR, download ou parsing pesado depende de checkpoint de cancelamento e drenagem cooperativa;
-- se o broker não expuser contagem por run, a UI deve mostrar essa limitação como falta de visibilidade física por lote, não como falha do cancelamento.
+- filho ainda `queued` no ledger do Job Core é cancelado diretamente, sem nunca ser reivindicado e sem iniciar OCR, parsing ou republicação (não existe broker nem redelivery neste transporte — a linha do filho só é reivindicada uma vez);
+- filho já dentro de OCR, download ou parsing pesado só para quando o `JobCoreCancellationToken` observa `cancel_requested`/`cancelled` num checkpoint cooperativo, ou quando o worker morre e o reconciliador cancel-only do Job Core (`cancel_orphaned_run`) encerra a run órfã diretamente como `cancelled`;
+- não existe mais `auto_recovery` nem `auto_promotion` tentando salvar ou reencaminhar um filho — o cancelamento nunca vira retry, replay ou reenfileiramento.
 
 Isso importa porque evita duas leituras erradas ao mesmo tempo: achar que o botão falhou quando o lote ainda está drenando, ou achar que o sistema promete kill físico imediato quando o modelo real é cooperativo.
 
@@ -114,7 +108,7 @@ Depois deste documento, a leitura mais produtiva é esta:
 
 1. `README-INGESTAO-INDICE.md`, para navegar pelos documentos do domínio.
 2. `README-CONCEITUAL-INGESTAO-PDF-PIPELINE-COMPLETO.md`, para visão funcional do PDF.
-3. `README-TECNICO-INGESTAO-PDF-PIPELINE-COMPLETO.md`, para pipeline técnico do PDF e a gate canônica do fan-out.
+3. `README-TECNICO-INGESTAO-PDF-PIPELINE-COMPLETO.md`, para pipeline técnico do PDF e a admissão/cancelamento canônicos do fan-out pelo Job Core.
 4. `README-CONCEITUAL-INGESTAO-HTML-PIPELINE-COMPLETO.md` e `README-TECNICO-INGESTAO-HTML-PIPELINE-COMPLETO.md`, para HTML e web.
 5. `README-CONCEITUAL-INGESTAO-EXCEL-PIPELINE-COMPLETO.md` e `README-TECNICO-INGESTAO-EXCEL-PIPELINE-COMPLETO.md`, para planilhas.
 6. `README-CONCEITUAL-INGESTAO-JSON-PIPELINE-COMPLETO.md` e `README-TECNICO-INGESTAO-JSON-PIPELINE-COMPLETO.md`, para JSON estruturado.
@@ -128,4 +122,4 @@ Pense na ingestão como um centro de triagem.
 - Outra prepara o ambiente certo para cada item.
 - Outra acompanha se o lote ainda está autorizado a seguir.
 
-Se a fila entregar uma caixa antiga, isso não significa que a caixa ainda pode entrar na esteira. Antes de trabalhar, o sistema confere no banco se aquele lote continua válido. Esse é o papel do contrato operacional da ingestão.
+Cada caixa (documento) só é retirada da prateleira uma única vez — não existe fila com reentrega. Antes de retirar, o sistema confere no banco (Job Core) se aquele lote continua válido e se ainda há vaga para mais uma caixa em processamento. Esse é o papel do contrato operacional da ingestão.

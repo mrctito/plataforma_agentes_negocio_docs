@@ -64,7 +64,7 @@ No slice de PDF, `vector_store.if_exists` nao escolhe parser, OCR nem chunking. 
 
 O gate 2 so e executado se o gate 1 tiver permitido continuar. Portanto, em uma ingestao normal cuja collection ja existe, `if_exists=skip` nao chega ao comportamento de "pular este PDF": ele falha no gate do acervo e encerra o job. Para adicionar ou atualizar PDFs em uma collection existente, use `if_exists=update`.
 
-No gate documental, `skip` e `update` usam o mesmo lookup de existencia: o runtime resolve `document_identity_key`, prefere `pdf:sha256:<hash_binario_do_pdf>`, usa `canonical_source_key` como fallback e consulta o manifesto do mesmo `tenant_code + vectorstore_id`. A diferenca vem depois do lookup: `skip` rejeita qualquer documento encontrado; `update` compara `pdf_binary_sha256` ou `document_hash` e so reprocessa quando a versao mudou.
+No gate documental, `skip` e `update` usam o mesmo lookup de existencia: o runtime resolve `document_identity_key` pela identidade estavel da origem, preferindo `source_system + external_document_id` (como o `file_id` do Google Drive) e usando a URI canonica como fallback. Depois consulta o manifesto do mesmo `tenant_code + vectorstore_id`. A diferenca vem apos o lookup: `skip` rejeita qualquer documento completo encontrado; `update` compara `pdf_binary_sha256` ou `document_hash` e reprocessa quando a versao mudou. Se faltar a chave vetorial da versao, o documento e reprocessado mesmo com o mesmo conteudo para reparar o contrato.
 
 Quando o gate documental decide pular um PDF, apenas esse PDF recebe status `skipped` e o lote continua. Essa regra nao se aplica ao gate anterior do acervo, no qual `skip` gera excecao e aborta o job inteiro.
 

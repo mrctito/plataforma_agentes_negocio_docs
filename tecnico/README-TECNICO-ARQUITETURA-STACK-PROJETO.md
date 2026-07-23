@@ -25,7 +25,7 @@ Cada processo define explicitamente PROCESS_ROLE. O runner da API força api, o 
 
 ### 3.3 Infrastructure guardrails
 
-Antes de entregar controle ao runtime principal, a plataforma valida infraestrutura mandatória. Esse contrato inclui PostgreSQL obrigatório para telemetria e cofres correlatos, Redis obrigatório, backend assíncrono RabbitMQ e consumer runtime Dramatiq.
+Antes de entregar controle ao runtime principal, a plataforma valida infraestrutura mandatória. Esse contrato inclui PostgreSQL obrigatório para telemetria e cofres correlatos, Redis obrigatório, backend assíncrono `job_core` e consumer runtime `job_core_polling` (`_validate_async_job_runtime_contract`, `src/api/startup/infrastructure_guardrails.py`) — não há mais RabbitMQ nem Dramatiq nesse contrato.
 
 ### 3.4 YAML-first governado
 
@@ -57,9 +57,8 @@ O runtime não trata configuração como texto arbitrário. A stack agentic usa 
 
 ## 4.4 Execução assíncrona e agendamento
 
-- RabbitMQ é o backend assíncrono obrigatório confirmado pelas guardrails.
-- Dramatiq é o consumer runtime obrigatório do processamento assíncrono.
-- aio-pika e pika aparecem na stack de mensageria.
+- `job_core` é o backend assíncrono obrigatório confirmado pelas guardrails; `job_core_polling` é o consumer runtime obrigatório (polling durável sobre `job_core.job_runs`, sem broker de mensagens).
+- RabbitMQ não faz parte do transporte de jobs; `aio-pika`/`pika` seguem no `requirements.txt` só para outros subsistemas (`src/channel_layer/`, wake-up de checkpoint). `Dramatiq` segue listado no `requirements.txt`, mas nenhum arquivo em `src/` o importa mais — dependência morta, não wiring ativo.
 - APScheduler faz parte da stack de agendamento.
 
 ## 4.5 UI, frontend e documentação visual
@@ -106,11 +105,11 @@ Isso quer dizer o seguinte, de forma objetiva:
 - quem consome entrega o envelope ao Job Core V1;
 - quem decide o handler usa `route_kind + dispatch_mode`.
 
-O ganho técnico é eliminar caminhos paralelos de publicação, que antes aumentavam acoplamento entre domínio e transporte. O worker continua com RabbitMQ como backend e Dramatiq como consumer runtime, mas agora o transporte opera sobre um envelope genérico e não sobre métodos especializados de ingestão ou ETL.
+O ganho técnico é eliminar caminhos paralelos de publicação, que antes aumentavam acoplamento entre domínio e transporte. O worker consome por `job_core_polling` (polling durável sobre `job_core.job_runs`, sem broker de mensagens); RabbitMQ e Dramatiq foram removidos do transporte de jobs antes do plano de simplificação do Job Core (limpeza de 13/07/2026) e não são mais o consumer runtime nem o backend deste caminho.
 
-No slice de ingestão, isso não elimina os dois boundaries de entrada do job pai. O que o contrato elimina é o publish paralelo fora do envelope canônico. Hoje `schedule_prepared_ingestion_worker_job(...)` publica `prepared_yaml`, e `IngestionJobExecutor` publica `resolve_on_worker`; ambos convergem para o mesmo `QueuedJobEnvelope`, para o mesmo transporte e para o mesmo Job Core.
+No slice de ingestão, isso não elimina os dois boundaries de entrada do job pai (`prepared_yaml` e `resolve_on_worker`). O que o contrato elimina é o publish paralelo fora do envelope canônico: desde 2026-07-17 (plano de simplificação do Job Core, T8) existe um único publisher, `JobCoreRuntimeIngestionPublisher.publish` (`src/api/services/ingestion_job_executor.py`), usado tanto por `PreparedAsyncIngestionExecutionService` quanto por `rag_runtime_ingestion_compat.ingest_content`. Ambos os modos convergem para o mesmo `QueuedJobEnvelope`, para o mesmo transporte e para o mesmo Job Core.
 
-Também é importante não interpretar o bridge de consumo Dramatiq como legado morto. Ele ainda faz parte do runtime oficial que recebe a mensagem do broker e a entrega ao Job Core. O que saiu do contrato oficial foram apenas as fachadas especializadas de publish.
+O bridge de consumo `async_job_dramatiq.py` não existe mais — não é legado que "ainda faz parte do runtime oficial", é código removido. O runtime oficial de consumo é `JobCoreWorkerPollingRuntime` (`src/api/services/job_core_worker_runtime.py`).
 
 ### 5.3 Scheduler
 
@@ -140,6 +139,10 @@ Dentro do bootstrap do worker, a camada assíncrona não sobe mais como um conju
 
 - domínio decide qual envelope quer publicar;
 - runtime decide como transportar, consumir e executar esse envelope.
+
+Essa separação é a mesma regra arquitetural hexagonal do Job Core (executor único de lifecycle;
+domínio é sempre usuário/hóspede) normativa em `src/CLAUDE.md` Parte 4 — referência técnica
+completa em `docs/tecnico/README-TECNICO-SISTEMA-JOBS-WORKER-PARALELISMO.md`.
 
 ### 6.3 Camada agentic
 
@@ -172,8 +175,8 @@ Responsabilidade: logging, correlation_id, permissões, autenticação, settings
 1. A API aceita a solicitação e decide delegar.
 2. O produtor monta `JobEnvelope` e `QueuedJobEnvelope`.
 3. A publicação oficial acontece por `publish_job_envelope(...)`.
-4. A camada assíncrona usa RabbitMQ como backend obrigatório.
-5. O consumer runtime confirmado é Dramatiq.
+4. A camada assíncrona usa `job_core` como backend obrigatório (ledger PostgreSQL, sem broker de mensagens).
+5. O consumer runtime confirmado é `job_core_polling`.
 6. O worker consome, resolve `route_kind + dispatch_mode`, executa o caso de uso e persiste estado e telemetria do Job Core.
 
 ### 7.3 Fluxo agendado
@@ -208,9 +211,7 @@ Essa ordem importa porque muitos problemas aparentes de aplicação são, na pr�
 
 - INGESTION_TELEMETRY_DSN
 - OFFLINE_KEY_STORE_DSN
-- ASYNC_JOB_QUEUE_BACKEND
-- ASYNC_JOB_CONSUMER_RUNTIME
-- ASYNC_JOB_QUEUE_AMQP_URL, ASYNC_JOB_BROKER_URL, RABBITMQ_AMQP_URL ou RABBITMQ_AMQPS_URL
+- ASYNC_JOB_CONSUMER_RUNTIME (o worker oficial exige o valor `job_core_polling`; qualquer outro valor levanta `RuntimeError` em `build_worker_process_runtime`, `src/api/services/worker_process_runtime.py`)
 
 ### 9.3 Configurações de suporte transversal
 
@@ -230,20 +231,18 @@ O runtime falha cedo quando:
 
 - PostgreSQL obrigatório está ausente ou indisponível.
 - Redis obrigatório está indisponível.
-- O backend assíncrono não é RabbitMQ.
-- O consumer runtime não é Dramatiq.
-- A AMQP URL obrigatória não existe.
+- O `ASYNC_JOB_CONSUMER_RUNTIME` do worker não é `job_core_polling` (não existe mais backend RabbitMQ/Dramatiq no transporte de jobs; ver 10.1.1).
 
 ### 10.1.1 Contrato do transporte assíncrono
 
-O transporte assíncrono oficial do repositório assume estes pontos como regra operacional:
+O transporte assíncrono oficial do repositório assume estes pontos como regra operacional. `src/api/services/async_job_dramatiq.py` e toda a topologia RabbitMQ/Dramatiq de transporte de jobs foram removidos do produto (limpeza de 13/07/2026, anterior ao plano de simplificação do Job Core de 2026-07-16/17); RabbitMQ segue existindo no repositório apenas para outros subsistemas (`src/channel_layer/`, wake-up de checkpoint), não para o transporte de jobs do Job Core.
 
-- o publish canônico é `publish_job_envelope(...)`;
+- o publish canônico é `AsyncJobQueuePort.publish_job_envelope(...)`, implementado por `JobCoreJobQueue` (`src/api/services/job_core_job_queue.py`);
 - o envelope canônico é `QueuedJobEnvelope`;
-- o consumo oficial continua em RabbitMQ + Dramatiq;
-- o boundary oficial em [src/api/services/async_job_dramatiq.py](../src/api/services/async_job_dramatiq.py) monta o `JobCoreExecutor` com `PostgresJobRunStore`, resolvido por `INGESTION_TELEMETRY_DSN` e sem fallback implícito para store volátil;
+- o consumo oficial é `JobCoreWorkerPollingRuntime` (`src/api/services/job_core_worker_runtime.py`), montado por `build_async_job_worker_runtime` (`src/api/services/async_job_worker_runtime_factory.py`) — polling durável sobre `job_core.job_runs` com `FOR UPDATE SKIP LOCKED`, sem broker de mensagens;
+- esse mesmo boundary monta o `JobCoreExecutor` com `PostgresJobRunStore`, resolvido por `INGESTION_TELEMETRY_DSN` e sem fallback implícito para store volátil;
 - o Job Core V1 registra ledger operacional próprio em `job_core.job_runs` e `job_core.job_run_events`, incluindo `route_kind`, `dispatch_mode`, `envelope_payload` e `envelope_metadata` para reconstituir o envelope real recebido pelo worker;
-- o runtime não expõe como contrato oficial métodos especializados como `publish_ingestion_prepared(...)`, `publish_ingestion_encrypted_request(...)` ou `publish_etl_prepared(...)`.
+- o runtime não expõe como contrato oficial métodos especializados como `publish_ingestion_prepared(...)`, `publish_ingestion_encrypted_request(...)` ou `publish_etl_prepared(...)`; na ingestão, o único publisher é `JobCoreRuntimeIngestionPublisher.publish` (`src/api/services/ingestion_job_executor.py`, convergido em 2026-07-17).
 
 O impacto prático dessa regra é simples: job cancelado, falho ou concluído passa a ser tratado por um trilho único de publicação e observabilidade. Isso reduz o risco de um produtor antigo reaparecer por um caminho paralelo e voltar a publicar trabalho fora do contrato atual.
 
@@ -339,7 +338,7 @@ Confirmar primeiro FASTAPI_HOST, FASTAPI_PORT, PostgreSQL obrigatório, Redis e 
 
 ### Sintoma: worker sobe, mas não processa corretamente
 
-Confirmar RabbitMQ, Dramatiq, bootstrap do runtime de worker e markers de prontidão.
+Confirmar `ASYNC_JOB_CONSUMER_RUNTIME=job_core_polling`, bootstrap do runtime de worker e markers de prontidão.
 
 ### Sintoma: scheduler sobe sem executar o esperado
 
@@ -377,7 +376,7 @@ Também é possível subir só os papéis necessários:
 
 ### 18.2 Modo containerizado
 
-O compose lido confirma um arranjo com api, worker, scheduler, RabbitMQ e PostgreSQL. Esse arranjo é coerente com a topologia encontrada nos runners.
+O compose lido confirma um arranjo com api, worker, scheduler, RabbitMQ e PostgreSQL. Esse arranjo é coerente com a topologia encontrada nos runners, mas o RabbitMQ do compose não sustenta o transporte de jobs do Job Core (que é `job_core_polling` sobre PostgreSQL) — ele existe para outros subsistemas do compose, como `channel_layer`.
 
 ### 18.3 O que esperar nos logs
 
@@ -389,7 +388,7 @@ O compose lido confirma um arranjo com api, worker, scheduler, RabbitMQ e Postgr
 
 ### 19.1 Exemplo de topologia mínima funcional
 
-Para um ambiente com ingestão e execução assíncrona, a arquitetura mínima coerente exige API + worker + RabbitMQ + PostgreSQL + Redis. A ausência de qualquer um desses pode impedir prontidão plena do runtime.
+Para um ambiente com ingestão e execução assíncrona, a arquitetura mínima coerente exige API + worker + PostgreSQL (ledger `job_core` via `job_core_polling`) + Redis. RabbitMQ não é exigido para o transporte de jobs; sua ausência não impede a ingestão/execução assíncrona do Job Core.
 
 ### 19.2 Exemplo de stack ampliada por slice
 
@@ -405,7 +404,7 @@ Tecnologicamente, este projeto parece um backend Python, mas opera como um ecoss
 - Entendi que PROCESS_ROLE separa API, worker e scheduler.
 - Entendi a stack Python principal.
 - Entendi a infraestrutura obrigatória do startup.
-- Entendi o papel de RabbitMQ, Dramatiq, Redis e PostgreSQL.
+- Entendi o papel do Job Core (`job_core_polling`), Redis e PostgreSQL no transporte assíncrono.
 - Entendi que Dockerfile e requirements completam a stack além do pyproject.
 
 ## 22. Evidências no código
@@ -435,13 +434,13 @@ Tecnologicamente, este projeto parece um backend Python, mas opera como um ecoss
   - Comportamento confirmado: a superfície administrativa integrada consome a API real sem exigir um frontend separado.
 - src/api/startup/infrastructure_guardrails.py
   - Motivo da leitura: confirmar contratos de infraestrutura obrigatória.
-  - Comportamento confirmado: PostgreSQL, Redis, RabbitMQ e Dramatiq são parte mandatória do runtime.
+  - Comportamento confirmado: PostgreSQL, Redis e o contrato `job_core`/`job_core_polling` (`_validate_async_job_runtime_contract`) são parte mandatória do runtime; RabbitMQ e Dramatiq não são validados nem exigidos aqui.
 - src/config/settings.py
   - Motivo da leitura: confirmar breadth das integrações, clouds e infraestrutura suportadas.
   - Comportamento confirmado: settings cobrem Azure, Google, Redis, MySQL, Qdrant, Apify, hospitalidade e outros slices.
 - requirements.txt
   - Motivo da leitura: confirmar stack operacional que não cabe só no pyproject.
-  - Comportamento confirmado: FastAPI, Uvicorn, LangGraph, Dramatiq, APScheduler, Psycopg, Qdrant, Redis, Playwright, Structlog e Azure Search fazem parte da stack ativa.
+  - Comportamento confirmado: FastAPI, Uvicorn, LangGraph, APScheduler, Psycopg, Qdrant, Redis, Playwright, Structlog e Azure Search fazem parte da stack ativa. `Dramatiq` continua listado no arquivo, mas nenhum módulo em `src/` o importa mais (dependência morta; o transporte de jobs é `job_core_polling`).
 - package.json
   - Motivo da leitura: confirmar toolchain frontend.
   - Comportamento confirmado: TypeScript, Vitest, Jest, ESLint, html-validate e Mermaid CLI compõem a esteira de frontend/documentação.

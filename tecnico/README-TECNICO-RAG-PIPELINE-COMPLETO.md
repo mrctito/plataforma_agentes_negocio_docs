@@ -132,7 +132,6 @@ Chaves confirmadas:
 - text_weight
 - combine_strategy
 - thresholds.hybrid_threshold
-- thresholds.bm25_only_threshold
 - thresholds.vector_only_threshold
 - default_strategy
 - log_decisions
@@ -152,9 +151,7 @@ Chaves confirmadas:
 
 - default_algorithm
 - weighted_rrf.k
-- weighted_rrf.bm25_weight
 - weighted_rrf.vector_weight
-- linear.bm25_weight
 - linear.vector_weight
 - general.final_top_k
 - general.remove_duplicates
@@ -164,29 +161,20 @@ Chaves confirmadas:
 
 Efeito prático: controla o motor HybridFusion, principalmente quando a estratégia exige combinação formal de múltiplos rankings.
 
-## 5.5. FTS
+## 5.5. Modo híbrido: resolução provider-native (sem FTS PostgreSQL)
 
-Lido em rag_system.retriever.fts.
+O retriever FTS PostgreSQL (`fts_postgres_retriever.py`) e todo o runtime de vocabulário/índice lexical manual (`src/core/bm25_runtime/`) foram removidos. Não existe mais bloco de configuração lexical no YAML: `resolve_provider_hybrid_search_mode` (`src/qa_layer/rag_engine/pipeline_types.py`) resolve o modo híbrido só pela capacidade do provider declarado em `vector_store.type` — `HybridSearchMode.NATIVO` para `qdrant`/`azure`, `HybridSearchMode.DESLIGADO` para qualquer outro tipo.
 
-Chaves confirmadas:
+Chaves legadas explicitamente rejeitadas (falha fechada, não silenciosa) por `_validate_legacy_lexical_contract` em `src/utils/yaml_schema_normalizer.py`:
 
-- enabled
-- mode
-- top_k
-- fallback_min_results
-- semantic_score_threshold
-- pg_dsn
-- pg_schema
-- table
-- ts_config
-- statement_timeout_ms
-- pool e retry do Postgres
+- `rag_system.retriever.fts` (bloco inteiro)
+- `rag_system.retriever.hybrid.bm25`
+- `rag_system.retriever.hybrid.search_type`
+- `rag_system.retriever.hybrid.adaptive_router.decision_strategy.thresholds.bm25_only_threshold`
+- `rag_system.processor.fusion.{weighted_rrf,linear,score_normalized}.bm25_weight`
+- `rag_system.processor.fusion.interleaved.bm25_priority`
 
-Efeito prático:
-
-- mode=augment executa FTS como enriquecimento explícito;
-- mode=fallback executa FTS só quando o gatilho indica poucos resultados ou score fraco;
-- se o retriever FTS não estiver registrado, o pipeline apenas ignora a etapa.
+Efeito prático: quando o modo é `NATIVO`, o BM25 roda dentro do próprio provider (`qdrant/bm25` server-side no Qdrant; `BM25SimilarityAlgorithm` auditado no índice do Azure Search) — ver `RetrievalEngine.execute_hybrid_processor` e `_execute_native_hybrid_search`. Não há enriquecimento (`augment`) nem fallback lexical separado: se o sparse obrigatório não estiver presente na collection/índice, a busca híbrida falha fechada em vez de degradar para dense-only.
 
 ## 5.6. cache semântico
 
@@ -328,18 +316,17 @@ Executa retrievers em ordem de preferência:
 - semantic_search
 - default
 
-Depois disso ainda pode chamar FTS via maybe_enrich_with_fts.
+Providers sem busca híbrida nativa permanecem no caminho vetorial tradicional.
 
 ## 9.2. Híbrida
 
 Fluxo confirmado:
 
-1. decide se o hybrid está desligado, manual ou nativo;
+1. resolve a capacidade híbrida pelo tipo do vector store;
 2. verifica se o vector store suporta hybrid nativo;
 3. enriquece a query com technical_terms quando houver;
 4. tenta native_hybrid_search com retry externo quando suportado;
-5. se não der, usa hybrid_search manual;
-6. depois pode enriquecer com FTS.
+5. se a capacidade sparse obrigatória estiver ausente, falha fechada sem dense-only.
 
 ## 9.3. Self-query
 
@@ -407,14 +394,9 @@ Sinais registrados:
 - semantic_cache:store
 - hit, miss e motivo
 
-## 10.2. FTS
+## 10.2. Resultado híbrido provider-native
 
-O maybe_enrich_with_fts tem dois modos.
-
-- augment: sempre tenta enriquecer;
-- fallback: só roda se não houver documentos suficientes ou se o maior score ficar abaixo do limiar configurado.
-
-O merge com FTS deduplica e limita o resultado pelo maior entre top_k do pipeline e top_k do próprio FTS.
+Qdrant entrega o ranking já combinado por RRF sobre prefetch dense+sparse. Azure Search entrega o resultado de texto+vetor pelo próprio índice. O pós-retrieval não consulta PostgreSQL nem aplica retriever lexical paralelo.
 
 ## 10.3. Fusão
 
@@ -473,7 +455,6 @@ Blocos confirmados:
 - analise_query
 - metricas_pipeline
 - expansao_query
-- bm25
 - processadores_dominio
 - resultado_retrieval
 - detecao_keywords
@@ -561,8 +542,8 @@ HANDLED_PIPELINE_ERRORS inclui, entre outros:
 - ContentQAError
 - JSONRAGError
 - RAGEngineError
-- erros de vocabulário BM25
-- erros de Qdrant quando o backend está presente
+- QdrantVectorStoreError e UnexpectedResponse quando o backend Qdrant está presente
+- AzureCognitiveSearchError, adicionalmente, no caminho de hybrid nativo (NATIVE_HYBRID_ERRORS)
 
 Mesmo assim, a presença desse bloco não significa “fallback liberado sempre”. O próprio orchestrator força enable_fallbacks=False como estado efetivo, então a regra geral continua sendo falhar cedo quando a infraestrutura moderna não está íntegra.
 
@@ -580,14 +561,13 @@ Como investigar:
 
 ### 16.2. Híbrido não melhora o resultado
 
-Causa provável: hybrid_search_mode desligado, retriever híbrido indisponível, suporte nativo ausente ou FTS desabilitado.
+Causa provável: hybrid_search_mode desligado (provider fora de `qdrant`/`azure`), retriever híbrido indisponível ou sparse obrigatório ausente na collection/índice.
 
 Como investigar:
 
 - logs do hybrid mode;
 - available_retrievers;
-- retrieval_trace;
-- bloco bm25 nos diagnósticos.
+- retrieval_trace.
 
 ### 16.3. Excel especializado nunca dispara
 
@@ -610,7 +590,7 @@ Como investigar:
 
 ### 16.5. Resposta lenta
 
-Causa provável: query rewrite com LLM, multi-query, hybrid nativo com retry, FTS augment, visão multimodal ou rerank neural.
+Causa provável: query rewrite com LLM, multi-query, hybrid nativo com retry, visão multimodal ou rerank neural.
 
 Como investigar:
 
@@ -626,7 +606,7 @@ Comparado ao RAG ingênuo de mercado, o projeto adiciona praticamente todas as c
 - query analysis;
 - query router;
 - retrieval especializado por estratégia;
-- post-retrieval com FTS, fusão, deduplicação e rerank;
+- post-retrieval com fusão, deduplicação e rerank;
 - ACL;
 - telemetria e diagnostics.
 
@@ -655,7 +635,6 @@ Perguntas operacionais úteis:
 - qual processador foi escolhido?
 - quantas tentativas de retrieval ocorreram?
 - houve cache hit?
-- o FTS entrou?
 - a ACL removeu quantos documentos?
 - a especialização Excel rodou ou não?
 
@@ -691,8 +670,8 @@ O ganho prático é que o LLM recebe um contexto melhor. O modelo não vira resp
 
 - src/qa_layer/rag_engine/retrieval_engine.py
   - Motivo da leitura: execução das estratégias de recuperação.
-  - Símbolo relevante: execute_hybrid_processor, execute_self_query_processor, execute_multi_query_processor, execute_json_processor, maybe_enrich_with_fts, run_retriever_with_trace.
-  - Comportamento confirmado: híbrido nativo/manual, cache semântico, FTS, JSON/Excel especializado, trace de retrieval.
+  - Símbolo relevante: execute_hybrid_processor, execute_self_query_processor, execute_multi_query_processor, execute_json_processor, run_retriever_with_trace.
+  - Comportamento confirmado: híbrido provider-native (Qdrant/Azure), cache semântico, JSON/Excel especializado, trace de retrieval.
 
 - src/qa_layer/rag_engine/query_analyzer.py
   - Motivo da leitura: análise semântica de perguntas.
@@ -717,4 +696,4 @@ O ganho prático é que o LLM recebe um contexto melhor. O modelo não vira resp
 - src/services/question/pipeline_diagnostics_builder.py
   - Motivo da leitura: bloco diagnóstico da consulta.
   - Símbolo relevante: build_diagnostics e extract_retrieval_metrics.
-  - Comportamento confirmado: resumo de roteamento, BM25, resultado_retrieval, ACL e hybrid_retry_status.
+  - Comportamento confirmado: resumo de roteamento, resultado_retrieval, ACL e hybrid_retry_status.
