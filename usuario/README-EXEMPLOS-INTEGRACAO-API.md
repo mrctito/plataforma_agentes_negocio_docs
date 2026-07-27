@@ -250,6 +250,186 @@ for fonte in dados.get("sources", []):
     print("Fonte:", fonte)
 ```
 
+### Restringindo a pergunta a documentos específicos (`documents`)
+
+O `ask` aceita um campo opcional `payload.documents`: uma lista de `vector_document_key`
+(o identificador que a listagem `data_sources` devolve por documento — ver seção
+"Outras operações" abaixo). Quando preenchida, a busca vetorial fica restrita **só**
+aos chunks desses documentos; ausente ou `[]` continua buscando o acervo inteiro,
+exatamente como hoje (nenhuma mudança de comportamento). `vector_document_key`
+inexistente **não é erro**: o retrieval fica vazio e a resposta explica que não
+encontrou material — nunca `4xx`/`5xx`. Se o mesmo request também mandar
+`metadata_filters` com uma chave `vector_document_key`, `documents` **vence** e
+sobrescreve.
+
+Fluxo típico (3 passos): (1) listar o acervo com `operation: "data_sources"` →
+(2) escolher os `vector_document_key` desejados → (3) perguntar com `documents`
+preenchido.
+
+```bash
+# Passo 1: listar documentos (mesma chave, operation=data_sources)
+curl -X POST "https://SUA-URL-DA-API/rag/execute" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: pk_prod_SUA_CHAVE_AQUI" \
+  -d '{
+    "operation": "data_sources",
+    "payload": {
+      "user_email": "usuario@cliente.com.br",
+      "name_filter": "revestimento",
+      "page": 1,
+      "page_size": 20
+    }
+  }'
+```
+
+Resposta (recorte — o campo que importa é `vector_document_key` de cada item):
+
+```json
+{
+  "correlation_id": "20260723_174049-82bbdedf-e950-489c-b9b6-a97efa0ca3dc",
+  "tenant_code": "engenharia_dnit",
+  "vectorstore_id": "dnit_producao",
+  "documents": [
+    {
+      "active_document_id": "8bac53c9-a562-420e-9f7d-ebeb97caebe4",
+      "document_name": "ipr_736_album_de_projetos.pdf",
+      "source_system": "upload",
+      "source_uri": null,
+      "vector_document_key": "e61d264a-5a34-e1e8-cfe2-be8e3f81cde9"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "page_size": 20
+}
+```
+
+```bash
+# Passo 3: perguntar restringindo aos documentos escolhidos no passo 2
+curl -X POST "https://SUA-URL-DA-API/rag/execute" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: pk_prod_SUA_CHAVE_AQUI" \
+  -d '{
+    "operation": "ask",
+    "payload": {
+      "question": "O que este documento diz sobre dimensionamento de drenagem?",
+      "user_email": "usuario@cliente.com.br",
+      "documents": ["e61d264a-5a34-e1e8-cfe2-be8e3f81cde9"]
+    }
+  }'
+```
+
+```python
+# Mesmo fluxo em Python (continuação do exemplo acima)
+listagem = requests.post(
+    f"{API_URL}/rag/execute",
+    headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
+    json={
+        "operation": "data_sources",
+        "payload": {"user_email": "usuario@cliente.com.br", "page": 1, "page_size": 20},
+    },
+    timeout=60,
+).json()
+
+chaves_escolhidas = [doc["vector_document_key"] for doc in listagem["documents"][:2]]
+
+resposta_filtrada = requests.post(
+    f"{API_URL}/rag/execute",
+    headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
+    json={
+        "operation": "ask",
+        "payload": {
+            "question": "O que este documento diz sobre dimensionamento de drenagem?",
+            "user_email": "usuario@cliente.com.br",
+            "documents": chaves_escolhidas,
+        },
+    },
+    timeout=120,
+).json()
+print(resposta_filtrada["answer"])
+```
+
+Nota importante: `vector_document_key` identifica a **versão ativa** do documento no
+vector store. Depois de uma reingestão do mesmo documento, a key muda — sempre obtenha
+o valor atual pela listagem antes de perguntar, em vez de guardar a key em cache no seu
+sistema.
+
+### Baixar o PDF original de um documento (viewer no browser)
+
+Além de perguntar sobre o acervo, o cliente pode **baixar o arquivo original** de um
+documento para exibir num viewer de PDF. O endpoint dedicado
+`POST /rag/documents/content` recebe o mesmo `vector_document_key` da listagem e devolve
+o **binário** do documento — baixado ao vivo da origem de onde ele foi ingerido (Google
+Drive, S3/MinIO). A plataforma **não** arquiva o original; ela atua como proxy da origem.
+
+Diferenças importantes em relação ao `/rag/execute`:
+
+- a resposta é **binária** (não JSON): `Content-Type` inferido (ex.: `application/pdf`)
+  e `Content-Disposition: inline; filename="<nome do documento>"`;
+- a resolução é **sempre escopada por tenant + vector store** do YAML governado: o
+  `vector_document_key` **não é chave de autorização**. Key inexistente **ou de outro
+  tenant** devolve `404` (sem vazar existência);
+- falha real da origem (Drive fora do ar, credencial, timeout) devolve `502`/`504` — o
+  sistema **nunca** finge que "o documento não existe". Documento sem origem servível
+  (ex.: `local_file`) devolve `404` explicativo;
+- `user_email` é obrigatório (identificação multi-tenant), como nos demais endpoints;
+- `X-Correlation-Id` acompanha **toda** resposta, inclusive erro.
+
+Fluxo típico (3 passos): (1) listar → (2) pegar o `vector_document_key` → (3) baixar e
+exibir.
+
+```bash
+# Passo 3: baixar o PDF original e salvar em arquivo (-o); -J respeita o filename
+curl -X POST "https://SUA-URL-DA-API/rag/documents/content" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: pk_prod_SUA_CHAVE_AQUI" \
+  -OJ \
+  -d '{
+    "vector_document_key": "e61d264a-5a34-e1e8-cfe2-be8e3f81cde9",
+    "user_email": "usuario@cliente.com.br"
+  }'
+```
+
+No browser, o viewer usa `fetch` (para poder enviar o header `X-API-Key`, que um
+`<iframe src>` não anexa), transforma a resposta em `Blob`, cria uma URL de objeto e
+aponta o viewer (pdf.js ou um `<iframe>`) para ela:
+
+```javascript
+// Exibir o PDF original num viewer do browser
+async function exibirDocumento(vectorDocumentKey, userEmail, apiKey) {
+  const resp = await fetch("https://SUA-URL-DA-API/rag/documents/content", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+    body: JSON.stringify({
+      vector_document_key: vectorDocumentKey,
+      user_email: userEmail,
+    }),
+  });
+
+  const correlationId = resp.headers.get("X-Correlation-Id");
+  if (!resp.ok) {
+    // 404 (fora do escopo/origem não servível), 413 (grande), 502/504 (origem fora)
+    const erro = await resp.json().catch(() => ({}));
+    throw new Error(`Falha ao baixar (${resp.status}): ${erro.detail || ""} [${correlationId}]`);
+  }
+
+  const blob = await resp.blob(); // application/pdf
+  const objectUrl = URL.createObjectURL(blob);
+
+  // Opção A: iframe simples
+  document.getElementById("viewer").src = objectUrl;
+  // Opção B: pdf.js -> pdfjsLib.getDocument(objectUrl).promise ...
+
+  // Liberar a memória quando trocar de documento:
+  // URL.revokeObjectURL(objectUrl);
+  return { objectUrl, correlationId };
+}
+```
+
+Os clientes de exemplo já trazem a função pronta: `download_document(...)` em
+`examples/rag_api_client.py` e `downloadDocument({...})` em `examples/rag_api_client.js`
+(Node, salvam o binário em disco).
+
 ### Campos relevantes da resposta
 
 | Campo | O que é |
@@ -341,7 +521,7 @@ Esse endpoint responde a uma pergunta simples: **"quais documentos já estão ca
 ### Quando usar
 
 - Para **inventariar/conferir** o acervo de um tenant + vector store (governança administrativa).
-- Para **procurar um documento pelo nome** (`name_filter`, busca parcial, sem diferenciar maiúsculas/minúsculas).
+- Para **procurar um documento pelo nome** (`name_filter`, sem diferenciar maiúsculas/minúsculas). Sem `*`, casa por "contém" (padrão de sempre); com `*`, o `*` vira curinga posicional e você controla a âncora: `"rel*"` = começa com, `"*2024*"` = contém, `"*.pdf"` = termina com.
 - **Não** use para fazer pergunta ao RAG (isso é `/rag/execute` com `operation: "ask"`).
 
 ### Como o YAML é passado (3 formas — escolha UMA)
@@ -467,11 +647,17 @@ console.log(`Total no acervo: ${data.total}`);
       "total_pages": null,
       "file_size_bytes": null,
       "ingestion_status": "active",
+      "vector_document_key": "e61d264a-5a34-e1e8-cfe2-be8e3f81cde9",
       "updated_at": "2026-06-23T06:00:02.379555+00:00"
     }
   ]
 }
 ```
+
+`vector_document_key` é o identificador a usar depois em `POST /rag/execute`
+(`operation: "ask"`, campo `documents`) para restringir uma pergunta a este documento —
+ver seção "Restringindo a pergunta a documentos específicos" acima. Ele muda a cada
+reingestão do mesmo documento; obtenha sempre o valor atual por esta listagem.
 
 ### Diferença para `/rag/execute` com `operation: "data_sources"` (não é redundante)
 
@@ -497,7 +683,7 @@ O `/rag/execute` é um **dispatcher único**: o campo `operation` escolhe o flux
 
 | `operation` | O que faz |
 | --- | --- |
-| `ask` | Pergunta ao RAG (Q&A sobre o acervo). |
+| `ask` | Pergunta ao RAG (Q&A sobre o acervo). Aceita `documents` (lista de `vector_document_key`) para restringir a busca a documentos específicos — ver seção "Restringindo a pergunta a documentos específicos" acima. |
 | `ingest` | Ingesta documentos no Vector Store do YAML. |
 | `delete` | Remove conteúdo do acervo. |
 | `etl` | Executa um pipeline ETL configurado no YAML. |
@@ -1002,8 +1188,12 @@ npm install axios
 
 - `src/api/service_api.py` (`GET /health`)
 - `src/api/routers/crypto_router.py` (`POST /crypto/session-key`)
-- `src/api/routers/rag_router.py` (`POST /rag/execute`)
-- `src/api/schemas/rag_models.py` (`RagQuestionRequest`, `RagQuestionResponse`)
+- `src/api/routers/rag_router.py` (`POST /rag/execute`, exemplo OpenAPI `ask_with_documents_filter`)
+- `src/api/schemas/rag_models.py` (`RagQuestionRequest.documents`, `RagDataSourceDocumentItem.vector_document_key`)
+- `src/api/services/rag_documents_filter.py` (`merge_documents_into_metadata_filters` — mapeamento `documents` → `metadata_filters.vector_document_key`)
+- `src/api/routers/rag_runtime_operations_compat.py` (ponto único de aplicação do filtro no boundary do `ask`)
+- `src/telemetry/ingestion/vector_store_ingestion_overview_repository.py` (`_build_name_like_term` — semântica do curinga `*` de `name_filter`)
+- `src/api/schemas/admin_models.py` (`VectorStoreDocumentItem.vector_document_key`, `VectorStoreDocumentsRequest.name_filter`)
 - `examples/rag_api_client.py`
 - `examples/rag_api_client.js`
 - `examples/rag_api_client.rb`
@@ -1029,6 +1219,7 @@ Para adicionar exemplos em outras linguagens:
 - Entendi a diferença entre exemplo de cliente e contrato oficial da API.
 - Entendi como separar erro de servidor offline, access key, payload e criptografia.
 - Entendi quais manuais consultar quando a dúvida deixa de ser só de integração prática.
+- Entendi o fluxo listar → escolher `vector_document_key` → perguntar com `documents`, e por que a key muda a cada reingestão.
 
 ## Encerramento
 

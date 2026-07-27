@@ -35,11 +35,11 @@ O middleware todo_list não é detalhe cosmético. Ele dá ao runtime uma lista 
 
 O runtime suporta filesystem e shell persistente, mas não como liberdade total. O contrato exige permissions explícitas, operações limitadas a read e write, caminhos absolutos sem navegação suspeita e políticas declarativas de shell. Isso dá poder operacional sem abrir mão de restrição e rastreabilidade.
 
-### 3.4. Ele mantém memória durável — inclusive skills e AGENTS.md por cliente
+### 3.4. Ele mantém memória durável e carrega skills declaradas no YAML da release
 
 O contrato atual separa duas coisas. `memory` top-level lista caminhos absolutos de memória operacional carregada no runtime. `backend` top-level habilita persistência durável com escopos user, agent e org, além de política read_only ou read_write. Existem dois destinos duráveis: Redis (mais simples, pode ter TTL) e Postgres (sem expiração, pensado para conteúdo que precisa durar por tempo indeterminado).
 
-É no backend Postgres que entram duas capacidades novas: **skills por tenant** (procedimentos e conhecimento especializado, guardados numa tabela dedicada e carregados sob demanda pelo agente) e **AGENTS.md por tenant** (as instruções fixas do cliente — o "leia-me da casa" — guardadas numa coluna dedicada e injetadas sempre no início de cada execução). Na prática, isso transforma o agente em algo capaz de reter contexto de trabalho, procedimentos e regras do cliente ao longo do tempo, sem misturar memória de prompt com store persistente e sem depender de um cache que expira.
+As **skills** (procedimentos e conhecimento especializado que o agente abre sob demanda) são declaradas na `skills_library` do próprio YAML da release — não em banco. Cada agente seleciona as skills que usa por nome; o runtime materializa as selecionadas no store durável (Redis ou Postgres) para o agente ler. Já a **instrução compartilhada da release** (as "regras da casa") vive na chave `agent-instructions-md` do YAML e entra no agente por um único canal, o prompt composto. Na prática, o agente retém memória operacional durável e ainda carrega procedimentos e regras versionados junto com a release, sem misturar memória de prompt com store persistente e sem depender de banco por cliente para o conteúdo das skills.
 
 ### 3.5. Ele combina autonomia com aprovação humana
 
@@ -115,9 +115,9 @@ Ao mesmo tempo, o contrato moderno não aceita shell persistente e HIL no mesmo 
 
 O DeepAgent pode memorizar contexto por usuário, por agente ou por organização. Em um ERP, isso abre espaço para agentes que aprendem histórico operacional do time, do processo ou do cliente sem confundir escopos.
 
-## 5.5. Skills top-level e por subagente, guardadas por cliente
+## 5.5. Skills top-level e por subagente, declaradas no YAML da release
 
-O runtime suporta skills como fontes de conhecimento e comportamento, tanto no supervisor principal quanto em subagentes. Uma skill é um procedimento documentado (um "manual de como fazer X") que o agente só abre quando precisa — assim o prompt principal não fica inchado com instrução que só serve para casos específicos. Quando o backend durável é Postgres, essas skills ficam guardadas numa tabela por cliente (tenant), o que permite que cada cliente tenha seu próprio conjunto de procedimentos, sem misturar o de um cliente com o de outro. Isso ajuda a especializar agentes sem duplicar prompt gigante e sem transformar o YAML em texto sem estrutura.
+O runtime suporta skills como fontes de conhecimento e comportamento, tanto no supervisor principal quanto em subagentes. Uma skill é um procedimento documentado (um "manual de como fazer X") que o agente só abre quando precisa — assim o prompt principal não fica inchado com instrução que só serve para casos específicos. As skills são declaradas na `skills_library` do YAML da release (cada uma com nome, descrição e conteúdo); cada agente seleciona as que usa por nome. O runtime materializa as selecionadas no store durável (Redis ou Postgres) para o agente ler sob demanda. Assim se especializa o agente sem duplicar prompt gigante e sem transformar o YAML em texto sem estrutura — e o conteúdo da skill fica versionado junto com a release, não num banco por cliente.
 
 ## 5.6. Structured output
 
@@ -151,7 +151,7 @@ Quando alguém pergunta “o que esse agente realmente consegue fazer?”, a res
 - Ler e gravar arquivos quando filesystem e permissions permitem.
 - Abrir shell persistente com política governada.
 - Persistir memória em Redis (com expiração) ou em Postgres (sem expiração) por user, agent ou org.
-- Carregar skills e instruções AGENTS.md por tenant a partir do banco, quando o backend é Postgres.
+- Carregar skills declaradas na `skills_library` do YAML da release e materializá-las no store durável; a instrução compartilhada da release entra pelo prompt composto.
 - Calcular e transformar dados com um interpretador de código isolado, ligado por padrão.
 - Pedir aprovação humana em tools específicas.
 - Escalar HIL para canais assíncronos com email e WhatsApp.
@@ -289,7 +289,7 @@ Ele recebe um objetivo, usa ferramentas, organiza tarefas, chama especialistas, 
 - Filesystem sem permissions explícitas não é aceito.
 - HIL sem interrupt_on e sem checkpointer também não é aceito.
 - backend.type aceita apenas state, store (Redis) ou postgres — não é um valor livre; store e postgres não podem ser combinados no mesmo backend.
-- skills e AGENTS.md por tenant só ficam duráveis com backend.type=postgres; sem esse backend, ambos exigem configuração explícita e não "aparecem sozinhos".
+- skills declaradas na `skills_library` só são materializadas quando há um backend de store (Redis ou Postgres) para roteá-las em `/skills/`; sem backend, não "aparecem sozinhas". A instrução compartilhada não depende de backend — entra pelo prompt composto.
 - background_execution_subagent não funciona se o middleware de subagentes estiver desligado.
 - async approval não significa “qualquer pessoa pode aprovar”; há contrato de canais, aprovadores e decisão permitida.
 - O runtime é forte para processos longos, mas depende de tools reais do tenant para executar casos de negócio concretos.
@@ -341,9 +341,9 @@ Ele recebe um objetivo, usa ferramentas, organiza tarefas, chama especialistas, 
   - Símbolos relevantes: /agent/execute, /agent/continue, /agent/hil/decisions.
   - Comportamento confirmado: execução deepagent, continuação por thread_id e resolução segura de HIL assíncrono.
 
-- src/core/store/postgres_store_provider.py, src/agentic_layer/supervisor/skill_repository.py, src/agentic_layer/supervisor/agent_skills_repository.py, src/agentic_layer/supervisor/agent_instructions_repository.py, src/security/user_yaml_repository.py
-  - Motivo da leitura: como skills e AGENTS.md por tenant ficam duráveis em Postgres.
-  - Comportamento confirmado: provider compartilhado de `PostgresStore` (sem cliente Postgres novo); port + adapter dedicados para ler skills (`agent_skills`) e instruções AGENTS.md (`agent_instructions_md`) sempre filtrando por tenant/ambiente; ausência de schema falha explícito, nunca degrada silenciosamente.
+- src/core/store/postgres_store_provider.py, src/agentic_layer/supervisor/deep_agent_supervisor.py
+  - Motivo da leitura: onde as skills são materializadas no store durável a partir do YAML.
+  - Comportamento confirmado: provider compartilhado de `PostgresStore` (sem cliente Postgres novo); a materialização de skills (`_materialize_deepagent_skills`) lê a `skills_library` do YAML resolvido, compõe o SKILL.md e materializa no store, com idempotência por hash e reconciliação. O modelo antigo por banco (`skill_repository.py`/`agent_skills_repository.py`, tabela `agent_skills`) e a materialização de AGENTS.md foram removidos.
 
 - src/agentic_layer/supervisor/agent_middlewares.py
   - Motivo da leitura: observabilidade do interpreter.
@@ -363,14 +363,14 @@ A escolha ruim clássica entre "agente simples que conversa bem mas não sustent
 **3. O que são "skills" nesse contexto, em termos simples?**
 São manuais de procedimento que o agente só abre quando precisa — por exemplo, "como calcular imposto X" ou "como investigar divergência de estoque Y". Isso evita que o agente carregue instrução gigante o tempo todo; ele consulta o manual certo na hora certa.
 
-**4. Por que "skills por tenant" é relevante para o negócio?**
-Porque cada cliente pode ter seus próprios procedimentos, sem misturar com os de outro cliente. Isso viabiliza personalização por conta sem precisar de um agente inteiro dedicado a cada cliente.
+**4. Por que declarar skills no YAML da release é relevante para o negócio?**
+Porque cada release carrega o próprio conjunto de procedimentos, versionado e hash-bound junto com o resto da configuração. Editar uma skill vira editar o YAML versionado — sem carga manual em banco, sem tela nova para construir, e sem risco de divergência entre o que está no banco e o que a release espera.
 
-**5. O que é o "AGENTS.md" e por que o cliente deveria se importar com isso?**
-É o conjunto de instruções fixas do cliente — as regras da casa que o agente deve sempre seguir (política interna, terminologia própria, restrições operacionais). Diferente das skills, essas instruções são lidas em toda execução, não só quando o agente decide consultar.
+**5. Como o agente recebe as "regras da casa" da release?**
+Pela chave `agent-instructions-md` do YAML da release — o conjunto de instruções fixas que o agente deve sempre seguir (política interna, terminologia própria, restrições operacionais). Diferente das skills (abertas sob demanda), essa instrução é injetada em toda execução, por um único canal: o prompt composto.
 
-**6. Essas instruções e skills somem se o servidor reiniciar?**
-Não, quando o backend durável é Postgres: skills e AGENTS.md ficam guardados no banco, por cliente, e não dependem de memória temporária do processo. Existe também uma opção mais simples (Redis), que pode ter prazo de expiração — mais adequada para memória de curto prazo, não para regra permanente do cliente.
+**6. As skills somem se o servidor reiniciar?**
+Não: o conteúdo das skills vive no YAML da release (versionado), e é materializado no store durável a cada montagem. Com Redis pode haver expiração do store; com Postgres o store é durável — mas em ambos a fonte da verdade é o YAML, então a skill é sempre remontável a partir da release.
 
 **7. O que é o "interpretador de código" que o agente tem por padrão?**
 É uma capacidade de fazer cálculo, transformar texto ou montar estrutura de dados no meio do raciocínio, sem precisar de uma ferramenta específica para cada operação. Roda num ambiente isolado — sem acesso a arquivo, rede ou comando do sistema — então mesmo se travar ou tentar consumir muita memória, isso não afeta os outros clientes que compartilham a mesma plataforma.
@@ -388,7 +388,7 @@ O contrato de aprovação assíncrona define prazo de expiração e o que fazer 
 Porque ERP é feito de processo longo, exceção, aprovação e necessidade de rastreabilidade — exatamente o que um chatbot simples não sustenta. O DeepAgent foi desenhado para durar além de uma resposta única: ele pausa, retoma, lembra contexto e produz saída estruturada para integrar com o resto do sistema.
 
 **12. O agente "aprende" sozinho com o tempo?**
-Não no sentido de treinar um modelo novo. O que ele acumula é contexto operacional durável — memória por usuário/agente/organização, procedimentos (skills) e regras fixas (AGENTS.md) — tudo curado e revisável, não uma caixa-preta que muda sozinha.
+Não no sentido de treinar um modelo novo. O que ele acumula é contexto operacional durável — memória por usuário/agente/organização — enquanto procedimentos (skills) e regras fixas (`agent-instructions-md`) vêm curados e versionados no YAML da release, revisáveis, nunca uma caixa-preta que muda sozinha.
 
 **13. Isso funciona sem supervisão nenhuma da equipe técnica do cliente?**
 Não é esse o modelo. O poder do DeepAgent vem justamente de ser governado: filesystem, shell, skills, memória e aprovação humana entram por contrato explícito. Tirar essa governança tira o diferencial — o produto não é "IA sem controle", é "autonomia com controle".
@@ -405,5 +405,5 @@ Não para a visão de negócio. Para configurar de fato (habilitar skills, backe
 **17. Esse recurso substitui a necessidade de um time humano acompanhando o processo?**
 Não substitui — reduz a necessidade de acompanhamento manual constante e concentra a atenção humana nos pontos que realmente exigem julgamento (as pausas de aprovação), em vez de cada passo do processo.
 
-**18. O que muda estrategicamente para a plataforma ao ter skills e AGENTS.md duráveis por tenant?**
-Cada cliente passa a poder curar o próprio conjunto de procedimentos e regras sem depender de mudança de código ou de YAML por especialista técnico a cada ajuste fino de conteúdo — o conteúdo evolui no banco, o contrato de execução no YAML permanece estável.
+**18. O que muda estrategicamente ao declarar skills e a instrução compartilhada no YAML da release?**
+Procedimentos (skills) e regras fixas (`agent-instructions-md`) passam a ser configuração versionada e hash-bound da release — uma única fonte de verdade, sem divergência banco↔YAML, sem carga manual em banco e sem CRUD a construir. Editar conteúdo vira editar o YAML governado; o contrato de execução permanece estável e auditável por versão.

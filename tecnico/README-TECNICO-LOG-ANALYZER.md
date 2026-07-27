@@ -587,10 +587,19 @@ O analyzer mantém duas visões no mesmo resultado:
   assíncrona depois do enqueue.
 
 Os eventos do worker continuam em `async_lanes`, com sequência, stage e soma apenas
-dos `duration_ms` que cada produtor publicou. Eles não aumentam
-`total_duration_ms` do HTTP. Enquanto os produtores não publicarem
-`lane`/`span_id`/`thread_id`, a classificação usa o vocabulário factual
-`interaction.telemetry.*` e registra essa limitação em `observability_gaps`.
+dos `duration_ms` publicados nos terminais `interaction.telemetry.task.completed`
+ou `interaction.telemetry.task.failed`. Eles não aumentam `total_duration_ms` do
+HTTP.
+
+A classificação exige o contrato explícito:
+
+- enqueue: `lane=http_request`, `task_id` e `span_id`;
+- worker: `lane=telemetry_worker`, o mesmo `task_id`, `span_id` próprio e
+  `parent_span_id` igual ao `span_id` do enqueue.
+
+O resultado materializa essa relação em `causal_links`. Log histórico sem esses
+campos não recebe fallback pelo nome `interaction.telemetry.*`; ele fica fora da
+lane assíncrona e gera `observability_gaps`.
 
 ### 9.3. Cache semântico: documentos, não resposta pronta
 

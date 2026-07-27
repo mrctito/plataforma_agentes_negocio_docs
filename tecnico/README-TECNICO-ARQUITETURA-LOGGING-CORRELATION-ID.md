@@ -416,6 +416,15 @@ Dois efeitos praticos saem disso.
 1. a origem do logger e preservada sem sobrescrever a primeira criacao;
 2. a familia de logs pode ser reencontrada depois via manifest, sem varredura cega.
 
+O manifest tambem e o indice explicito das operacoes locais de listagem,
+telemetria e retencao. Esses fluxos nao enumeram a pasta de logs: resolvem os
+nomes registrados, verificam os caminhos exatos e tratam rotacoes somente pela
+faixa finita configurada (`.1` ate `log_file_rotation_backup_count`). Um
+artefato que precise participar dessas operacoes deve ser registrado ao ser
+criado; o faulthandler segue esse contrato. Na ausencia de indice, o fluxo
+falha fechado ou retorna vazio, sem recorrer a `glob`, `rglob`, `iterdir`,
+`listdir` ou `scandir`.
+
 Além disso, `build_correlation_log_file_fields(...)` em `src/core/logging_system.py` expoe os nomes determinísticos de `log_file_name`, `worker_log_file_name` e `scheduler_log_file_name` usados pelos endpoints.
 
 ### 11.1. Resolucao da correlacao em runtime: grafo LangGraph versus boundary HTTP
@@ -451,6 +460,12 @@ Consequencias praticas:
    aumentam o caminho critico HTTP;
 4. ausencia de limites ou de vínculo causal explicito vira lacuna de observabilidade,
    nao uma duracao inventada pelo primeiro e ultimo evento do arquivo.
+
+Na telemetria de interacao, o enqueue publica `lane=http_request`, `task_id` e
+`span_id`. O worker preserva o mesmo `task_id`, publica
+`lane=telemetry_worker` e liga seu `span_id` ao enqueue por
+`parent_span_id`. Inicio, terminal, erro e `duration_ms` usam essa mesma
+identidade. O analyzer nao deduz lane pelo nome `interaction.telemetry.*`.
 
 O contrato detalhado da janela e das lanes fica nos READMEs do Log Analyzer.
 

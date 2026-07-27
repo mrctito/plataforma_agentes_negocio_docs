@@ -124,7 +124,7 @@ O que é: a representação canônica do documento agentic completo.
 
 Por que existe: para concentrar em um objeto só os recortes relevantes para workflow e deepagent.
 
-Como funciona: AgenticDocumentAST carrega target, selected_entrypoint, workflows_defaults, workflows, multi_agents, deepagent_multi_agents, tools_library e alguns blocos auxiliares como local_tools_configuration, global_tools_configuration e memory.
+Como funciona: AgenticDocumentAST carrega target, selected_entrypoint, workflows_defaults, workflows, multi_agents, deepagent_multi_agents, tools_library, skills_library e alguns blocos auxiliares como local_tools_configuration, global_tools_configuration e memory.
 
 O que entrega: um modelo único que depois pode ser convertido em fragmento YAML orientado ao target.
 
@@ -213,6 +213,116 @@ Na prática, isso quer dizer três coisas.
 3. O runtime AG-UI resolve `uiSpecId` apenas contra a UISpec declarada no workflow selecionado por `selected_entrypoint`, ou falha fechado quando o YAML estiver ambíguo.
 
 O efeito prático é o mesmo do DeepAgent: YAML, AST, schema, validator e runtime usam o mesmo contrato. Isso evita duas formas diferentes de declarar a mesma tela gerada e impede que o browser receba uma UISpec inventada fora do YAML governado.
+
+### 8.5.4. Contrato skills_library no AST (skills YAML-First por release)
+
+As *skills* de DeepAgent são declaradas em uma biblioteca central no nível raiz do documento,
+`skills_library`, espelhando o precedente `tools_library` (mesmo padrão snake_case de biblioteca
+compartilhada). Cada agente/supervisor continua **selecionando** skills por nome (`skills: [...]` +
+`middlewares.skills.enabled=true`); a novidade é que a fonte do conteúdo passou a ser o YAML da
+release, não mais uma tabela de banco por tenant.
+
+Na prática, quatro pontos importam.
+
+1. `AgenticDocumentAST.skills_library: list[SkillDefinitionAST]` (`src/config/agentic_assembly/ast/skill.py`,
+   `default_factory=list`) é incluído em `to_fragment()` nos alvos AUTO/DEEPAGENT_SUPERVISOR/WORKFLOW,
+   como `tools_library`. `SkillDefinitionAST` (`extra="forbid"`) tem `name`
+   (`^[a-z0-9]+(-[a-z0-9]+)*$`, 1–64), `description` e `content` não vazios, e `files: dict[str, str]`
+   opcional (mapa caminho-relativo → conteúdo).
+2. O parse é feito por `SkillDefinitionsParser` (`parsers/skill_parser.py`, molde de
+   `ToolDefinitionsParser`), wired no `assembly_service` ao montar o documento.
+3. A validação semântica (`DeepAgentSemanticValidator`) aplica dois invariantes: `_validate_skills_library`
+   (unicidade e formato do `name`) e `_validate_skills_declared` — **fail-closed**: todo nome citado em
+   `skills:` (supervisor e cada agente) deve existir na `skills_library` do mesmo documento, ou o
+   assembly reprova com `DEEPAGENT_SKILL_NAO_DECLARADA_NA_LIBRARY` (ERROR). A coerência bidirecional
+   toggle↔lista (`DEEPAGENT_SKILLS_MIDDLEWARE_SEM_FONTES` / `DEEPAGENT_SKILLS_SEM_MIDDLEWARE`) segue
+   preservada.
+4. O runtime materializa **só a união das skills selecionadas** em `/skills/<name>/SKILL.md` no store
+   (SKILL.md composto de `name`+`description`+`content`); os `files` viram
+   `/skills/<name>/<rel-path>` como **material de apoio legível** — não há tool de execução nem
+   sandbox para skills (execução fora de escopo). Detalhe de materialização, idempotência por hash e
+   reconciliação em `docs/tecnico/README-TECNICO-DEEPAGENT-SUPERVISOR-COMPLETO.md` §7.10.1.
+
+O efeito para tooling é o mesmo dos outros contratos governados: YAML, AST, validator e runtime usam
+uma única fonte de verdade por release, sem divergência banco↔YAML.
+
+#### 8.5.4.1. Seleção de skills no Workflow: `workflows[].nodes[].skills`
+
+A `skills_library` é do **documento**, não do DeepAgent. Por isso o WorkflowAgent seleciona da mesma
+biblioteca, sem segunda fonte e sem segunda regra de validação. A diferença é **onde** a seleção é
+declarada: no Workflow ela vive **por node**, em `workflows[].nodes[].skills`, como lista de nomes.
+
+```yaml
+skills_library:
+  - name: operacao-criar-oferta-desconto
+    description: Procedimento de criação de oferta com desconto.
+    content: "Passo 1: validar margem. Passo 2: registrar oferta."
+
+workflows:
+  - id: wf_operacoes
+    nodes:
+      - id: aplicar_oferta
+        mode: agent
+        skills:
+          - operacao-criar-oferta-desconto
+        prompt:
+          system: "Você aplica ofertas."
+      - id: resumir
+        mode: agent          # sem skills: caminho atual, inalterado
+```
+
+Por que por node e não por workflow: só o node que declara paga o custo de prompt, e fica rastreável
+quem usa o quê. Node sem `skills` mantém exatamente o comportamento atual — nenhum workflow existente
+muda.
+
+Três pontos do contrato importam para quem escreve YAML ou tooling.
+
+1. `AgentNodeAST.skills: list[str]` (`src/config/agentic_assembly/ast/workflow.py`,
+   `default_factory=list`) existe **apenas** no node `mode: agent`, o único que executa um agente LLM.
+   Como o campo é tipado na AST, o `WorkflowParser` já o preserva e já reprova forma inválida
+   (`skills` como string, item não-string) com `WORKFLOW_PARSE_VALIDATION` — sem código próprio de
+   parser.
+2. `WorkflowSemanticValidator` aplica o **fail-closed**: nome selecionado que não existe na
+   `skills_library` do mesmo documento reprova com `WORKFLOW_SKILL_NAO_DECLARADA_NA_LIBRARY` (ERROR).
+   Biblioteca ausente equivale a biblioteca vazia — qualquer seleção reprova, nunca o contrário. As
+   demais recusas: `WORKFLOW_NODE_SKILLS_MODO_INVALIDO` (skills em node que não é `agent`),
+   `WORKFLOW_NODE_SKILLS_TIPO_INVALIDO`, `WORKFLOW_NODE_SKILLS_ITEM_INVALIDO` (nome vazio) e
+   `WORKFLOW_NODE_SKILLS_DUPLICADA`.
+3. A regra de formato e unicidade do `name` da biblioteca **não é duplicada**: vem de
+   `validate_skills_library` (`validators/skills_library_semantic_validator.py`), o mesmo módulo que o
+   DeepAgent consome, apenas com `target=WORKFLOW` no diagnóstico. Os códigos da biblioteca conservam
+   o prefixo histórico `DEEPAGENT_` porque são contrato assertado por teste.
+
+Estado do runtime: **entregue**. Declarar `skills` num node passou a ter efeito real na execução, em
+quatro passos encadeados.
+
+1. **Store só quando alguém declara.** Na inicialização do workflow, se — e somente se — algum node
+   do workflow ativo declara `skills`, o runtime abre o `AsyncPostgresStore` compartilhado
+   (`agent_workflow.py::_create_skills_store`) sobre o Postgres já configurado em
+   `memory.checkpointer.postgres.connection_string`. Não existe campo YAML novo: backend de memória
+   diferente de postgres falha explícito, em vez de rodar sem as skills prometidas. Workflow sem
+   `skills` não abre pool nenhum.
+2. **Materialização por node.** Cada node declarante recebe seu próprio namespace
+   (`workflow_store/<ambiente>/user/<user_email>/<workflow_id>/<node_id>`) e ali são gravadas
+   **apenas** as skills que aquele node selecionou, pelo `SkillsStoreMaterializer` — o mesmo
+   componente canônico que o DeepAgent usa, sem segunda implementação. Namespace por node não é
+   detalhe: a reconciliação apaga toda skill fora da seleção corrente, então dois nodes num
+   namespace comum se apagariam mutuamente.
+3. **Middleware e tool no agente do node.** O `AgentNode` passa o `store` ao
+   `LangChainAgentGateway.create_agent` e anexa o `SkillsMiddleware` oficial. O middleware faz
+   *progressive disclosure*: injeta no prompt só **nome e descrição** e instrui o modelo a abrir o
+   `SKILL.md` com `read_file`. Como o node de workflow monta um `create_agent` puro (as tools vêm do
+   YAML), a tool canônica `read_file` é injetada sobre o **mesmo** backend — sem ela o agente veria o
+   catálogo e não alcançaria o corpo de nenhuma skill. Se o YAML já declarar uma tool chamada
+   `read_file`, a compilação do node falha explícito em vez de sobrescrever a tool prometida.
+4. **Rastro no log.** Três `event_name` canônicos contam a história:
+   `workflow.runtime.skills.materialized` (com `skills_source=yaml.skills-library` e o
+   `store_namespace_prefix` do node), `workflow.runtime.skills.load_failed` e
+   `workflow.node.agent.skills_read_tool_injected`.
+
+Node **sem** `skills` continua exatamente como antes: nenhum store, nenhum middleware, nenhuma tool
+acrescentada e prompt inalterado. Exemplo executável com os dois casos no mesmo workflow:
+`app/yaml/rag-config-workflow-skills-demo.yaml`.
 
 ### 8.6. Compilação e merge canônico
 

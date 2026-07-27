@@ -173,7 +173,10 @@ O cálculo correto:
 4. informa uma lacuna quando não há limites ou vínculo causal suficientes.
 
 Em linguagem simples: o trabalho de background continua visível, mas não é somado ao
-tempo que o usuário esperou pela resposta.
+tempo que o usuário esperou pela resposta. A ligação é objetiva: o enqueue cria a
+tarefa e seu span; o worker preserva a tarefa e aponta `parent_span_id` para esse
+enqueue. Sem `lane`, `task_id`, `span_id` e `parent_span_id`, o analyzer informa a
+lacuna em vez de deduzir concorrência pelo nome do evento.
 
 ### Cache de documentos e cache de resposta
 

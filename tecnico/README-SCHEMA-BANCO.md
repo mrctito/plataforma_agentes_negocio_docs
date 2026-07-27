@@ -67,9 +67,11 @@ Invariantes aplicados hoje:
 - API key/canal chegam a `tenant_yaml.yaml_content` por binding explícito;
 - FKs compostas com `environment + tenant_id + tenant_yaml_id` impedem cruzar tenant/ambiente;
 - `yaml_path` é proveniência, não fonte de runtime;
-- `tenant_user_yaml.agent_instructions_md` ainda existe fisicamente até a contração T21, mas
-  T17 removeu todos os leitores/escritores runtime; a única fonte é `agent-instructions-md`
-  no YAML imutável da release.
+- `tenant_user_yaml.agent_instructions_md` ainda existe fisicamente, mas não possui nenhum
+  leitor/escritor runtime (T17 removeu os do modelo antigo; a materialização `/memories/agents.md`
+  saiu na janela de skills YAML-First). A única fonte da instrução compartilhada é
+  `agent-instructions-md` no YAML imutável da release, injetada pelo prompt composto. O DROP
+  físico da coluna está roteirizado para janela manual (script de remoção), ainda não executado.
 
 ### 3. Projeto SaaS, release e manifesto — APLICADO
 
@@ -447,7 +449,8 @@ rejeitado. FKs usam `CASCADE`. Owner: **FUTURO T10+**; hoje zero linhas.
 
 `selected_entrypoint` e `agent-instructions-md` vivem dentro de `yaml_content`; o DDL SaaS
 não cria colunas com esses nomes. `tenant_user_yaml.agent_instructions_md` permanece apenas
-como coluna física de rollback até T21 e não possui call site runtime. O manifesto é derivado
+como coluna física órfã (sem call site runtime), com DROP roteirizado para janela manual e
+ainda não executado. O manifesto é derivado
 do YAML e hash-bound à release. Um
 bundle pode conter vários candidatos, mas o boundary agentic exige que `selected_entrypoint`
 resolva exatamente um Workflow ou DeepAgent habilitado. ETL/ingestão podem coexistir e podem
@@ -2687,8 +2690,10 @@ não resolve configuração por e-mail, caminho, data de atualização ou fallba
 - `descricao`: descrição funcional do vínculo.
 - `execution_mode`: modo de execução associado.
 - `metadata_json`: metadados adicionais em `jsonb`.
-- `agent_instructions_md`: coluna `text` nullable sem leitor/escritor runtime. A instrução
-  compartilhada usa exclusivamente `agent-instructions-md` dentro do YAML da release.
+- `agent_instructions_md`: coluna `text` nullable **órfã**, sem leitor/escritor runtime. A
+  instrução compartilhada usa exclusivamente `agent-instructions-md` dentro do YAML da release,
+  injetada pelo prompt composto (nunca mais materializada em `/memories/agents.md`). DROP físico
+  roteirizado para janela manual, ainda não executado.
 - `created_at`: criação do vínculo.
 - `updated_at`: última atualização do vínculo.
 - Índices e restrições:
@@ -2705,34 +2710,32 @@ não resolve configuração por e-mail, caminho, data de atualização ou fallba
 - configuração executável resolve projeto → release ativa → único `tenant_yaml` e operação;
 - a tabela permanece intocada somente para rollback controlado até T21.
 
-### agent_skills
+### agent_skills — REMOVIDA DO MODELO (skills migradas para YAML-First)
 
-- Finalidade prática: guardar, **por tenant**, o conteúdo das *skills* de DeepAgent (arquivos `SKILL.md` no formato Agent Skills). A plataforma roda em containers sem filesystem persistente, então as skills residem no banco, não em disco. Em runtime, o conteúdo é materializado no `PostgresStore` do DeepAgent sob `/skills/<skill_name>/SKILL.md` e lido pelo `SkillsMiddleware` nativo (escopo `org`).
-- Chave primária: `agent_skill_id`.
-- Colunas:
-- `agent_skill_id`: identificador UUID da skill.
-- `tenant_id`: organização dona da skill (segregação obrigatória).
-- `skill_name`: nome da skill == nome do diretório em `/skills/<skill_name>/`; formato Agent Skills (1–64 caracteres, minúsculas alfanuméricas e hífens simples, sem hífen inicial/final nem duplo). Validado por `CHECK`.
-- `skill_md`: conteúdo do `SKILL.md` (com frontmatter `name`/`description`), em texto.
-- `skill_version`: versão da skill (default `'1'`); usada para materialização idempotente (só reescreve o store quando muda).
-- `assets_json`: ativos adicionais da skill em `jsonb` (opcional).
-- `status`: estado da skill, default `active`, `CHECK` limitando a `active`/`inactive`.
-- `environment`: valor normalizado de `ENVIRONMENT` (ex.: `development`/`homologacao`/`producao`), segregador obrigatório por ambiente.
-- `created_at`: criação da skill.
-- `updated_at`: última atualização da skill.
-- Índices e restrições:
-- PK em `agent_skill_id`.
-- Unique `uq_agent_skills_tenant_name_env` em `(tenant_id, skill_name, environment)` — unicidade lógica da skill por tenant e ambiente.
-- Índice `ix_agent_skills_tenant_env_status` em `(tenant_id, environment, status)`.
-- Check `ck_agent_skills_status` (`active`/`inactive`) e `ck_agent_skills_skill_name_format` (formato Agent Skills).
+- **Registro histórico.** A tabela `agent_skills` guardava, por tenant, o conteúdo das *skills* de
+  DeepAgent (`SKILL.md` no formato Agent Skills). Esse modelo por banco foi **removido do código**
+  na janela de skills YAML-First: as skills agora são declaradas na `skills_library` (nível raiz do
+  YAML da release) e materializadas no store a partir do YAML resolvido — não mais de nenhuma tabela.
+  Saíram do runtime o port `SkillRepository`, o adapter `AgentSkillsPostgresRepository` e o wiring
+  `_resolve_agent_skill_repository`.
+- **Estado físico da tabela.** A tabela `agent_skills` **ainda existe fisicamente** no banco de
+  domínio `DATABASE_PROMETEU_GENERIC_RAG_DSN`; nenhum call site runtime a lê ou escreve. O DROP está
+  roteirizado para janela manual (script de remoção, gate DDL manual do `CLAUDE.md §5`) e **ainda não
+  foi executado**.
+- **Onde skills vivem hoje.** Contrato e materialização em
+  `docs/tecnico/README-TECNICO-DEEPAGENT-SUPERVISOR-COMPLETO.md` (`skills_library`, seleção por agente,
+  materialização em `/skills/<name>/SKILL.md`) e no AST em `docs/tecnico/README-AST-AGENTIC-DESIGNER.md`.
 
-#### Gate de DDL manual e estado legado AGENTS.md/Skills por tenant (DeepAgent)
+#### Gate de DDL manual — colunas e tabela órfãs (DeepAgent)
 
-- **DDL sempre manual.** A tabela `agent_skills` e a coluna `tenant_user_yaml.agent_instructions_md` são criadas **à mão**, fora do runtime, em janela controlada de deploy. Nenhum processo (API/worker/scheduler/request/boot) dispara DDL.
-- **DSN de domínio.** Essas estruturas vivem no banco de domínio `DATABASE_PROMETEU_GENERIC_RAG_DSN`, acessadas por `AgentSkillsPostgresRepository` e `UserYamlRepository` sobre `ClientDirectoryBase`.
-- **Onde o conteúdo é usado hoje.** `agent_instructions_md` não é usado. A chave
-  `agent-instructions-md` do YAML materializa `/memories/agents.md`; `agent_skills` continua
-  materializando `/skills/<skill_name>/SKILL.md`.
+- **DDL sempre manual.** Toda remoção (`DROP TABLE agent_skills`, `DROP COLUMN
+  tenant_user_yaml.agent_instructions_md`) é executada **à mão**, fora do runtime, em janela controlada.
+  Nenhum processo (API/worker/scheduler/request/boot) dispara DDL. As estruturas seguem físicas até
+  essa janela.
+- **Estado atual.** Ambas são **órfãs** (sem leitor/escritor runtime). O conteúdo das skills vem
+  exclusivamente da `skills_library` do YAML; a instrução compartilhada vem exclusivamente de
+  `agent-instructions-md` do YAML, injetada pelo prompt composto — a materialização
+  `/memories/agents.md` da coluna `agent_instructions_md` foi removida na mesma janela.
 
 ### Leitura prática de tenant_users no modelo final
 

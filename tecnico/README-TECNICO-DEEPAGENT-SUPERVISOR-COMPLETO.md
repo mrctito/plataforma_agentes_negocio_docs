@@ -2,7 +2,7 @@
 
 ## 1. Escopo técnico deste manual
 
-Este manual documenta o funcionamento técnico real do DeepAgent Supervisor no código atual. O foco aqui é o ciclo YAML para AST, parser, validator, resolução do supervisor ativo, bootstrap do runtime, toolset, filesystem, shell, todo_list, memória durável (Redis ou Postgres), skills e AGENTS.md por tenant, interpreter, HIL, aprovação assíncrona, subagentes, background execution, contratos HTTP de continuação e observabilidade.
+Este manual documenta o funcionamento técnico real do DeepAgent Supervisor no código atual. O foco aqui é o ciclo YAML para AST, parser, validator, resolução do supervisor ativo, bootstrap do runtime, toolset, filesystem, shell, todo_list, memória durável (Redis ou Postgres), skills declaradas no YAML (`skills_library`), interpreter, HIL, aprovação assíncrona, subagentes, background execution, contratos HTTP de continuação e observabilidade.
 
 O objetivo não é listar arquivos. O objetivo é explicar como a feature realmente funciona, quais recursos avançados ela expõe, quais restrições o contrato impõe e por que esse desenho é especialmente adequado para agentes que executam processos duráveis em background.
 
@@ -160,7 +160,7 @@ O DeepAgentSupervisor.initialize segue um fluxo rígido.
 2. Inicializa ToolsFactory e MemoryFactory compartilhadas.
 3. Resolve a factory governada do runtime DeepAgent.
 4. Compõe a pilha extra de middlewares do produto.
-5. Constrói backend e store persistente do DeepAgent quando backend top-level está habilitado; com backend.type=postgres, também materializa as skills do tenant em `/skills/` e as instruções AGENTS.md em `/memories/agents.md` (§7.10.1).
+5. Constrói backend e store persistente do DeepAgent quando backend top-level está habilitado; havendo skills selecionadas, materializa no store as skills da `skills_library` do YAML em `/skills/<name>/SKILL.md` (§7.10.1). A instrução compartilhada da release entra pelo prompt composto, não por `/memories/agents.md`.
 6. Resolve o checkpointer.
 7. Cria o agente final.
 
@@ -199,7 +199,7 @@ Estratégias aceitas:
 
 ## 7.5. Middleware de skills
 
-Se middlewares.skills.enabled=true, o runtime exige skills top-level e injeta SkillsMiddleware com backend e sources. O mesmo padrão vale para subagentes que definem skills próprias.
+Se middlewares.skills.enabled=true, o runtime exige a lista `skills` top-level e injeta SkillsMiddleware com backend e sources. O mesmo padrão vale para subagentes que definem skills próprias. O **conteúdo** de cada skill vem da `skills_library` do YAML da release (não mais de banco) — ver §7.10.1 para a fonte e a materialização.
 
 ## 7.6. Filesystem governado
 
@@ -322,26 +322,66 @@ Detalhes relevantes do store:
 - organiza namespace por user, agent ou org;
 - **segregação por ambiente:** no Redis o `ENVIRONMENT` vem do `key_prefix`; no Postgres **não** há camada de key_prefix, então o `ENVIRONMENT` e o tenant são embutidos no **namespace** do store (segregação obrigatória, nunca cross-tenant).
 
-### 7.10.1. Postgres: skills e AGENTS.md por tenant
+### 7.10.1. Fonte das skills (YAML-First) e materialização no store
 
-Com `type=postgres`, o conteúdo de `/skills/` e `/memories/agents.md` vem do banco de domínio, por tenant:
+O backend durável (Redis ou Postgres) decide **onde** ficam os arquivos virtuais `/skills/` e
+`/memories/`. A **fonte do conteúdo** das skills é o YAML da release — não mais o banco.
 
-- **skills** → tabela `agent_skills` (por `tenant_id` + `environment`). Cada linha guarda um `SKILL.md`; o runtime materializa em `/skills/<skill_name>/SKILL.md` e o `SkillsMiddleware` nativo carrega sob demanda. Requer `middlewares.skills.enabled=true` + a lista `skills` top-level.
-- **AGENTS.md** → coluna `agent_instructions_md` (em `tenant_user_yaml` para escopo `org`; em `user_account_yaml` para escopo `user`). O runtime materializa em `/memories/agents.md` e o `MemoryMiddleware` nativo injeta sempre no system prompt. Requer `middlewares.memory.enabled=true` + `memory` top-level apontando `/memories/agents.md`.
-- **DDL sempre manual (`CLAUDE.md §5`):** a tabela `agent_skills` e a coluna `agent_instructions_md` são criadas à mão (scripts em `docs/.interno/.planos/deepagents-skills-memory-interpreter/ddl/`). O runtime assume o schema existente e **falha explícito** se faltar — nunca cria schema. Detalhes de schema em `docs/tecnico/README-SCHEMA-BANCO.md` (seções `agent_skills`, `tenant_user_yaml`, `user_account_yaml`).
+- **skills** → declaradas na `skills_library` (nível raiz do YAML da release; ver contrato em
+  `docs/tecnico/README-AST-AGENTIC-DESIGNER.md` §8.5.4). Cada agente/supervisor seleciona skills por
+  nome (`skills: [...]` + `middlewares.skills.enabled=true`). O runtime materializa **só a união das
+  skills selecionadas** (supervisor + agentes) em `/skills/<name>/SKILL.md` no store, e o
+  `SkillsMiddleware` nativo carrega sob demanda. O `SKILL.md` é composto a partir dos campos
+  estruturados da skill (frontmatter `name`/`description` + corpo `content`); os `files` opcionais
+  da skill viram `/skills/<name>/<rel-path>` no mesmo namespace, como **material de apoio legível**
+  (o agente lê pelas tools de filesystem nativas — **execução de scripts está fora de escopo**, não
+  há tool de execução nem sandbox para skills).
+- **Materialização idempotente + reconciliação:** a versão de cada skill é o `sha256` do bundle
+  (`name`+`description`+`content`+`files`); o store só é reescrito quando o conteúdo muda. Skills que
+  saíram da seleção corrente do YAML são **removidas do store** (reconciliação anti-fantasma), sem
+  tocar as memórias genéricas (`/memories/user.md`) do mesmo namespace.
+- **Instrução compartilhada da release:** vive na chave `agent-instructions-md` do YAML e é injetada
+  por **um único canal — o prompt composto** (`compose_agent_system_prompt`). **Não há mais**
+  materialização de `/memories/agents.md`: o modelo antigo de dupla injeção (prompt composto + memória
+  agents.md a partir da coluna `agent_instructions_md`) foi removido.
+- **Memória genérica preservada:** o `MemoryMiddleware` nativo continua roteando `/memories/` (ex.:
+  `/memories/user.md`) quando `middlewares.memory.enabled=true` + `memory` top-level declaram um path.
+- **Sem leitura de schema de domínio para skills/instrução:** o runtime não lê `agent_skills` nem
+  `agent_instructions_md` — essas estruturas são órfãs (DROP roteirizado para janela manual, `CLAUDE.md §5`;
+  detalhes em `docs/tecnico/README-SCHEMA-BANCO.md`). O único DDL relevante do backend Postgres é o do
+  framework LangGraph (`PostgresStore.setup()`), não schema de skills.
 
-### 7.10.2. Exemplo completo (Postgres + skills + AGENTS.md read-only + interpreter)
+### 7.10.2. Exemplo completo (Postgres + skills YAML-First + interpreter)
 
-Recorte de um supervisor DeepAgent com backend Postgres durável, skills por tenant, AGENTS.md organizacional injetado, permissões read-only na memória e interpreter (default-on) explicitado:
+Recorte de um documento com a `skills_library` no nível raiz, um supervisor DeepAgent com backend
+Postgres durável, seleção de skills por nome e interpreter (default-on) explicitado. A instrução
+compartilhada da release fica em `agent-instructions-md` no raiz e é injetada pelo prompt composto:
 
 ```yaml
+agent-instructions-md: |
+  Você é o supervisor de vendas. Priorize dados do período solicitado.
+
+skills_library:
+  - name: analise-de-vendas
+    description: Analisa vendas por período com foco em variação e sazonalidade.
+    content: |
+      # Análise de vendas
+      Passos: (1) delimitar o período; (2) comparar com o anterior; (3) destacar desvios.
+  - name: relatorio-financeiro
+    description: Consolida resultado financeiro executivo.
+    content: |
+      # Relatório financeiro
+      Estruture receita, custo e margem, com o principal achado no topo.
+    files:
+      modelo.md: |
+        ## Modelo de saída
+        - Receita | Custo | Margem
+
 multi_agents:
   supervisor:
     middlewares:
       skills:
         enabled: true            # habilita o SkillsMiddleware nativo
-      memory:
-        enabled: true            # habilita o MemoryMiddleware nativo
       interpreter:
         enabled: true            # default-on; use enabled: false para DESLIGAR
         tool_name: eval
@@ -350,25 +390,25 @@ multi_agents:
     backend:
       enabled: true
       type: postgres             # store durável em Postgres (não Redis)
-      scope: org                 # skills e AGENTS.md organizacionais (por tenant)
+      scope: org                 # namespace do store por tenant (segregação obrigatória)
       policy: read_only          # curadoria da plataforma; agente não reescreve
       postgres:
         dsn_env: DATABASE_PROMETEU_GENERIC_RAG_DSN
         namespace_prefix: deepagent_store   # opcional
-    memory:
-      - /memories/agents.md      # AGENTS.md do tenant (coluna agent_instructions_md)
     skills:
-      - analise-de-vendas        # nomes == agent_skills.skill_name do tenant
+      - analise-de-vendas        # nomes existentes na skills_library (fail-closed se não existir)
       - relatorio-financeiro
-    permissions:
-      - operations: [write]      # read-only na memória: nega escrita do agente
-        paths: ["/memories/**"]
-        mode: deny
 ```
 
 Notas do exemplo:
 
-- `policy: read_only` + a permission `deny write` em `/memories/**` garantem que as instruções curadas pelo tenant não sejam sobrescritas pelo agente; a escrita durável é feita pela plataforma (materialização), não pelo agente.
+- as skills selecionadas são materializadas em `/skills/analise-de-vendas/SKILL.md` e
+  `/skills/relatorio-financeiro/SKILL.md`; os `files` da segunda viram
+  `/skills/relatorio-financeiro/modelo.md` (material de apoio legível, sem execução).
+- um nome em `skills:` que não exista na `skills_library` **reprova na validação de assembly**
+  (fail-closed, código `DEEPAGENT_SKILL_NAO_DECLARADA_NA_LIBRARY`) — nunca vira no-op silencioso.
+- `agent-instructions-md` no raiz é injetada **uma única vez** pelo prompt composto — não existe mais
+  materialização em `/memories/agents.md`.
 - `scope: org` exige `user_session.tenant_id` resolvido no boundary; ausência **falha explícito** (fail-closed).
 - para desligar o interpreter, basta `middlewares.interpreter.enabled: false` — o default global permanece ligado.
 
@@ -549,20 +589,19 @@ E ainda registra telemetria de tool, resposta pós-processada, middleware error,
 
 ### 9.4.1. Eventos canônicos de backend, skills, memory e interpreter
 
-Além do lifecycle geral, os componentes durável (backend Postgres/Redis), skills e AGENTS.md por tenant, e o interpreter emitem eventos próprios, todos via `build_supervisor_log_context` (builder oficial do slice) e com `correlation_id` resolvido **em tempo de chamada** (nunca congelado no objeto cacheado — `_resolve_active_correlation_id`/`get_graph_correlation_id`). Nenhum desses eventos substitui o `logging` nativo da lib; eles complementam, tornando por `correlation_id` o que antes só existia no log genérico do Python.
+Além do lifecycle geral, os componentes durável (backend Postgres/Redis), a materialização de skills (fonte YAML) e o interpreter emitem eventos próprios, todos via `build_supervisor_log_context` (builder oficial do slice) e com `correlation_id` resolvido **em tempo de chamada** (nunca congelado no objeto cacheado — `_resolve_active_correlation_id`/`get_graph_correlation_id`). Nenhum desses eventos substitui o `logging` nativo da lib; eles complementam, tornando por `correlation_id` o que antes só existia no log genérico do Python.
 
 | event_name | Quando dispara | Campos-chave (shape, nunca conteúdo) |
 | --- | --- | --- |
 | `deepagent_supervisor.backend_store.configured` | Ao montar o backend do supervisor (Redis ou Postgres) | `store_type`, `store_scope`, `store_policy`, `store_key_prefix` (Redis) ou `store_namespace_prefix`/`store_dsn_source` (Postgres) |
-| `deepagent_supervisor.skills.materialized` | Ao final da materialização de skills do tenant em `/skills/` (só quando há `backend.type=postgres` e skills configuradas) | `skills_total`, `skills_materialized`, `skills_unchanged`, `skills_failed`, `skill_names` |
-| `deepagent_supervisor.skills.load_failed` | Por skill malformada (frontmatter inválido ou `name` != diretório) — a skill é pulada, não derruba o agente | `skill_name`, `skill_failure_reason` (`invalid_skill_md` ou `name_directory_mismatch`) |
-| `deepagent_supervisor.memory.injected` | Ao materializar as instruções AGENTS.md do tenant em `/memories/agents.md` (só quando o supervisor declara essa memória) | `memory_path`, `memory_scope`, `memory_source_table` (`tenant_user_yaml`/`user_account_yaml`/`None`), `memory_instructions_present`, `memory_instructions_bytes`, `memory_injection_action` (`materialized`/`unchanged`/`removed`/`absent`) |
+| `deepagent_supervisor.skills.materialized` | Ao final da materialização das skills selecionadas em `/skills/` (só quando há backend e skills configuradas) | `skills_source` (`yaml.skills-library`), `skills_total`, `skills_materialized`, `skills_unchanged`, `skills_failed`, `skills_removed`, `skill_names`, `skill_names_removed` |
+| `deepagent_supervisor.skills.load_failed` | Por skill malformada (frontmatter inválido, `name` != diretório, ou caminho de `files` inseguro) — a skill/arquivo é pulado, não derruba o agente | `skill_name`, `skill_failure_reason` (`invalid_skill_md`, `name_directory_mismatch`, `not_in_skills_library`, `unsafe_file_path`) |
 | `deepagent_supervisor.interpreter.executed` | Execução do `eval` (QuickJS) terminou sem erro/timeout/OOM | `interpreter_outcome=success`, `interpreter_code_chars`, `interpreter_result_chars`, `duration_ms` |
 | `deepagent_supervisor.interpreter.timeout` | Execução estourou `interpreter.timeout` | `interpreter_outcome=timeout`, `interpreter_error_type=Timeout` |
 | `deepagent_supervisor.interpreter.oom` | Execução estourou `interpreter.memory_limit` | `interpreter_outcome=oom`, `interpreter_error_type=OutOfMemory` |
 | `deepagent_supervisor.interpreter.error` | Erro de JS dentro do código (`ReferenceError`, etc.) ou exceção de infraestrutura na própria tool | `interpreter_outcome=error`, `interpreter_error_type` classificado |
 
-Disciplina de dado sensível: nenhum desses eventos loga o código executado, o conteúdo do SKILL.md/AGENTS.md ou a mensagem de erro do JS — apenas contagem, nomes de skill, tamanho em bytes/chars e a decisão tomada.
+Disciplina de dado sensível: nenhum desses eventos loga o código executado, o conteúdo do SKILL.md ou a mensagem de erro do JS — apenas contagem, nomes de skill, tamanho em bytes/chars e a decisão tomada.
 
 ## 10. Entrada, execução e continuação
 
@@ -615,7 +654,7 @@ Do ponto de vista técnico, a combinação abaixo é rara e poderosa.
 - thread_id durável
 - correlation_id propagado
 - checkpointer obrigatório quando HIL existe
-- store durável em Redis ou Postgres, com skills e AGENTS.md por tenant no caso Postgres
+- store durável em Redis ou Postgres, onde as skills selecionadas da `skills_library` são materializadas
 - possibilidade de async approval
 - subagente automático de background execution
 - structured output
@@ -684,7 +723,7 @@ Principais falhas que o runtime trata explicitamente:
 - backend.type=postgres sem bloco postgres, ou sem dsn/dsn_env, gera erro de validação (DEEPAGENT_POSTGRES_INVALIDO/DEEPAGENT_POSTGRES_DSN_AUSENTE);
 - backend.redis e backend.postgres juntos no mesmo backend gera erro de validação (DEEPAGENT_BACKEND_REDIS_POSTGRES_CONFLITO);
 - shell.enabled=true com execution_policy.type=host (explícito ou por default) gera erro de validação (DEEPAGENT_SHELL_HOST_MULTITENANT_PROIBIDO);
-- tabela agent_skills ou coluna agent_instructions_md ausentes no schema geram AgentSkillsSchemaMissingError/AgentInstructionsSchemaMissingError em vez de degradar para vazio.
+- nome citado em `skills:` sem correspondente na `skills_library` do documento reprova na validação de assembly (`DEEPAGENT_SKILL_NAO_DECLARADA_NA_LIBRARY`), fail-closed, antes do runtime — nunca vira no-op silencioso.
 
 Em resumo: o DeepAgent do projeto favorece falha fechada para configuração inconsistente.
 
@@ -730,16 +769,15 @@ Onde investigar:
 - DeepAgentRedisStore
 - logs de deepagent store configurado
 
-### 15.4.1. Skills ou AGENTS.md não aparecem com backend Postgres
+### 15.4.1. Skills não aparecem no agente
 
-Causa provável: DDL manual (`agent_skills` ou coluna `agent_instructions_md`) ainda não aplicado no banco; `dsn_env`/`dsn` não resolve; skill malformada (frontmatter inválido ou `name` diferente do diretório); `scope: org` sem `user_session.tenant_id` (fail-closed).
+Causa provável: skill não declarada na `skills_library` do YAML (a seleção reprova fail-closed no assembly); `backend` ausente (sem store para materializar `/skills/`); `dsn_env`/`dsn` não resolve; skill malformada (frontmatter inválido ou `name` diferente do diretório); caminho de `files` inseguro (pulado); `scope: org` sem `user_session.tenant_id` (fail-closed).
 
 Onde investigar:
 
-- logs `deepagent_supervisor.skills.materialized` / `.skills.load_failed` / `.memory.injected` (§9.4.1)
-- `AgentSkillsSchemaMissingError` / `AgentInstructionsSchemaMissingError` no traceback (schema ausente)
-- `backend.postgres.dsn_env` e a variável de ambiente correspondente
-- `docs/tecnico/README-SCHEMA-BANCO.md` para confirmar se o DDL manual já foi aplicado
+- eventos `deepagent_supervisor.skills.materialized` (campos `skills_source`, contadores, nomes) / `.skills.load_failed` (§9.4.1)
+- diagnóstico de assembly `DEEPAGENT_SKILL_NAO_DECLARADA_NA_LIBRARY` (nome selecionado sem entrada na `skills_library`)
+- `backend.postgres.dsn_env` e a variável de ambiente correspondente (store onde as skills são materializadas)
 
 ### 15.4.2. Interpreter (eval) falha ou trava sem aparecer no log
 
@@ -824,25 +862,22 @@ O que o torna forte não é “ter muita feature”. O que o torna forte é que 
   - Símbolos relevantes: get_shared_postgres_store, encode_namespace_label.
   - Comportamento confirmado: cache de 1 `PostgresStore` por `DSN+ENVIRONMENT`, `store.setup()` (DDL de framework do LangGraph) executado 1×/processo sob lock, sem cliente Postgres novo por consumidor.
 
-- src/agentic_layer/supervisor/skill_repository.py
-  - Motivo da leitura: port hexagonal de leitura de skills por tenant.
-  - Símbolos relevantes: SkillRepository (Protocol), SkillRecord, AgentSkillsSchemaMissingError.
-  - Comportamento confirmado: contrato `list_skills(tenant_id, correlation_id)`; ausência da tabela `agent_skills` deve falhar explícito, nunca degradar para lista vazia.
-
-- src/agentic_layer/supervisor/agent_skills_repository.py
-  - Motivo da leitura: adapter Postgres do port acima.
-  - Símbolo relevante: AgentSkillsPostgresRepository (herda ClientDirectoryBase).
-  - Comportamento confirmado: query filtra por `tenant_id` + `environment` + `status='active'` via `run_observed_query`; erro de schema ausente (`UndefinedTable`/`UndefinedColumn`) vira `AgentSkillsSchemaMissingError`.
-
-- src/agentic_layer/supervisor/agent_instructions_repository.py
-  - Motivo da leitura: port hexagonal de leitura das instruções AGENTS.md por tenant/usuário.
-  - Símbolos relevantes: AgentInstructionsRepository (Protocol), AgentInstructionsRecord, AgentInstructionsSchemaMissingError.
-  - Comportamento confirmado: `resolve_org_agent_instructions` (escopo `org`) e `resolve_user_agent_instructions` (escopo `user`); instrução ausente/vazia devolve `None` (não é erro); coluna ausente falha explícito.
+- Fonte das skills (YAML-First, sem banco): a materialização vive em
+  `src/agentic_layer/supervisor/deep_agent_supervisor.py` (`_materialize_deepagent_skills`,
+  `_resolve_skills_library`, `_collect_selected_skill_names`, `_compose_skill_md`,
+  `_reconcile_skills_store`). Lê a `skills_library` do YAML resolvido, compõe o `SKILL.md`
+  (revalidado por `parse_skill_metadata`), materializa `files` e reconcilia o store. O modelo
+  antigo por banco (`skill_repository.py` com `SkillRepository`/`SkillRecord`/
+  `AgentSkillsSchemaMissingError` e `agent_skills_repository.py` com `AgentSkillsPostgresRepository`)
+  foi **removido** — não há mais leitura de `agent_skills`.
 
 - src/security/user_yaml_repository.py
-  - Motivo da leitura: adapter real do port acima — mesmo acessor único de `tenant_user_yaml`/`user_account_yaml` usado para resolver o `yaml_path` do tenant.
-  - Símbolos relevantes: UserYamlRepository.resolve_org_agent_instructions, UserYamlRepository.resolve_user_agent_instructions.
-  - Comportamento confirmado: lê a coluna `agent_instructions_md` pelo mesmo padrão de `resolve_tenant_yaml_path`/`resolve_user_yaml_path`, sem criar acessor paralelo às tabelas YAML×tenant.
+  - Motivo da leitura: acessor único de `tenant_user_yaml`/`user_account_yaml` usado para resolver o
+    `yaml_path` do tenant.
+  - Símbolos relevantes: UserYamlRepository.resolve_tenant_yaml_path / resolve_user_yaml_path.
+  - Comportamento confirmado: resolve o caminho do YAML da release por tenant/usuário. O método legado
+    de leitura da coluna `agent_instructions_md` não tem call site runtime (a instrução compartilhada
+    vem só de `agent-instructions-md` no YAML, via prompt composto).
 
 - src/agentic_layer/supervisor/agent_middlewares.py
   - Motivo da leitura: middlewares de observabilidade do produto que rodam dentro do grafo do DeepAgent.
@@ -937,23 +972,23 @@ Pelo bloco `middlewares.<nome>.enabled` no supervisor (ex.: `middlewares.skills.
 **3. Liguei `middlewares.skills.enabled: true` mas nada aconteceu. Por quê?**
 Faltou a lista `skills` top-level (ex.: `skills: ["minha-skill"]`) **e** um `backend` que resolva `/skills/` (Redis ou Postgres). O toggle sozinho não basta — o validador semântico exige os dois juntos (§5.2) e, sem backend, não há de onde ler o conteúdo.
 
-**4. Com `backend.type: postgres`, onde ficam guardadas as skills?**
-Na tabela `agent_skills` (banco de domínio, `DATABASE_PROMETEU_GENERIC_RAG_DSN`), filtrada por `tenant_id` + `environment`. O supervisor lê essa tabela e materializa cada linha em `/skills/<skill_name>/SKILL.md` no `PostgresStore`, que é onde o `SkillsMiddleware` nativo realmente lê (§7.10.1).
+**4. Onde ficam declaradas as skills?**
+Na `skills_library` do nível raiz do YAML da release (cada skill = `name` + `description` + `content` + `files?`), não mais em banco. O supervisor materializa as skills **selecionadas** (`skills: [...]` do supervisor + agentes) em `/skills/<name>/SKILL.md` no store durável (Redis ou Postgres), que é onde o `SkillsMiddleware` nativo lê (§7.10.1).
 
 **5. E se eu não configurar nenhum `backend`?**
 Skills e memory continuam declaráveis no YAML, mas sem backend não há `/skills/` nem `/memories/` para rotear — o runtime levanta erro explícito em vez de degradar silenciosamente (§14).
 
 **6. Qual a diferença prática entre `backend.type: store` e `backend.type: postgres`?**
-`store` é Redis, com `ttl_seconds` opcional (pode expirar). `postgres` é durável (sem TTL) e é o único caminho hoje para skills/AGENTS.md por tenant persistirem indefinidamente. Os dois usam o mesmo `CompositeBackend`/roteamento; só muda o `BaseStore` por baixo (§7.10).
+`store` é Redis, com `ttl_seconds` opcional (pode expirar). `postgres` é durável (sem TTL) e mantém as skills materializadas e a memória persistente indefinidamente. Os dois usam o mesmo `CompositeBackend`/roteamento; só muda o `BaseStore` por baixo (§7.10). Em ambos, o **conteúdo** das skills vem da `skills_library` do YAML — o store só guarda o que foi materializado.
 
-**7. Preciso rodar alguma migração de banco para usar `backend.type: postgres`?**
-A tabela `agent_skills` e a coluna `agent_instructions_md` são criadas por script DDL manual (nunca em runtime — `CLAUDE.md §5`). Sem esse DDL aplicado, o runtime falha explícito ao tentar ler skills/AGENTS.md do Postgres, em vez de criar o schema sozinho.
+**7. Preciso rodar alguma migração de banco para usar skills com `backend.type: postgres`?**
+Não para as skills: o conteúdo vem do YAML e o store Postgres usa apenas o schema de framework do LangGraph (`PostgresStore.setup()`), criado 1×/processo. Não há tabela de skills a migrar — o modelo por banco (`agent_skills`) foi removido do runtime.
 
-**8. Como o AGENTS.md do meu tenant chega até o agente?**
-Você declara `memory: ["/memories/agents.md"]` + `middlewares.memory.enabled: true` + `backend.type: postgres`. O supervisor lê a coluna `agent_instructions_md` (de `tenant_user_yaml` para escopo `org`, ou `user_account_yaml` para escopo `user`) e materializa em `/memories/agents.md`, que o `MemoryMiddleware` nativo injeta **sempre** no system prompt (§7.10.1).
+**8. Como a instrução compartilhada da release chega até o agente?**
+Pela chave `agent-instructions-md` no nível raiz do YAML da release. Ela é injetada por um **único canal — o prompt composto** (`compose_agent_system_prompt`), que a concatena ao system prompt do supervisor. Não há mais materialização em `/memories/agents.md` nem leitura da coluna `agent_instructions_md`: o modelo antigo de dupla injeção foi removido.
 
-**9. Minha instrução de AGENTS.md sumiu depois que eu apaguei o texto no cadastro do tenant. É bug?**
-Não. A fonte durável (Postgres) manda: se a instrução for removida na origem, o materializador apaga o conteúdo correspondente do store na próxima montagem, para nunca deixar instrução obsoleta injetada (evento `memory.injected` com `action=removed`, §9.4.1).
+**9. Editei a instrução e ela não mudou. Onde eu altero?**
+No `agent-instructions-md` do YAML da release (a fonte é o YAML versionado e hash-bound, não um cadastro de banco). Como o canal é único (prompt composto), a instrução aparece exatamente uma vez — sem cópia paralela em memória para dessincronizar.
 
 **10. O interpreter (tool `eval`) vem sempre ligado?**
 Sim, `interpreter.enabled=true` é o default do contrato (diferente da lib oficial, que é opt-in). Para desligar, declare `middlewares.interpreter.enabled: false` no supervisor.
@@ -964,8 +999,8 @@ Não. É QuickJS (JavaScript/TypeScript) in-process, sem filesystem, rede ou she
 **12. Como eu descubro se uma skill falhou ao carregar?**
 Pelo log canônico `deepagent_supervisor.skills.load_failed` (campos `skill_name` + `skill_failure_reason`), buscando pelo `correlation_id` da montagem. Uma skill malformada é pulada — não derruba o agente, mas também não aparece magicamente (§9.4.1).
 
-**13. Como eu confirmo que o AGENTS.md foi realmente injetado numa execução?**
-Pelo log `deepagent_supervisor.memory.injected`, que mostra `memory_scope`, `memory_source_table` e a decisão (`materialized`/`unchanged`/`removed`/`absent`) — sem expor o conteúdo da instrução (§9.4.1).
+**13. Como eu confirmo que a instrução compartilhada foi injetada numa execução?**
+Ela entra no system prompt composto (`compose_agent_system_prompt`), uma única vez. O contrato é protegido por teste de não-duplicação (o prompt contém a instrução exatamente uma vez); não há mais o evento `memory.injected` nem o campo `memory_scope`, removidos junto com a materialização de agents.md.
 
 **14. Por que `shell.execution_policy.type: host` é bloqueado?**
 Porque a plataforma é multi-tenant por natureza: `host` executaria comandos no processo compartilhado entre tenants, criando superfície de execução cruzada. O validador reprova com `DEEPAGENT_SHELL_HOST_MULTITENANT_PROIBIDO` e sugere `docker` ou `codex_sandbox`, que isolam a execução (§7.7).
