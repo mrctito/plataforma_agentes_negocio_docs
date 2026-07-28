@@ -86,10 +86,13 @@ A superfície HTTP oficial deste projeto expõe três artefatos de contrato:
 
 O acesso a esses caminhos não é público. O fluxo real exige `x-api-key` válido e a permissão nominal `swagger.read`. Em ambiente local, a validação costuma ser feita com um header `x-api-key` e uma chamada direta ao schema JSON ou à interface HTML do Swagger.
 
-Exemplo prático de verificação:
+Exemplo prático de verificação local. A porta deve vir de `FASTAPI_PORT` no
+`.env`; não fixe uma porta diferente no cliente:
 
 ```bash
-curl -i -H "x-api-key: <token-valido>" http://localhost:5555/openapi.json
+source .env
+curl -i -H "x-api-key: <token-valido>" \
+  "http://${FASTAPI_HOST}:${FASTAPI_PORT}/openapi.json"
 ```
 
 Se a resposta for 401, a chave está ausente ou inválida. Se for 403, a chave existe, mas não possui `swagger.read`.
@@ -139,8 +142,11 @@ Na sequência, cada família de router entra com seu prefixo e seu
 contrato próprio. Alguns exemplos confirmados no código:
 
 - /agent para execução, continuidade e cancelamento de agentes;
-- /agent/hil/decisions para registrar decisão HIL assíncrona por POST
-  seguro sem forçar continuação via chamada HTTP interna;
+- /agent/hil/review-context para carregar o contrato pendente de uma
+  revisão por token, sem expor o segredo em uma URL GET;
+- /agent/hil/decisions para registrar decisão HIL por POST seguro e,
+  quando a execução original era background, publicar o segundo job de
+  continuação no Job Core;
 - /workflow para execução e retomada de workflows;
 - /rag para ingestão, ETL, dispatcher unificado, reindex e rebuild de
   auto_config;
@@ -151,8 +157,11 @@ contrato próprio. Alguns exemplos confirmados no código:
   catalog, recommend-tools e objective-to-yaml;
 - /config/nl2sql para geração de SQL proposta a partir de linguagem
   natural;
-- /admin/background-executions para consulta de requests, schedules,
-  runs, eventos, pedidos HIL e cancelamento administrativo de agenda;
+- /admin/background-executions para consultar agendas do Scheduler,
+  resultados factuais, pedidos HIL e comunicações, além de confirmar
+  consumo do outbox e cancelar agenda;
+- /admin/tenant-yaml para publicar versões imutáveis do YAML de tenant e
+  emitir, religar ou revogar chaves ligadas a uma versão;
 - /client-portal para perfil, credenciais, segredos e importação remota
   de Swagger/OpenAPI;
 - /api/auth para login federado, sessão web e reset local de senha com
@@ -271,12 +280,18 @@ Os contratos mais importantes confirmados no código são:
   envelope assíncrono com task_id, polling_url, stream_url e cancel_url.
 - POST /agent/continue: continua execução pausada usando thread_id e
   correlation_id existente.
-- POST /agent/hil/decisions: registra decisão HIL assíncrona por POST
-  seguro, reaproveitando o mesmo contexto lógico da aprovação pendente.
+- POST /agent/hil/review-context: recebe `approval_token` e, opcionalmente,
+  `approval_request_id`; devolve somente o contexto pendente necessário
+  para a UI de revisão.
+- POST /agent/hil/decisions: aceita `approve`, `edit`, `reject` ou
+  `respond`. Devolve `200 resolved` com `continuation` quando a retomada é
+  síncrona; para execução background, devolve
+  `202 continuation_submission_confirmed` com os identificadores do
+  segundo job.
 - POST /agent/tasks/{task_id}/cancel: registra cancelamento de tarefa de
   agente ainda não terminal.
 - POST /workflow/execute: executa workflow e pode responder de forma
-  síncrona ou assíncrona.
+  síncrona ou publicar `direct_async` no Job Core.
 - POST /workflow/continue: retoma workflow pausado por HIL.
 - POST /rag/ingest: aceita ingestão em 202 e delega execução ao runtime
   assíncrono.
@@ -331,22 +346,28 @@ Os contratos mais importantes confirmados no código são:
 - GET /ui/static/...: mount oficial dos assets estáticos servidos pela mesma API.
 - app/ui/static/js/admin-assembly-ast.js: UI administrativa que consome os endpoints de assembly AST.
 - POST /config/nl2sql/generate: gera SQL proposta com diagnósticos.
-- GET /admin/background-executions/requests,
+- GET /admin/background-executions/schedules,
+  /runs/recent,
+  /hil,
   /communications/summary,
   /communications,
-  /schedules,
-  /runs/recent,
-  /runs/active,
-  /events,
-  /hil,
-  /runs/last,
-  /runs/{run_id}: superfície administrativa de leitura do domínio
-  agentic em background.
+  /runs/last e
+  /runs/{run_id}: superfície administrativa atual. Não existem rotas
+  `/requests`, `/runs/active` ou `/events` nesse router; lifecycle e
+  eventos pertencem ao Job Core.
 - DELETE /admin/background-executions/schedules/{schedule_id}: cancela
   uma agenda background preservando histórico e runs já gravados.
 - POST /admin/background-executions/communications/{communication_id}/ack:
   confirma consumo idempotente de um item de comunicação assíncrona do
   webchat para o tenant autenticado.
+- GET e POST /admin/tenant-yaml/{tenant_id}/versions: listam e publicam
+  versões imutáveis de `tenant_yaml` no ambiente corrente.
+- GET e POST /admin/tenant-yaml/{tenant_id}/keys: listam metadados ou
+  emitem uma chave ligada a uma versão; o segredo da nova chave só é
+  devolvido na emissão.
+- PATCH /admin/tenant-yaml/{tenant_id}/keys/{access_key_id}/binding e
+  POST /admin/tenant-yaml/{tenant_id}/keys/{access_key_id}/revoke:
+  religam uma chave ativa ou a revogam sem editar a versão publicada.
 - GET /chat/conversations (200): lista, mais recentes primeiro e paginadas,
   as conversas NÃO deletadas do dono do chat embutível. Escopo obrigatório
   por `tenant_code` + `user_email` (nunca vaza conversa de outro dono).
@@ -483,6 +504,88 @@ Exemplo de erro funcional comum na confirmação:
 }
 ```
 
+### 12.1. Exemplo completo de revisão e decisão HIL por token
+
+O cliente não coloca o token na query string. Ele abre a tela segura e envia
+o segredo no corpo de um `POST`:
+
+```http
+POST /agent/hil/review-context
+Content-Type: application/json
+
+{
+  "approval_token": "<token-recebido-pelo-aprovador>",
+  "approval_request_id": "hil_01J..."
+}
+```
+
+A resposta `200` contém `thread_id`, `mode`, `hil.action_requests`,
+`hil.review_configs` e `hil.allowed_decisions`. A interface deve renderizar
+somente as decisões publicadas nessa lista. Para aprovar:
+
+```http
+POST /agent/hil/decisions
+Content-Type: application/json
+
+{
+  "approval_token": "<token-recebido-pelo-aprovador>",
+  "approval_request_id": "hil_01J...",
+  "decision_type": "approve",
+  "approver_email": "aprovador@empresa.com",
+  "decided_channel": "webchat"
+}
+```
+
+Uma execução originalmente síncrona continua na mesma chamada e responde
+`200`:
+
+```json
+{
+  "status": "resolved",
+  "approval_request_id": "hil_01J...",
+  "decision_type": "approve",
+  "correlation_id": "20260728_101500-...",
+  "thread_id": "thread_01J...",
+  "continuation": {
+    "resume": {"decisions": [{"type": "approve"}]},
+    "response": "Execução retomada e concluída.",
+    "steps": [],
+    "tools_used": [],
+    "metrics": {},
+    "processing_time_ms": 812.4,
+    "correlation_id": "20260728_101500-...",
+    "thread_id": "thread_01J...",
+    "success": true,
+    "error": null,
+    "hil": null
+  },
+  "continuation_job_id": null,
+  "continuation_correlation_id": null,
+  "previous_execution_correlation_id": null
+}
+```
+
+Quando a pausa nasceu em background, a decisão só confirma a publicação do
+segundo job e responde `202`:
+
+```json
+{
+  "status": "continuation_submission_confirmed",
+  "approval_request_id": "hil_01J...",
+  "decision_type": "approve",
+  "correlation_id": "20260728_101500-...",
+  "thread_id": "thread_01J...",
+  "continuation": null,
+  "continuation_job_id": "job_01J...",
+  "continuation_correlation_id": "20260728_102030-...",
+  "previous_execution_correlation_id": "20260728_101500-..."
+}
+```
+
+O consumidor acompanha `continuation_job_id` pelas superfícies do Job Core.
+Não trate `202` como resposta final e não reutilize
+`previous_execution_correlation_id` como correlação do segundo job.
+
 ## 13. O que acontece em caso de sucesso
 
 No caminho feliz, o boundary autentica o request, aplica a permissão do
@@ -602,7 +705,8 @@ tenant (`engenharia_dnit`) saem do YAML, então não é preciso mandar
 Pedido (sem filtro de nome, primeira página de 5):
 
 ```bash
-curl -X POST "http://localhost:5555/admin/vector-store/documents" \
+source .env
+curl -X POST "http://${FASTAPI_HOST}:${FASTAPI_PORT}/admin/vector-store/documents" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: <access_key_administrativa>" \
   -d '{
@@ -678,6 +782,9 @@ não fica aberto para qualquer pessoa por padrão.
 - /agent/hil/decisions não substitui /agent/continue para todos os
   cenários; ele cobre a decisão HIL assíncrona durável, não a retomada
   genérica de qualquer pausa.
+- O cliente não inventa `correlation_id`: ele captura
+  `X-Correlation-Id`/campo de resposta no primeiro request e o reapresenta
+  apenas nas operações de continuação que exigem a identidade anterior.
 - HTTP 202 em RAG não significa falha; significa aceitação para execução
   fora do request.
 - API web viva não prova que o domínio assíncrono terminou o trabalho.
@@ -734,8 +841,9 @@ logs.analyze_ui e o contexto de autenticação do request.
 Causa provável: access_key consultada não pertence ao tenant correto,
 ou o filtro de status/run_id/correlation_id está estreitando demais.
 
-Como confirmar: repetir a consulta com a access_key correta e reduzir os
-filtros até validar se há requests, runs ou eventos para o tenant.
+Como confirmar: repetir a consulta com a `access_key` correta e reduzir
+os filtros de agenda, run ou HIL. Para lifecycle e eventos do job, consultar
+o Job Core; essas projeções não pertencem ao router de background agentic.
 
 ## 24. Diagramas
 
@@ -795,8 +903,10 @@ O que fica confirmado:
   - Motivo da leitura: contrato híbrido de /agent/execute,
     /agent/continue, /agent/hil/decisions e cancelamento.
   - Comportamento confirmado: /agent/execute pode devolver envelope
-    assíncrono com task_id, polling_url, stream_url e cancel_url; e
-    /agent/hil/decisions registra approve/reject por POST seguro.
+    assíncrono com task_id, polling_url, stream_url e cancel_url;
+    /agent/hil/review-context consulta a pendência por POST; e
+    /agent/hil/decisions aceita approve/edit/reject/respond, respondendo
+    200 para continuação inline ou 202 para submissão do segundo job.
 - src/api/routers/workflow_router.py
   - Motivo da leitura: contrato de execução e retomada de workflows.
   - Comportamento confirmado: /workflow/execute decide entre sync e
@@ -847,8 +957,15 @@ O que fica confirmado:
   - Motivo da leitura: confirmar a superfície administrativa do domínio
     agentic em background.
   - Comportamento confirmado: /admin/background-executions publica
-    leitura de requests, schedules, runs, eventos, HIL e cancelamento de
-    agenda por permission key administrativa.
+    schedules, runs factuais, HIL, comunicações, ack do outbox e
+    cancelamento de agenda por permission key administrativa; não publica
+    requests, runs ativos ou eventos próprios.
+- src/api/routers/admin/tenant_yaml_router.py
+  - Motivo da leitura: confirmar governança HTTP das versões e chaves de
+    YAML por tenant.
+  - Comportamento confirmado: versões são publicadas por inserção; chaves
+    podem ser emitidas, religadas e revogadas sem expor o segredo nas
+    listagens.
 - src/api/routers/admin/vector_preview_router.py
   - Motivo da leitura: confirmar o contrato de listagem de documentos
     ingeridos de um vector store.

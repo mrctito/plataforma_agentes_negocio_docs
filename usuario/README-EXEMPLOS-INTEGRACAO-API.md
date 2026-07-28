@@ -1,8 +1,10 @@
-# Exemplos de Integração com API RAG
+# Exemplos de integração com as APIs da plataforma
 
 Produto: Plataforma de Agentes de IA
 
-Esta pasta contém exemplos práticos de como integrar sua aplicação com a API RAG em diferentes linguagens de programação.
+Este manual concentra os clientes de referência da API RAG e aponta para as
+jornadas agentic relacionadas. Para WorkflowAgent, Skills e HIL, use o
+[tutorial 101 dedicado](TUTORIAL-101-WORKFLOW-SKILLS-HIL.md).
 
 Explicando de forma simples: o cliente manda uma pergunta e um YAML de configuração. Esse YAML vai criptografado para o servidor, o servidor executa o fluxo RAG e devolve a resposta com fontes.
 
@@ -46,21 +48,25 @@ fonte única de entendimento.
 
 ### 1️⃣ API em Execução
 
-Certifique-se que a API RAG está rodando:
+Inicie a API pelo entrypoint do projeto e leia host/porta do `.env`.
+No terminal da API:
 
 ```bash
-# Terminal 1: Iniciar API
-cd /caminho/para/projeto
-python app/main.py
-
-# Terminal 2: Verificar health
-curl http://localhost:8000/health
+source .venv/bin/activate
+source .env
+./run.sh +a
 ```
 
-Observação importante sobre porta padrão dos exemplos:
+Em outro terminal:
 
-- Python e JavaScript usam `http://localhost:8000`
-- Ruby usa `http://localhost:5555` por padrão (pode ser sobrescrito com `--base-url`)
+```bash
+source .env
+export API_BASE_URL="http://${FASTAPI_HOST}:${FASTAPI_PORT}"
+curl "${API_BASE_URL}/health"
+```
+
+Não presuma `8000` ou `5555`: `FASTAPI_PORT` é o contrato local. Passe a URL
+resolvida aos clientes de exemplo.
 
 ### 2️⃣ Arquivo YAML de Configuração
 
@@ -77,7 +83,8 @@ Exemplo: `app/yaml/rag-config-auto.yaml`
 ### Instalação de Dependências em Python
 
 ```bash
-pip install httpx cryptography pyyaml
+uv pip install -r requirements-dev.lock.txt
+uv pip install -r requirements.lock.txt
 ```
 
 ### Execução em Python
@@ -89,17 +96,20 @@ python examples/rag_api_client.py
 ### Uso Programático em Python
 
 ```python
+import os
+
 from rag_api_client import RAGAPIClient
 
 # Criar cliente
-client = RAGAPIClient(api_base_url="http://localhost:8000")
+client = RAGAPIClient(
+    api_base_url=f"http://{os.environ['FASTAPI_HOST']}:{os.environ['FASTAPI_PORT']}"
+)
 
 # Fazer consulta
 result = client.ask(
     config_path="app/yaml/rag-config-auto.yaml",
     question="Como gerar SPED no Menew?",
     user_email="developer@empresa.com",
-    correlation_id="20250204_120000-123e4567-e89b-12d3-a456-426614174000"
 )
 
 # Usar resultado
@@ -135,7 +145,7 @@ api_key = yaml_data.dig('authentication', 'access_key')
 
 # Criar cliente
 client = RAGAPIClient.new(
-  api_base_url: 'http://localhost:5555',
+  api_base_url: ENV.fetch('API_BASE_URL'),
   api_key: api_key
 )
 
@@ -143,8 +153,7 @@ client = RAGAPIClient.new(
 result = client.ask(
   config_path: 'app/yaml/rag-config-auto.yaml',
   question: 'Como gerar SPED no Menew?',
-  user_email: 'developer@empresa.com',
-  correlation_id: '20250204_120000-123e4567-e89b-12d3-a456-426614174000'
+  user_email: 'developer@empresa.com'
 )
 
 # Usar resultado
@@ -172,15 +181,14 @@ node examples/rag_api_client.js
 const { RAGAPIClient } = require('./rag_api_client');
 
 // Criar cliente
-const client = new RAGAPIClient('http://localhost:8000');
+const client = new RAGAPIClient(process.env.API_BASE_URL);
 
 // Fazer consulta
 (async () => {
   const result = await client.ask({
     configPath: 'app/yaml/rag-config-auto.yaml',
     question: 'Como gerar SPED no Menew?',
-    userEmail: 'developer@empresa.com',
-    correlationId: '20250204_120000-123e4567-e89b-12d3-a456-426614174000'
+    userEmail: 'developer@empresa.com'
   });
 
   // Usar resultado
@@ -485,7 +493,7 @@ Use esse formato como referência oficial para qualquer cliente novo:
           "encrypted_yaml": "...",
           "original_filename": "config-webchat.yaml",
           "encryption_scheme": "FERNET+RSA-OAEP",
-          "yaml_operational_contract": "..."
+          "yaml_operational_contract": "root_user_session_only_v1"
         }
       }
     }
@@ -564,7 +572,8 @@ const body = {
 };
 
 // 3) Chamar o endpoint (note o header X-API-Key).
-const resp = await fetch('http://localhost:5555/admin/vector-store/documents', {
+const apiBaseUrl = window.location.origin;
+const resp = await fetch(`${apiBaseUrl}/admin/vector-store/documents`, {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
@@ -588,24 +597,21 @@ data.items.forEach((doc) => console.log(`- ${doc.document_name} (${doc.ingestion
 
 ### Exemplo em JavaScript — caminho com YAML criptografado (paridade com `/rag/execute`)
 
-Use quando o YAML tem dados sensíveis. São os mesmos 2 passos do `/rag/execute`: pegar uma sessão de cripto e cifrar o YAML. A diferença é só o **endpoint final** e que o `encrypted_data` vai **na raiz do corpo** (não dentro de `payload`).
+Use quando o YAML tem dados sensíveis. O helper oficial faz internamente o
+handshake de sessão e cifra o YAML. A diferença para `/rag/execute` é só o
+**endpoint final** e que `encrypted_data` vai **na raiz do corpo** (não dentro
+de `payload`).
 
 ```javascript
-// 1) Pegar uma sessão criptográfica (mesma usada pelo /rag/execute).
-const session = await (
-  await fetch('http://localhost:5555/crypto/session-key', { method: 'POST' })
-).json(); // → { session_id, public_key_pem, ttl_seconds }
-
-// 2) Cifrar o YAML com o helper oficial do browser (PayloadCrypto),
-//    exatamente como o WebChat/telas admin já fazem.
+// 1) O helper solicita /crypto/session-key e cifra o YAML.
 const encryptedData = await PayloadCrypto.buildEncryptedData({
   yamlContent: yamlText,
-  session,                       // session_id + public_key_pem
-  yamlFilename: 'rag-config-mrctito-dnit-producao.yaml',
+  filename: 'rag-config-mrctito-dnit-producao.yaml',
+  baseUrl: window.location.origin,
 });
 
-// 3) Chamar o endpoint com encrypted_data NA RAIZ do corpo.
-const resp = await fetch('http://localhost:5555/admin/vector-store/documents', {
+// 2) Chamar o endpoint com encrypted_data NA RAIZ do corpo.
+const resp = await fetch(`${window.location.origin}/admin/vector-store/documents`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', 'X-API-Key': 'SUA_CHAVE_AQUI' },
   body: JSON.stringify({
@@ -622,7 +628,8 @@ console.log(`Total no acervo: ${data.total}`);
 ```
 
 > O envelope `encrypted_data` é idêntico ao da seção "Entendendo a Criptografia" acima
-> (`session_id`, `wrapped_key`, `encrypted_yaml`, `original_filename`, `encryption_scheme`).
+> (`session_id`, `wrapped_key`, `encrypted_yaml`, `original_filename`,
+> `encryption_scheme`, `yaml_operational_contract`).
 > Em Node.js, gere-o com o mesmo helper de `examples/rag_api_client.js`.
 
 ### Estrutura da resposta
@@ -760,7 +767,7 @@ try:
     result = client.ask(...)
 except RuntimeError as e:
     if "API não está disponível" in str(e):
-        print("🔴 Servidor offline. Verifique se main.py está rodando")
+        print("🔴 Servidor offline. Verifique o listener e o processo iniciado por ./run.sh +a")
     elif "400" in str(e):
         print("🔴 Erro de validação. Verifique o YAML e access_key")
     else:
@@ -772,14 +779,14 @@ except RuntimeError as e:
 ### 1. Health Check
 
 ```bash
-curl http://localhost:8000/health
+curl "${API_BASE_URL}/health"
 # Esperado: {"status":"healthy", "timestamp":"...", "version":"..."}
 ```
 
 ### 2. Sessão Criptográfica
 
 ```bash
-curl -X POST http://localhost:8000/crypto/session-key
+curl -X POST "${API_BASE_URL}/crypto/session-key"
 # Esperado: JSON com session_id e public_key_pem
 ```
 
@@ -797,6 +804,14 @@ node examples/rag_api_client.js
 ```
 
 ### 4. Verificar Logs
+
+Capture o `correlation_id` devolvido pela API e consulte diretamente a
+correlação pelo analisador oficial:
+
+```bash
+python -m src.log_analyzer query --help
+python -m src.log_analyzer query --correlation-id "${CORRELATION_ID}"
+```
 
 ## 🧭 Exemplos de uso da API Assembly AST
 
@@ -823,7 +838,7 @@ Resumo simples:
 ### Exemplo 1: `curl` para recomendar tools
 
 ```bash
-curl -X POST http://localhost:8000/config/assembly/recommend-tools \
+curl -X POST "${API_BASE_URL}/config/assembly/recommend-tools" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: SUA_API_KEY" \
   -d '{
@@ -870,7 +885,7 @@ Resposta esperada no caminho feliz:
 ### Exemplo 2: `curl` para objetivo -> YAML final
 
 ```bash
-curl -X POST http://localhost:8000/config/assembly/objective-to-yaml \
+curl -X POST "${API_BASE_URL}/config/assembly/objective-to-yaml" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: SUA_API_KEY" \
   -d '{
@@ -916,7 +931,7 @@ Se ainda faltar informação obrigatória, o mesmo endpoint responde com `succes
 ### Exemplo 3: `curl` para draft AST
 
 ```bash
-curl -X POST http://localhost:8000/config/assembly/draft \
+curl -X POST "${API_BASE_URL}/config/assembly/draft" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: SUA_API_KEY" \
   -d '{
@@ -939,7 +954,7 @@ curl -X POST http://localhost:8000/config/assembly/draft \
 
 ```javascript
 async function recommendTools() {
-  const response = await fetch('http://localhost:8000/config/assembly/recommend-tools', {
+  const response = await fetch(`${process.env.API_BASE_URL}/config/assembly/recommend-tools`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -967,6 +982,8 @@ async function recommendTools() {
 ### Exemplo 5: Python para `recommend-tools`
 
 ```python
+import os
+
 import requests
 
 payload = {
@@ -981,7 +998,7 @@ payload = {
 }
 
 response = requests.post(
-    "http://localhost:8000/config/assembly/recommend-tools",
+    f"{os.environ['API_BASE_URL']}/config/assembly/recommend-tools",
     headers={
         "Content-Type": "application/json",
         "X-API-Key": "SUA_API_KEY"
@@ -1031,31 +1048,24 @@ Significado prático:
 - mas a recomendação foi bloqueada por segurança e consistência de catálogo;
 - o cliente deve revisar a situação enviada ou o catálogo disponível, em vez de usar a sugestão inválida.
 
-```bash
-# Logs da API (servidor)
-tail -f /logs/api_main.log
-
-# Buscar por correlation_id
-grep "20250204_120000-123e4567-e89b-12d3-a456-426614174000" /logs/api_main.log
-```
-
 ## 🎯 Casos de Uso
 
 ### Integração em Aplicação Web (Python/Django)
 
 ```python
 # views.py
+import os
+
 from django.http import JsonResponse
 from .rag_client import RAGAPIClient
 
 def perguntar_rag(request):
-    client = RAGAPIClient()
+    client = RAGAPIClient(api_base_url=os.environ["RAG_API_URL"])
 
     result = client.ask(
         config_path="config/rag-production.yaml",
         question=request.POST.get('question'),
         user_email=request.user.email,
-        correlation_id="20250204_120000-123e4567-e89b-12d3-a456-426614174000"
     )
 
     return JsonResponse({
@@ -1071,7 +1081,8 @@ def perguntar_rag(request):
 class RagService
   def initialize
     @client = RAGAPIClient.new(
-      api_base_url: ENV['RAG_API_URL']
+      api_base_url: ENV.fetch('RAG_API_URL'),
+      api_key: ENV.fetch('RAG_API_KEY')
     )
   end
 
@@ -1079,8 +1090,7 @@ class RagService
     @client.ask(
       config_path: Rails.root.join('config', 'rag.yaml'),
       question: question,
-      user_email: user_email,
-      correlation_id: "20250204_120000-123e4567-e89b-12d3-a456-426614174000"
+      user_email: user_email
     )
   rescue StandardError => e
     Rails.logger.error("RAG Error: #{e.message}")
@@ -1104,8 +1114,7 @@ router.post('/ask', async (req, res) => {
     const result = await ragClient.ask({
       configPath: './config/rag-production.yaml',
       question: req.body.question,
-      userEmail: req.user.email,
-      correlationId: `express-${Date.now()}`
+      userEmail: req.user.email
     });
 
     res.json({
@@ -1127,42 +1136,32 @@ module.exports = router;
 ### Erro: "API não está disponível"
 
 ```bash
-# Verificar se API está rodando
-ps aux | grep "python.*main.py"
+# Ler a porta oficial e verificar se existe listener
+source .env
+sudo lsof -i :"${FASTAPI_PORT}"
 
 # Iniciar API se necessário
-python app/main.py
+./run.sh +a
 ```
 
 ### Erro: "Access_key informada não está cadastrada"
 
-```bash
-# Verificar access_key no YAML
-grep "access_key" app/yaml/seu-config.yaml
-
-# Consultar banco de dados
-python -c "
-from src.security.client_directory import ClientDirectory
-directory = ClientDirectory.instance()
-record = directory.get_access_key_record('SUA_ACCESS_KEY')
-print(record)
-"
-```
+Não imprima nem procure o valor da chave em logs. Confirme com o administrador
+da plataforma se a chave está ativa, pertence ao ambiente correto, não expirou
+e possui a permissão exigida pelo endpoint.
 
 ### Erro de Criptografia
 
 ```bash
-# Python: Reinstalar cryptography
-pip uninstall cryptography
-pip install cryptography
+# Python: restaurar as dependências pelo fluxo canônico do projeto
+uv pip install -r requirements-dev.lock.txt
+uv pip install -r requirements.lock.txt
 
-# Ruby: Reinstalar openssl
-gem uninstall openssl
-gem install openssl
+# Ruby: confirmar o OpenSSL disponível
+ruby -ropenssl -e 'puts OpenSSL::OPENSSL_VERSION'
 
-# Node: Reinstalar axios
-npm uninstall axios
-npm install axios
+# Node: restaurar o lockfile do projeto
+npm ci
 ```
 
 ## Limites e pegadinhas

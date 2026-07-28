@@ -6,7 +6,7 @@ erDiagram
     tenant_yaml ||--o{ tenant_access_keys : "binding legado opcional"
     tenant_yaml ||--o{ tenant_channels : "binding legado do canal"
     tenant_channels ||--o{ tenant_channel_end_users : "observa usuários externos"
-    tenant_users ||--o{ tenant_user_yaml : "schema aplicado; zero linhas"
+    tenant_users ||--o{ tenant_user_yaml : "vincula usuário ao YAML"
     tenant_yaml ||--o{ tenant_user_yaml : "FUTURO contrair T10+"
 
     tenant_yaml {
@@ -42,5 +42,4 @@ erDiagram
         text tenant_id FK
         text environment
         uuid tenant_yaml_id FK
-        text agent_instructions_md
     }

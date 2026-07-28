@@ -67,11 +67,9 @@ Invariantes aplicados hoje:
 - API key/canal chegam a `tenant_yaml.yaml_content` por binding explícito;
 - FKs compostas com `environment + tenant_id + tenant_yaml_id` impedem cruzar tenant/ambiente;
 - `yaml_path` é proveniência, não fonte de runtime;
-- `tenant_user_yaml.agent_instructions_md` ainda existe fisicamente, mas não possui nenhum
-  leitor/escritor runtime (T17 removeu os do modelo antigo; a materialização `/memories/agents.md`
-  saiu na janela de skills YAML-First). A única fonte da instrução compartilhada é
-  `agent-instructions-md` no YAML imutável da release, injetada pelo prompt composto. O DROP
-  físico da coluna está roteirizado para janela manual (script de remoção), ainda não executado.
+- `tenant_user_yaml.agent_instructions_md` já foi removida fisicamente; a introspecção read-only de
+  2026-07-28 confirmou sua ausência. A única fonte da instrução compartilhada é
+  `agent-instructions-md` no YAML imutável da release, injetada pelo prompt composto.
 
 ### 3. Projeto SaaS, release e manifesto — APLICADO
 
@@ -448,9 +446,8 @@ rejeitado. FKs usam `CASCADE`. Owner: **FUTURO T10+**; hoje zero linhas.
 ![5. Execução agentic e conteúdo do YAML — CONTRATO YAML, NÃO COLUNAS DB](../assets/diagrams/docs-tecnico-readme-schema-banco-diagrama-05.svg)
 
 `selected_entrypoint` e `agent-instructions-md` vivem dentro de `yaml_content`; o DDL SaaS
-não cria colunas com esses nomes. `tenant_user_yaml.agent_instructions_md` permanece apenas
-como coluna física órfã (sem call site runtime), com DROP roteirizado para janela manual e
-ainda não executado. O manifesto é derivado
+não cria colunas com esses nomes. A antiga coluna
+`tenant_user_yaml.agent_instructions_md` já não existe no banco aplicado. O manifesto é derivado
 do YAML e hash-bound à release. Um
 bundle pode conter vários candidatos, mas o boundary agentic exige que `selected_entrypoint`
 resolva exatamente um Workflow ou DeepAgent habilitado. ETL/ingestão podem coexistir e podem
@@ -1696,13 +1693,21 @@ rollback recusa remoção quando qualquer uma das tabelas contém dados.
 - `src/api/routers/ag_ui_router.py` usa esse replay em `GET /ag-ui/runs/{run_id}/events` e `GET /ag-ui/threads/{thread_id}/events`.
 - Em linguagem simples: esta tabela é a memória durável da experiência AG-UI. Ela não substitui o runtime do agente; ela preserva a história visual já sanitizada para replay, suporte e auditoria.
 
-### agent_hil_approval_requests
+### `public.agent_hil_approval_requests` — legado físico, fora do runtime atual
 
-Esta tabela registra o pedido formal de aprovação humana quando um agente em background para em um ponto sensível e precisa esperar decisão externa, como WhatsApp ou e-mail. Ela não substitui o checkpointer do runtime agentic. O checkpointer continua sendo o lugar onde o LangGraph guarda o estado interno da execução. A função desta tabela é outra: guardar o lado auditável e operacional da aprovação humana.
+> [!WARNING]
+> A introspecção read-only de 2026-07-28 confirmou que esta tabela homônima ainda existe no schema
+> `public`, mas o repositório atual usa `agent_background.agent_hil_approval_requests`. Não escreva
+> integração nova contra a tabela de `public`; a seção permanece apenas para reconhecer e remover
+> ambiguidade operacional durante a contração do legado.
+
+Esta tabela registrava o pedido formal de aprovação humana no modelo anterior. Ela não substitui o
+checkpointer do runtime agentic e já não é a tabela dona do HIL atual.
 
 Em termos conceituais, pense nela como a fila oficial de aprovações pendentes. Cada linha representa uma pausa que pode ser aprovada, editada ou rejeitada. A tabela também guarda como a notificação foi enviada, quem deveria responder, se o token ainda vale, quando a decisão chegou e qual foi o resultado final.
 
-Em linguagem simples: quando o agente para e pede ajuda humana, esta tabela vira o “protocolo” do pedido. Ela responde perguntas práticas como estas: qual job produziu a pausa, para quem o pedido foi enviado, por qual canal, se a aprovação ainda está em aberto, se já expirou e quem decidiu. A decisão não reabre o mesmo lifecycle do Job Core: ela submete um segundo job, com novo `job_id` e novo `correlation_id`, ligado ao mesmo `approval_request_id`, `thread_id` e checkpoint.
+Em linguagem simples: esta é uma estrutura residual. Para investigar uma pausa nova, vá direto à
+tabela qualificada no schema `agent_background`, documentada na próxima seção.
 
 - Finalidade prática: materializar a pausa Human-in-the-Loop assíncrona como registro durável, auditável e seguro.
 - O que ela resolve na prática: evita depender apenas de estado efêmero em memória ou Redis para uma aprovação humana que pode precisar de rastreabilidade posterior.
@@ -1776,292 +1781,132 @@ Isso importa porque a integridade de HIL não depende só da aplicação. O banc
 
 ## Domínio Execução Agentic em Background
 
-### Visão geral do schema agent_background
+### Estado físico aplicado do schema `agent_background`
 
-O schema `agent_background` materializa fatos necessários para executar pedidos agentic em segundo plano sem prender a API nem o chat. O lifecycle da execução fica exclusivamente em `job_core.job_runs`.
+A introspecção canônica read-only realizada em 2026-07-28 e o DDL factual vigente
+(`scripts/sql/20260502_create_agent_background_schema.sql`, reaplicado pelo rebuild manual de
+2026-07-19) confirmam **quatro tabelas**, todas segregadas por `environment`:
 
-Em termos práticos, ele separa sete peças que não devem ficar misturadas:
+1. `background_execution_targets` — catálogo de alvos autorizados;
+2. `background_execution_runs` — contexto e desfecho funcional do domínio;
+3. `agent_hil_approval_requests` — aprovação HIL durável;
+4. `background_execution_outbox` — comunicação assíncrona por canal.
 
-- o alvo autorizado que pode ser executado;
-- a solicitação criada a partir do prompt do usuário;
-- a agenda que decide quando isso deve acontecer;
-- a identidade factual/histórica do run de domínio;
-- os eventos factuais do domínio;
-- a aprovação humana durável ligada ao run, quando houver HIL;
-- a fila de outbox para publicação e integração assíncrona.
+Não existem no schema aplicado `background_execution_requests`,
+`background_execution_schedules` nem `background_execution_events`. O desenho atual distribui as
+responsabilidades sem duplicar ledger:
 
-Essa separação é importante porque pedido, agenda e execução são coisas diferentes. Se tudo fosse para uma tabela só, a operação perderia clareza, o histórico ficaria frágil e seria muito mais difícil investigar atraso, duplicidade, HIL pendente ou falha do worker.
+| Responsabilidade | Fonte de verdade |
+|---|---|
+| pedido completo e agenda `once`/`interval`/`cron` | `scheduler.scheduled_jobs.payload` |
+| claim, heartbeat, retry, cancelamento e estado terminal do job | `job_core.job_runs` |
+| história granular do lifecycle | `job_core.job_run_events` |
+| alvo permitido, contexto, resultado/erro funcional, HIL e comunicação | quatro tabelas de `agent_background` |
 
-### Onde este schema é usado no código
+Em linguagem simples: `scheduler` decide **quando**, Job Core registra **como o job viveu** e
+`agent_background` guarda **o que o domínio executou ou precisa comunicar**. Nenhuma tabela factual
+de `agent_background` pode ser usada como lifecycle paralelo.
 
-- `src/agentic_layer/background_execution/services.py` preserva solicitação, alvo, agenda factual e consultas do agregado.
-- `src/agentic_layer/tools/system_tools/background_execution.py` expõe as tools internas sem aceitar `tenant_id` livre pelo prompt.
-- `src/api/services/admin/background_execution_service.py` e `src/api/routers/admin/background_execution_router.py` projetam fatos e snapshots do Job Core para a leitura administrativa.
-- `src/api/services/hil_approval_decision_service.py` valida/persiste a decisão humana e submete um novo job nominal de continuação.
+### Onde o schema é usado
 
-Em linguagem simples: o schema guarda fatos de pedido, resultado, evento, HIL e outbox. Status de job, heartbeat, stale, retry, claim e terminalização não são escritos nem decididos aqui. HIL liga o job original ao novo job de continuação por `approval_request_id`, `thread_id`/checkpoint e fatos duráveis; não reabre a mesma run do Core.
+- `src/agentic_layer/background_execution/postgres_repository.py` grava e consulta targets e runs;
+- `src/agentic_layer/background_execution/services.py` valida escopo, alvo e fatos funcionais;
+- `src/api/repositories/agent_hil_approval_requests_repository.py` governa a aprovação HIL atual;
+- `src/agentic_layer/background_execution/communication_outbox_repository.py` persiste a outbox;
+- `src/api/services/admin/background_execution_service.py` combina agenda do Scheduler e fatos do
+  domínio para a superfície administrativa.
 
-### background_execution_targets
+### `agent_background.background_execution_targets`
 
-- Finalidade prática: cadastrar quais alvos agentic podem ser executados em background para cada tenant.
-- O que resolve na prática: impede que o runtime execute um agente, deepagent ou workflow apenas porque o prompt pediu. O alvo precisa existir e estar habilitado.
-- Chave primária: `target_id`.
-- Colunas:
-- `target_id`: identificador UUID do alvo cadastrado.
-- `tenant_id`: tenant dono do alvo.
-- `client_code`: código lógico do cliente, quando houver.
-- `target_type`: tipo do alvo, como `agent`, `deepagent` ou `workflow`.
-- `target_ref`: referência lógica do alvo dentro do runtime.
-- `display_name`: nome amigável do alvo.
-- `description`: explicação curta do alvo para operação.
-- `enabled`: indica se o alvo pode ser usado.
-- `default_timezone`: timezone operacional padrão.
-- `default_concurrency_policy`: política padrão de concorrência.
-- `default_retry_policy`: política padrão de retry em `jsonb`.
-- `metadata`: metadados auxiliares em `jsonb`.
-- `created_at`: criação do cadastro.
-- `updated_at`: última atualização do cadastro.
-- Índices e restrições:
-- PK em `target_id`.
-- Unique em `tenant_id, target_type, target_ref`, impedindo duplicidade lógica do mesmo alvo no mesmo tenant.
-- Check em `target_type` limitando o contrato a `agent`, `deepagent` e `workflow`.
-- Check em `default_concurrency_policy` limitando as políticas operacionais previstas.
-- Checks JSON garantindo `default_retry_policy` e `metadata` como objeto.
-- Índice `idx_background_targets_tenant_enabled` em `tenant_id, enabled, target_type` para lookup rápido do catálogo por tenant.
-- Onde é usado e como:
-- `BackgroundExecutionService.schedule_request(...)` consulta essa tabela antes de criar a solicitação, usando `get_enabled_target(...)` no repositório.
-- A tool `schedule_background_execution_request` depende desse cadastro para validar que o alvo solicitado existe e está autorizado.
+- Finalidade: autorizar, por tenant e ambiente, quais DeepAgents ou Workflows podem ser agendados.
+- PK composta: `(environment, target_id)`.
+- Colunas: `environment`, `target_id`, `tenant_id`, `client_code`, `target_type`, `target_ref`,
+  `display_name`, `description`, `enabled`, `default_timezone`, `metadata`, `created_at`,
+  `updated_at`.
+- `target_type` aceita somente `deepagent` ou `workflow`; `agent` não pertence ao contrato atual.
+- Unique: `(environment, tenant_id, target_type, target_ref)`.
+- `metadata` deve ser objeto JSON.
+- Índice operacional: ambiente + tenant + habilitação + tipo.
 
-### background_execution_requests
+A tool `schedule_background_execution_request` só agenda depois que
+`BackgroundExecutionService` encontra um alvo habilitado com o mesmo tenant, tipo e referência.
 
-- Finalidade prática: registrar a solicitação criada a partir do prompt do usuário.
-- O que resolve na prática: guarda a intenção original sem executar o comando imediatamente no chat.
-- Chave primária: `request_id`.
-- Colunas:
-- `request_id`: identificador UUID da solicitação.
-- `tenant_id`: tenant da solicitação.
-- `client_code`: código lógico do cliente.
-- `user_email`: usuário que criou o pedido.
-- `user_code`: código interno do usuário, quando existir.
-- `source_channel`: canal de origem do pedido.
-- `source_conversation_id`: conversa de origem, quando houver.
-- `target_id`: alvo autorizado escolhido para executar o pedido.
-- `requested_command`: comando original pedido pelo usuário.
-- `normalized_command`: comando normalizado para operação e auditoria.
-- `input_payload`: payload complementar de entrada em `jsonb`.
-- `yaml_snapshot_hash`: hash do snapshot YAML usado no run.
-- `yaml_snapshot`: snapshot seguro da configuração agentic.
-- `context_snapshot`: contexto operacional persistido em `jsonb`.
-- `status`: estado macro da solicitação, como `draft`, `scheduled`, `paused`, `cancelled`, `completed` ou `failed`.
-- `created_correlation_id`: correlação original da criação do pedido.
-- `metadata`: metadados auxiliares em `jsonb`.
-- `created_at`: criação da solicitação.
-- `updated_at`: última atualização.
-- `cancelled_at`: data de cancelamento, quando aplicável.
-- Índices e restrições:
-- PK em `request_id`.
-- FK `target_id` para `background_execution_targets.target_id` com `ON DELETE RESTRICT`.
-- Check em `status` limitando os estados válidos do pedido.
-- Checks JSON garantindo `input_payload`, `yaml_snapshot`, `context_snapshot` e `metadata` no tipo esperado.
-- Índices por tenant, usuário, `created_correlation_id` e `target_id` para consulta operacional.
-- Onde é usado e como:
-- `BackgroundExecutionService.schedule_request(...)` grava a solicitação junto com a agenda.
-- As APIs administrativas listam essas linhas para mostrar o que foi pedido, por quem, para qual alvo e com qual status.
+### `agent_background.background_execution_runs`
 
-### background_execution_schedules
+- Finalidade: preservar o contexto transportado e o desfecho funcional de uma execução; não contém
+  status, claim, heartbeat, owner ou política de retry.
+- PK composta: `(environment, tenant_id, run_id)`.
+- Identidade e vínculo: `environment`, `tenant_id`, `run_id`, `request_id`, `schedule_id`,
+  `target_id`, `correlation_id`, `planned_run_at`, `thread_id`.
+- Entrada factual: `context_payload`.
+- Saída factual: `outcome_kind`, `final_response`, `result_payload`, `telemetry`.
+- Erro funcional: `error_type`, `error_message`, `error_payload`.
+- Datas: `recorded_at`, `created_at`, `updated_at`.
+- `outcome_kind` aceita `completed` ou `approval_requested`; `NULL` significa que só o contexto foi
+  registrado até aquele ponto.
+- FK `(environment, target_id)` aponta para `background_execution_targets` com `ON DELETE RESTRICT`.
+- `context_payload`, `result_payload`, `telemetry` e `error_payload` devem ser objetos JSON.
+- Índices cobrem tenant/data, `request_id`, `schedule_id` e `correlation_id`.
 
-- Finalidade prática: preservar a trilha histórica do modelo antigo do slice background.
-- O que resolve na prática: mantém rastreabilidade de migração e compatibilidade controlada para leitura histórica, sem voltar a ser a agenda canônica do runtime.
-- Chave primária: `schedule_id`.
-- Colunas:
-- `schedule_id`: identificador UUID da agenda.
-- `request_id`: solicitação dona da agenda.
-- `tenant_id`: tenant da agenda.
-- `schedule_type`: tipo da agenda, como `once`, `interval` ou `cron`.
-- `run_at`: instante planejado para execução única.
-- `cron_expression`: expressão cron quando a agenda é recorrente por calendário.
-- `interval_seconds`: intervalo recorrente em segundos.
-- `timezone`: timezone de cálculo da agenda.
-- `next_run_at`: próxima execução planejada.
-- `last_run_at`: último instante executado.
-- `last_run_id`: último run associado.
-- `misfire_policy`: política para janela perdida.
-- `concurrency_policy`: política para concorrência entre runs da mesma agenda.
-- `max_parallel_runs`: limite de paralelismo permitido.
-- `enabled`: indica se a agenda está habilitada.
-- `status`: estado da agenda, como `active`, `paused`, `cancelled`, `completed` ou `failed`.
-- `metadata`: metadados auxiliares em `jsonb`.
-- `created_at`: criação da agenda.
-- `updated_at`: última atualização.
-- `cancelled_at`: cancelamento, quando houver.
-- Índices e restrições:
-- PK em `schedule_id`.
-- FK `request_id` para `background_execution_requests.request_id` com `ON DELETE CASCADE`.
-- FK `last_run_id` para `background_execution_runs.run_id` com `ON DELETE SET NULL`.
-- Checks garantindo coerência entre `schedule_type`, `run_at`, `cron_expression` e `interval_seconds`.
-- Checks limitando `misfire_policy`, `concurrency_policy`, `status` e `max_parallel_runs`.
-- Índice `idx_background_schedules_due` para localizar rapidamente agendas ativas vencidas.
-- Índices por tenant, status e `request_id` para leitura operacional.
-- Onde é usado e como:
-- Esse registro não governa mais o disparo oficial do runtime.
-- O scheduling novo do background nasce em `scheduler.scheduled_jobs`, enquanto a solicitação de domínio continua em `background_execution_requests`.
+O primeiro job pode terminar com `outcome_kind=approval_requested`. Isso é um resultado funcional
+válido, não um status `waiting_hil` do Job Core.
 
-### background_execution_runs
+### `agent_background.agent_hil_approval_requests`
 
-- Finalidade prática: preservar a identidade factual/histórica de execuções do slice background e o vínculo físico usado por HIL.
-- O que resolve na prática: mantém fatos e relações antigas auditáveis. Não é fila, lifecycle, retry nem projeção operacional autoritativa; estado atual de job vem do Job Core.
-- Chave primária: `run_id`.
-- Colunas:
-- `run_id`: identificador UUID do run.
-- `request_id`: solicitação que originou o run.
-- `schedule_id`: agenda que disparou o run, quando houver.
-- `tenant_id`: tenant do run.
-- `client_code`: código lógico do cliente.
-- `user_email`: usuário dono da solicitação original.
-- `user_code`: código interno do usuário.
-- `target_id`: alvo executado.
-- `planned_run_at`: janela planejada da execução.
-- `started_at`: início real do run.
-- `finished_at`: término real do run.
-- `status`: coluna física histórica do modelo anterior. Seus valores não governam a execução atual e não devem ser usados para decidir vida/morte do job.
-- `correlation_id`: correlação ponta a ponta do run.
-- `thread_id`: thread formal do runtime agentic.
-- `worker_id`: identidade histórica do worker, quando gravada antes do corte.
-- `attempt_number`: tentativa histórica do modelo anterior; não autoriza retry de job.
-- `max_attempts`: limite histórico do modelo anterior; não é política do Job Core atual.
-- `final_response`: resposta final textual do runtime.
-- `result_payload`: resultado estruturado em `jsonb`.
-- `telemetry`: telemetria operacional em `jsonb`.
-- `error_type`: tipo de erro, quando houver falha.
-- `error_message`: mensagem de erro estruturada.
-- `error_payload`: detalhes do erro em `jsonb`.
-- `metadata`: metadados auxiliares em `jsonb`.
-- `created_at`: criação do run.
-- `updated_at`: última atualização.
-- Índices e restrições:
-- PK em `run_id`.
-- FKs para `background_execution_requests`, `background_execution_schedules` e `background_execution_targets`.
-- Unique parcial `ux_background_runs_schedule_window` em `schedule_id, planned_run_at`, protegendo idempotência da janela planejada.
-- Check em `status` limitando os estados do ledger.
-- Check em `attempt_number` e `max_attempts` exigindo valores positivos.
-- Checks JSON garantindo `result_payload`, `telemetry`, `error_payload` e `metadata` como objeto.
-- Índices por tenant, usuário, `correlation_id` e runs ativos.
-- Onde é usado e como:
-- fatos de request/target/HIL podem preservar `run_id` como identidade do agregado;
-- superfícies administrativas combinam os fatos do domínio com snapshots tipados do Job Core;
-- nenhum caminho ativo escreve status, owner, heartbeat, retry, claim ou terminalização nesta tabela;
-- novas execuções são processos nominais do catálogo único e entram pelo publisher do Job Core.
+- Finalidade: tornar a pausa HIL auditável, segura e retomável por API, canal ou webchat.
+- PK composta: `(environment, approval_request_id)`.
+- Vínculo: `run_id` opcional, `correlation_id`, `thread_id`, `tenant_id`, `client_code`,
+  `supervisor_id` e `agent_mode`.
+- Identidade: `user_email` e `user_code` obrigatórios.
+- Contrato HIL: `protocol_version`, `action_requests`, `review_configs`, `allowed_decisions`.
+- Estado: `status`, `notification_status`, `expires_at`, `created_at`, `updated_at`.
+- Segredo: apenas `approval_token_hash` e `approval_token_hint`; o token bruto não é persistido.
+- Roteamento: `expected_approver_email`, `expected_channel`, `expected_channel_user_id`,
+  `notification_channel`, `notification_provider`, `provider_message_id`.
+- Decisão: `decision_type`, `decision_payload`, `decided_by_email`, `decided_by_user_code`,
+  `decided_channel`, `decided_channel_user_id`, `decided_at`.
+- `metadata` guarda contexto adicional sanitizado.
+- `agent_mode` aceita `agent`, `deepagent` ou `workflow`.
+- `decision_type` aceita `approve`, `edit`, `reject` ou `respond`.
+- Unique: `(environment, approval_token_hash)`.
+- FK `(environment, tenant_id, run_id)` aponta para `background_execution_runs` com
+  `ON DELETE RESTRICT` quando `run_id` existe.
 
-### background_execution_events
+Não existe coluna `task_id` nesta tabela atual. O job original e o job de continuação são
+reconstruídos no Job Core pelas correlações e pelo contrato `continuation_submission` gravado na
+decisão. Em background, a decisão aceita encerra a pendência e publica um **segundo job**, com novo
+`job_id` e novo `correlation_id`; o job anterior não é reaberto. O segundo job suporta agent,
+DeepAgent e Workflow e pode terminar, falhar ou abrir nova rodada HIL.
 
-- Finalidade prática: guardar os eventos granulares persistidos do ledger background.
-- O que resolve na prática: permite reconstruir a história do run mesmo quando o operador não está olhando o log bruto em tempo real.
-- Chave primária: `event_id`.
-- Colunas:
-- `event_id`: identificador UUID do evento.
-- `run_id`: run ao qual o evento pertence.
-- `request_id`: solicitação relacionada.
-- `tenant_id`: tenant do evento.
-- `event_type`: tipo do evento.
-- `event_timestamp`: horário do evento.
-- `severity`: severidade operacional.
-- `message`: mensagem principal do evento.
-- `payload`: dados estruturados do evento em `jsonb`.
-- `correlation_id`: correlação ponta a ponta.
-- `created_at`: criação do registro.
-- Índices e restrições:
-- PK em `event_id`.
-- FKs para `background_execution_runs` e `background_execution_requests` com `ON DELETE CASCADE`.
-- Check em `severity` limitando os níveis aceitos.
-- Check JSON garantindo `payload` como objeto.
-- Índices por `run_id`, por `tenant_id + event_type` e por `correlation_id`.
-- Onde é usado e como:
-- O repositório PostgreSQL do slice grava e lista esses eventos para leitura operacional.
-- A API administrativa de eventos usa essa tabela para investigação por `run_id` ou `correlation_id`.
+### `agent_background.background_execution_outbox`
 
-### agent_background.agent_hil_approval_requests
+- Finalidade: entregar fatos de comunicação sem acoplar a transação de domínio ao consumidor.
+- PK composta: `(environment, outbox_id)`.
+- Colunas: `environment`, `outbox_id`, `tenant_id`, `channel`, `event_type`, `aggregate_type`,
+  `aggregate_id`, `payload`, `status`, `attempt_count`, `next_attempt_at`, `last_error`,
+  `created_at`, `updated_at`, `published_at`.
+- Canais aceitos: `webchat`, `whatsapp`, `email`, `teams`, `slack`, `instagram`.
+- Estados: `pending`, `published`, `failed`, `dead_letter`.
+- Unique de idempotência: `(environment, tenant_id, channel, event_type, aggregate_type,
+  aggregate_id)`.
+- O índice parcial de drenagem cobre itens `pending` e `failed` por ambiente, tenant, canal e
+  `next_attempt_at`.
 
-- Finalidade prática: guardar a pausa HIL durável especificamente ligada ao ledger de background execution.
-- O que resolve na prática: liga a aprovação humana diretamente ao `run_id`, em vez de deixar a decisão solta apenas na correlação e na thread.
-- Chave primária: `approval_request_id`.
-- Colunas:
-- `approval_request_id`: identificador UUID do pedido HIL.
-- `run_id`: run background ao qual a pausa pertence.
-- `correlation_id`: correlação ponta a ponta da execução.
-- `thread_id`: thread formal que será retomada.
-- `task_id`: tarefa assíncrona relacionada, quando houver.
-- `user_email`: usuário da execução original.
-- `user_code`: código interno do usuário. No DDL atual este campo é obrigatório.
-- `tenant_id`: tenant da aprovação.
-- `client_code`: código lógico do cliente.
-- `supervisor_id`: supervisor responsável pelo runtime pausado.
-- `agent_mode`: modo do runtime, como `agent`, `deepagent` ou `workflow`.
-- `protocol_version`: versão do contrato HIL usado.
-- `action_requests`: ações pendentes em `jsonb`.
-- `review_configs`: regras de revisão em `jsonb`.
-- `allowed_decisions`: decisões aceitas em `jsonb`.
-- `status`: estado do pedido, como `pending`, `resolved`, `expired`, `failed` ou `cancelled`.
-- `notification_status`: estado do envio da notificação.
-- `approval_token_hash`: hash do token de aprovação.
-- `approval_token_hint`: dica operacional curta do token.
-- `expected_approver_email`: aprovador esperado, quando houver política explícita.
-- `expected_channel`: canal esperado para resposta.
-- `expected_channel_user_id`: usuário esperado no canal.
-- `notification_channel`: canal efetivamente usado no envio.
-- `notification_provider`: provider concreto do envio.
-- `provider_message_id`: identificador retornado pelo provider.
-- `decision_type`: decisão final aceita.
-- `decision_payload`: detalhes da decisão em `jsonb`.
-- `decided_by_email`: e-mail do aprovador que respondeu.
-- `decided_by_user_code`: código interno do aprovador.
-- `decided_channel`: canal que trouxe a decisão.
-- `decided_channel_user_id`: usuário do canal que respondeu.
-- `decided_at`: momento em que a decisão foi aceita.
-- `expires_at`: prazo limite da aprovação.
-- `created_at`: criação do pedido.
-- `updated_at`: última atualização.
-- `metadata`: metadados auxiliares em `jsonb`.
-- Índices e restrições:
-- PK em `approval_request_id`.
-- FK `run_id` para `background_execution_runs.run_id` com `ON DELETE SET NULL`.
-- Unique em `approval_token_hash`.
-- Checks em `agent_mode`, `status`, `notification_status` e `decision_type`.
-- Checks JSON garantindo arrays em `action_requests`, `review_configs`, `allowed_decisions` e objeto em `decision_payload` e `metadata`.
-- Índice `idx_agent_hil_approval_pending_pause` em `correlation_id, thread_id, status, created_at DESC` para lookup rápido da pausa por execução e estado.
-- Índice `idx_agent_hil_approval_tenant_user_status` em `tenant_id, user_email, status, expires_at ASC` para operação multi-tenant e manutenção.
-- Índice parcial `idx_agent_hil_approval_run` em `run_id` quando o campo não é nulo.
-- Onde é usado e como:
-- `hil_approval_decision_service` e `background_execution_hil_run_finalizer` reconciliam a decisão humana com o run background.
-- A API administrativa de HIL lista essas linhas para mostrar pendência, expiração, canal, aprovador esperado e decisão final.
+Hoje o webchat consome esta trilha por:
 
-### background_execution_outbox
+- `GET /admin/background-executions/communications/summary`;
+- `GET /admin/background-executions/communications`;
+- `POST /admin/background-executions/communications/{communication_id}/ack`.
 
-- Finalidade prática: guardar publicações assíncronas pendentes do domínio de background execution.
-- O que resolve na prática: evita perder a intenção de publicar um evento ou despacho quando a gravação no banco já aconteceu, mas a entrega assíncrona ainda não foi concluída.
-- Chave primária: `outbox_id`.
-- Colunas:
-- `outbox_id`: identificador UUID da mensagem de outbox.
-- `tenant_id`: tenant dono do item.
-- `event_type`: tipo de evento a publicar.
-- `aggregate_type`: agregado de domínio relacionado.
-- `aggregate_id`: identificador do agregado.
-- `payload`: conteúdo estruturado da publicação em `jsonb`.
-- `status`: estado operacional da publicação, como `pending`, `published`, `failed` ou `dead_letter`.
-- `attempt_count`: contador de tentativas.
-- `next_attempt_at`: próxima tentativa planejada.
-- `last_error`: último erro resumido.
-- `created_at`: criação do item.
-- `updated_at`: última atualização.
-- `published_at`: momento de publicação bem-sucedida, quando houver.
-- Índices e restrições:
-- PK em `outbox_id`.
-- Check em `status` limitando os estados do outbox.
-- Check em `attempt_count` impedindo valor negativo.
-- Check JSON garantindo `payload` como objeto.
-- Índice `idx_background_outbox_pending` para drenagem operacional de itens `pending` e `failed` por ordem de próxima tentativa.
-- Índice `idx_background_outbox_aggregate` por `aggregate_type, aggregate_id`.
-- Onde é usado e como:
-- nos pontos de código lidos nesta sessão, não apareceu consumidor Python direto dessa tabela. Hoje o DDL deixa esse contrato durável pronto para publicação e reconciliação assíncrona do domínio background, sem precisar introduzir fila ad hoc fora do schema.
+### Fluxo operacional de investigação
+
+1. Comece em `job_core.job_runs` pelo `job_id` ou `correlation_id` do primeiro job.
+2. Reconstrua o lifecycle em `job_core.job_run_events`.
+3. Abra `background_execution_runs` para contexto e resultado funcional.
+4. Se `outcome_kind=approval_requested`, consulte `agent_hil_approval_requests`.
+5. Depois da decisão, localize o segundo job por `continuation_job_id` e
+   `continuation_correlation_id`.
+6. Use `background_execution_outbox` apenas para confirmar entrega/materialização ao canal.
 
 ## Domínio Tenants e Segurança
 
@@ -2690,10 +2535,6 @@ não resolve configuração por e-mail, caminho, data de atualização ou fallba
 - `descricao`: descrição funcional do vínculo.
 - `execution_mode`: modo de execução associado.
 - `metadata_json`: metadados adicionais em `jsonb`.
-- `agent_instructions_md`: coluna `text` nullable **órfã**, sem leitor/escritor runtime. A
-  instrução compartilhada usa exclusivamente `agent-instructions-md` dentro do YAML da release,
-  injetada pelo prompt composto (nunca mais materializada em `/memories/agents.md`). DROP físico
-  roteirizado para janela manual, ainda não executado.
 - `created_at`: criação do vínculo.
 - `updated_at`: última atualização do vínculo.
 - Índices e restrições:
@@ -2702,6 +2543,8 @@ não resolve configuração por e-mail, caminho, data de atualização ou fallba
 - FK composta `(environment, tenant_id, tenant_yaml_id)` para `tenant_yaml`.
 - unicidade lógica por membership, ambiente e `tenant_yaml_id`, com no máximo um default
   ativo por membership e ambiente.
+- Não existe coluna `agent_instructions_md` no estado físico confirmado em 2026-07-28. A instrução
+  compartilhada pertence ao `yaml_content`, na chave `agent-instructions-md`.
 
 #### Como tratar tenant_user_yaml durante a janela de rollback
 
@@ -2718,24 +2561,19 @@ não resolve configuração por e-mail, caminho, data de atualização ou fallba
   YAML da release) e materializadas no store a partir do YAML resolvido — não mais de nenhuma tabela.
   Saíram do runtime o port `SkillRepository`, o adapter `AgentSkillsPostgresRepository` e o wiring
   `_resolve_agent_skill_repository`.
-- **Estado físico da tabela.** A tabela `agent_skills` **ainda existe fisicamente** no banco de
-  domínio `DATABASE_PROMETEU_GENERIC_RAG_DSN`; nenhum call site runtime a lê ou escreve. O DROP está
-  roteirizado para janela manual (script de remoção, gate DDL manual do `CLAUDE.md §5`) e **ainda não
-  foi executado**.
+- **Estado físico confirmado.** A introspecção read-only de 2026-07-28 confirmou que
+  `agent_skills` já não existe no banco de domínio. Não há tabela substituta: o contrato é
+  YAML-First e o store apenas materializa o bundle selecionado para o middleware.
 - **Onde skills vivem hoje.** Contrato e materialização em
   `docs/tecnico/README-TECNICO-DEEPAGENT-SUPERVISOR-COMPLETO.md` (`skills_library`, seleção por agente,
   materialização em `/skills/<name>/SKILL.md`) e no AST em `docs/tecnico/README-AST-AGENTIC-DESIGNER.md`.
 
-#### Gate de DDL manual — colunas e tabela órfãs (DeepAgent)
+#### Contração física concluída do legado DeepAgent
 
-- **DDL sempre manual.** Toda remoção (`DROP TABLE agent_skills`, `DROP COLUMN
-  tenant_user_yaml.agent_instructions_md`) é executada **à mão**, fora do runtime, em janela controlada.
-  Nenhum processo (API/worker/scheduler/request/boot) dispara DDL. As estruturas seguem físicas até
-  essa janela.
-- **Estado atual.** Ambas são **órfãs** (sem leitor/escritor runtime). O conteúdo das skills vem
-  exclusivamente da `skills_library` do YAML; a instrução compartilhada vem exclusivamente de
-  `agent-instructions-md` do YAML, injetada pelo prompt composto — a materialização
-  `/memories/agents.md` da coluna `agent_instructions_md` foi removida na mesma janela.
+- `agent_skills` e `tenant_user_yaml.agent_instructions_md` foram removidas em janela controlada,
+  fora do runtime; a consulta canônica de 2026-07-28 confirmou ambas as ausências.
+- O conteúdo das skills vem exclusivamente de `skills_library`; a instrução compartilhada vem de
+  `agent-instructions-md`. Nenhum processo da aplicação executa DDL para manter esse contrato.
 
 ### Leitura prática de tenant_users no modelo final
 
@@ -2938,7 +2776,11 @@ o runtime T14 resolve `saas_project_id + operation`, pinando a release ativa e s
   eventos. Use `vector_ingestion_runs` e `vector_ingestion_run_documents` somente para os fatos
   do lote e dos PDFs, ligados por `correlation_id`, `task_id` e identidades de run.
 - Para abrir a trilha completa de uma interação, use `interaction_runs` e depois `interaction_run_events`.
-- Para investigar Execução Agentic em Background, comece pelo job correspondente em `job_core.job_runs` e reconstrua o lifecycle em `job_core.job_run_events`. Use `agent_background.background_execution_requests`, `agent_background.background_execution_runs` e `agent_background.background_execution_events` apenas para fatos do domínio; `scheduler.scheduled_jobs` participa somente quando existe agenda, e `scheduler.job_executions` não é fonte ativa de runtime.
+- Para investigar Execução Agentic em Background, comece pelo job correspondente em
+  `job_core.job_runs` e reconstrua o lifecycle em `job_core.job_run_events`. Use
+  `agent_background.background_execution_runs` apenas para contexto e resultado funcional;
+  `scheduler.scheduled_jobs` guarda pedido e agenda. Não existem tabelas próprias de requests,
+  schedules ou events em `agent_background`, nem `scheduler.job_executions` no modelo atual.
 - Para investigar uma aprovação humana assíncrona ligada a run background, priorize `agent_background.agent_hil_approval_requests`; ali estão o pedido, o run, o canal, o prazo, o status, o token em hash e a decisão final aceita pelo sistema.
 - Para validar conta pessoal e autenticação, comece por `user_accounts`, `user_auth_identities` e `user_password_credentials`.
 - Para validar configuração organizacional, comece por `tenants`, `tenant_yaml`, `tenant_access_keys`, `tenant_channels`, `tenant_security_keys` e `tenant_secrets`.
@@ -2983,8 +2825,8 @@ logs, sem juntar a trilha persistida principal.
 
 Como confirmar: para HIL em execução background, comece pelos dois jobs ligados à
 pausa e à retomada em `job_core.job_runs` e `job_core.job_run_events`; depois use
-`agent_background.agent_hil_approval_requests`, `agent_background.background_execution_runs`
-e `agent_background.background_execution_events` para os fatos do domínio. Para login e sessão,
+`agent_background.agent_hil_approval_requests` e `agent_background.background_execution_runs`
+para os fatos do domínio. Para login e sessão,
 comece em `user_accounts`, `user_auth_identities` e nas tabelas
 correlatas do fluxo web.
 
@@ -2993,7 +2835,8 @@ correlatas do fluxo web.
 - Entendi a diferença entre dataset vivo e histórico operacional.
 - Entendi a diferença entre identidade da fonte e hash de conteúdo.
 - Entendi por que o schema conecta ingestão, autenticação, HIL e integrações.
-- Entendi como o schema `agent_background` separa pedido, agenda, run, eventos e HIL.
+- Entendi que Scheduler guarda pedido/agenda, Job Core guarda lifecycle/eventos e
+  `agent_background` guarda apenas quatro conjuntos factuais.
 - Entendi que API, canal e sessão organizacional convergem para `tenant_yaml.yaml_content`.
 - Entendi por que as FKs compostas com `environment + tenant_id` impedem binding cross-tenant e cross-environment.
 - Entendi por onde começar uma investigação sem confundir tabela histórica com fonte de verdade.

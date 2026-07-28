@@ -1,8 +1,8 @@
 flowchart LR
     subgraph Boot["No boot / bootstrap do supervisor"]
-        DB1[("agent_skills<br/>(tenant_id, skill_name, environment)")]
+        YAML["skills_library<br/>no YAML imutável da release"]
         MAT["Materialização no PostgresStore<br/>/skills/&lt;skill_name&gt;/SKILL.md"]
-        DB1 -->|"11 linhas: tenant=engenharia_dnit<br/>environment=development"| MAT
+        YAML -->|"skills selecionadas pelo supervisor"| MAT
     end
     subgraph Prompt["Sempre no prompt (catálogo enxuto)"]
         CAT["name + description<br/>de cada uma das skills declaradas"]

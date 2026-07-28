@@ -11,7 +11,8 @@ runtime de chat paralelo numa tela é violação de reuso — quando o component
 faltar algo, a decisão correta é **evoluí-lo**, não criar outro ao lado.
 
 > Pré-requisito: faça o [GUIA-PRIMEIROS-PASSOS.md](GUIA-PRIMEIROS-PASSOS.md) primeiro. Lá você sobe a aplicação
-> (`./run.sh +a`, porta `FASTAPI_PORT`, default 5555), prepara credencial + e-mail + YAML e confirma que a API
+> (`./run.sh +a`, host e porta obrigatórios de `FASTAPI_HOST`/`FASTAPI_PORT`), prepara credencial + e-mail + YAML e
+> confirma que a API
 > responde. Este tutorial assume que esse ambiente já está de pé e **não repete** essa preparação.
 
 Leituras de aprofundamento que este tutorial cruza, sem duplicar:

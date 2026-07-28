@@ -346,10 +346,10 @@ O backend durável (Redis ou Postgres) decide **onde** ficam os arquivos virtuai
   agents.md a partir da coluna `agent_instructions_md`) foi removido.
 - **Memória genérica preservada:** o `MemoryMiddleware` nativo continua roteando `/memories/` (ex.:
   `/memories/user.md`) quando `middlewares.memory.enabled=true` + `memory` top-level declaram um path.
-- **Sem leitura de schema de domínio para skills/instrução:** o runtime não lê `agent_skills` nem
-  `agent_instructions_md` — essas estruturas são órfãs (DROP roteirizado para janela manual, `CLAUDE.md §5`;
-  detalhes em `docs/tecnico/README-SCHEMA-BANCO.md`). O único DDL relevante do backend Postgres é o do
-  framework LangGraph (`PostgresStore.setup()`), não schema de skills.
+- **Sem schema de domínio para skills/instrução:** o runtime não lê `agent_skills` nem
+  `agent_instructions_md`; a introspecção read-only de 2026-07-28 confirmou que a tabela e a coluna
+  antigas já foram removidas fisicamente. O único schema persistente usado pelas skills é o store
+  do framework LangGraph, não uma tabela de skills da aplicação.
 
 ### 7.10.2. Exemplo completo (Postgres + skills YAML-First + interpreter)
 
@@ -862,22 +862,23 @@ O que o torna forte não é “ter muita feature”. O que o torna forte é que 
   - Símbolos relevantes: get_shared_postgres_store, encode_namespace_label.
   - Comportamento confirmado: cache de 1 `PostgresStore` por `DSN+ENVIRONMENT`, `store.setup()` (DDL de framework do LangGraph) executado 1×/processo sob lock, sem cliente Postgres novo por consumidor.
 
-- Fonte das skills (YAML-First, sem banco): a materialização vive em
-  `src/agentic_layer/supervisor/deep_agent_supervisor.py` (`_materialize_deepagent_skills`,
-  `_resolve_skills_library`, `_collect_selected_skill_names`, `_compose_skill_md`,
-  `_reconcile_skills_store`). Lê a `skills_library` do YAML resolvido, compõe o `SKILL.md`
-  (revalidado por `parse_skill_metadata`), materializa `files` e reconcilia o store. O modelo
-  antigo por banco (`skill_repository.py` com `SkillRepository`/`SkillRecord`/
-  `AgentSkillsSchemaMissingError` e `agent_skills_repository.py` com `AgentSkillsPostgresRepository`)
-  foi **removido** — não há mais leitura de `agent_skills`.
+- Fonte das skills (YAML-First, sem tabela de domínio): a regra compartilhada vive em
+  `src/agentic_layer/skills/skills_store_materializer.py::SkillsStoreMaterializer`. Ela compõe e
+  revalida `SKILL.md`, sanitiza `files`, calcula `skill_version` por SHA-256, evita regravação
+  idêntica e remove artefatos fantasmas. O DeepAgent resolve a seleção em
+  `deep_agent_supervisor.py::_collect_selected_skill_names` e delega a materialização a esse
+  componente; o WorkflowAgent usa a mesma implementação por node. O índice canônico da
+  `skills_library` fica em `src/agentic_layer/skills/skills_library_index.py`. O modelo antigo
+  `agent_skills` foi removido do código e, conforme introspecção read-only de 2026-07-28, também
+  não existe mais fisicamente no banco principal.
 
 - src/security/user_yaml_repository.py
-  - Motivo da leitura: acessor único de `tenant_user_yaml`/`user_account_yaml` usado para resolver o
-    `yaml_path` do tenant.
-  - Símbolos relevantes: UserYamlRepository.resolve_tenant_yaml_path / resolve_user_yaml_path.
-  - Comportamento confirmado: resolve o caminho do YAML da release por tenant/usuário. O método legado
-    de leitura da coluna `agent_instructions_md` não tem call site runtime (a instrução compartilhada
-    vem só de `agent-instructions-md` no YAML, via prompt composto).
+  - Motivo da leitura: confirmar que o repositório remanescente governa conta, membership e billing,
+    sem voltar a resolver configuração executável por `tenant_user_yaml`.
+  - Símbolo relevante: `UserYamlRepository`.
+  - Comportamento confirmado: o runtime de configuração não lê `agent_instructions_md`; conforme
+    introspecção read-only de 2026-07-28, essa coluna já não existe fisicamente. A instrução
+    compartilhada vem apenas de `agent-instructions-md` no YAML resolvido, via prompt composto.
 
 - src/agentic_layer/supervisor/agent_middlewares.py
   - Motivo da leitura: middlewares de observabilidade do produto que rodam dentro do grafo do DeepAgent.

@@ -20,10 +20,10 @@ O exemplo mais curto é este:
 const encryptedData = await window.PayloadCrypto.buildEncryptedData({
   yamlContent: window.PayloadCrypto.injectUserEmailInYaml(yamlText, userEmail),
   filename: 'rag-config-webchat.yaml',
-  baseUrl: 'http://localhost:5555',
+  baseUrl: window.location.origin,
 });
 
-const response = await fetch('http://localhost:5555/rag/execute', {
+const response = await fetch(`${window.location.origin}/rag/execute`, {
   method: 'POST',
   credentials: 'include',
   headers: {

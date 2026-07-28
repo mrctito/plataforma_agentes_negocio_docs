@@ -1,685 +1,469 @@
-# Manual técnico e guia de integração por exemplo: HIL por APIs, WhatsApp e banco
+# Manual técnico de HIL: APIs, aprovação durável e canais
 
-## 1. O que este guia cobre
+## 1. Escopo
 
-Este documento é um guia técnico e de exemplos completos de uso das APIs HIL.
+Human-in-the-Loop (HIL) é o contrato de pausa, revisão e retomada de uma
+execução agentic. Este manual separa três caminhos que não devem ser
+confundidos:
 
-Ele cobre quatro coisas práticas:
+1. pausa e continuação foreground;
+2. aprovação durável de execução background;
+3. entrega e captura da decisão por WhatsApp, e-mail ou outro canal integrado.
 
-1. Como receber uma pausa HIL pelo endpoint de agente.
-2. Como devolver a decisão e retomar a execução.
-3. Como funciona o HIL assíncrono persistido em banco e distribuído por WhatsApp.
-4. Como configurar o canal de WhatsApp para ser usado nesse fluxo.
+As decisões públicas atuais são `approve`, `edit`, `reject` e `respond`.
 
-## 2. Entry points confirmados no código
+## 2. Superfícies HTTP
 
-### 2.1. HIL síncrono de agente
+| Endpoint | Uso |
+| --- | --- |
+| `POST /agent/continue` | retomar DeepAgent/agent pausado no foreground |
+| `POST /workflow/continue` | retomar WorkflowAgent pausado no foreground |
+| `POST /agent/hil/review-context` | carregar por token o contrato pendente para a UI segura |
+| `POST /agent/hil/decisions` | decidir aprovação durável; continua inline ou publica o segundo job |
+| `POST /channels/{channel_id}/messages` | receber webhook/mensagem; a bridge intercepta payload HIL antes do fluxo comum |
+| `GET /admin/background-executions/hil` | listar aprovações duráveis sem expor token/hash |
 
-- `POST /agent/execute`
-- `POST /agent/continue`
+As rotas por token usam `POST`. Aprovação por `GET` é proibida porque scanners
+de links e previews poderiam executar a ação sem intenção humana.
 
-### 2.2. HIL assíncrono por token
+## 3. Envelope público de pausa
 
-- `POST /agent/hil/decisions`
-
-### 2.3. Webhook e decisão por canal
-
-- `GET /channels/{channel_id}/messages` para verificação do webhook Meta
-- `POST /channels/{channel_id}/messages` para receber mensagens e payloads interativos
-
-### 2.4. Operação administrativa do HIL persistido
-
-- `GET /admin/background-executions/hil`
-
-### 2.5. Provisionamento de WhatsApp
-
-- `POST /api/whatsapp/provision/start`
-- `POST /api/whatsapp/provision/takeover`
-
-## 3. Fluxo técnico de ponta a ponta
-
-![3. Fluxo técnico de ponta a ponta](../assets/diagrams/docs-readme-tecnico-hil-apis-whatsapp-diagrama-01.svg)
-
-Esse diagrama mostra a separação importante do sistema: o canal entrega a decisão, mas a continuação formal da execução continua sendo um caso de uso próprio.
-
-## 4. HIL síncrono: como receber a pausa e devolver a decisão
-
-### 4.1. Chamada inicial
-
-O teste integrado confirma o seguinte padrão mínimo para receber uma pausa HIL de DeepAgent.
-
-```json
-POST /agent/execute
-{
-  "task": "Fluxo HIL deepagent",
-  "user_email": "hil.deepagent@prometeu.dev",
-  "execution_mode": "direct_sync",
-  "mode": "deepagent",
-  "encrypted_data": {
-    "cipher": "mock"
-  }
-}
-```
-
-### 4.2. Resposta esperada quando houve pausa
+O runtime normaliza a pausa como `AgentHilResponse`:
 
 ```json
 {
-  "success": true,
-  "response": "DeepAgent pausado aguardando aprovação humana",
-  "thread_id": "agent_0f4d7c2b8a9e4d31b72fa2c9607b6f21",
-  "correlation_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "execution_mode": "direct_sync",
-  "metrics": {
-    "status": "paused",
-    "requires_human": true,
-    "mode": "deepagent"
-  },
-  "hil": {
-    "pending": true,
-    "protocol_version": "hil-http-v1",
-    "message": "DeepAgent pausado aguardando aprovação humana",
-    "allowed_decisions": ["approve", "edit", "reject"],
-    "action_requests": [
-      {
-        "name": "human_gate",
-        "args": {"approved": null},
-        "description": "Aprovar ação pendente no DeepAgent."
+  "pending": true,
+  "protocol_version": "hil-http-v1",
+  "message": "Revise a ação antes de continuar.",
+  "allowed_decisions": ["approve", "edit", "reject", "respond"],
+  "action_requests": [
+    {
+      "name": "enviar_pagamento",
+      "args": {
+        "fornecedor_id": "fornecedor-42",
+        "valor": 1500.0
       }
-    ],
-    "review_configs": [
-      {
-        "action_name": "human_gate",
-        "allowed_decisions": ["approve", "edit", "reject"]
-      }
-    ],
-    "resume_endpoint": "/agent/continue"
-  }
+    }
+  ],
+  "review_configs": [
+    {
+      "action_name": "enviar_pagamento",
+      "allowed_decisions": ["approve", "edit", "reject"]
+    }
+  ],
+  "interrupt_id": "interrupt_01J...",
+  "interrupt_ids": ["interrupt_01J..."],
+  "resume_endpoint": "/agent/continue"
 }
 ```
 
-### 4.3. O que o cliente deve guardar
+O cliente renderiza somente as decisões publicadas. A ordem de
+`resume.decisions` deve acompanhar a ordem de `action_requests`.
 
-O cliente precisa guardar pelo menos estes campos.
+## 4. Continuação foreground
 
-- `thread_id`
-- `correlation_id`
-- `hil.allowed_decisions`
-- `hil.action_requests`
-- `hil.review_configs`
-- `hil.resume_endpoint`
+### 4.1. DeepAgent/agent
 
-Sem `thread_id` e `correlation_id`, a retomada deixa de apontar para a mesma execução.
-
-### 4.4. Retomando com `approve`
-
-```json
+```http
 POST /agent/continue
+X-API-Key: <chave-agent-continue>
+Content-Type: application/json
+
 {
   "resume": {
     "decisions": [
       {"type": "approve"}
     ]
   },
-  "user_email": "analista@empresa.com",
-  "correlation_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "thread_id": "agent_0f4d7c2b8a9e4d31b72fa2c9607b6f21",
+  "user_email": "aprovador@empresa.com",
+  "correlation_id": "20260728_120000-...",
+  "thread_id": "thread_01J...",
   "mode": "deepagent",
-  "yaml_config": "app/yaml/hil-deepagent-minimo.yaml"
+  "encrypted_data": {
+    "session_id": "<sessao>",
+    "wrapped_key": "<chave-protegida>",
+    "encrypted_yaml": "<yaml-cifrado>",
+    "original_filename": "deepagent.yaml",
+    "encryption_scheme": "FERNET+RSA-OAEP",
+    "yaml_operational_contract": "root_user_session_only_v1"
+  }
 }
 ```
 
-### 4.5. Retomando com `reject`
+### 4.2. WorkflowAgent
+
+`/workflow/continue` aceita exatamente um entre `human_response` e `resume`:
 
 ```json
-POST /agent/continue
 {
+  "thread_id": "thread_01J...",
+  "correlation_id": "20260728_120000-...",
   "resume": {
     "decisions": [
-      {"type": "reject"}
+      {"type": "edit", "edited_action": {
+        "name": "enviar_pagamento",
+        "args": {"fornecedor_id": "fornecedor-42", "valor": 1200.0}
+      }}
     ]
   },
-  "user_email": "analista@empresa.com",
-  "correlation_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "thread_id": "agent_0f4d7c2b8a9e4d31b72fa2c9607b6f21",
-  "mode": "deepagent",
-  "yaml_config": "app/yaml/hil-deepagent-minimo.yaml"
+  "interrupt_ids": ["interrupt_01J..."],
+  "user_email": "aprovador@empresa.com",
+  "encrypted_data": {
+    "session_id": "<sessao>",
+    "wrapped_key": "<chave-protegida>",
+    "encrypted_yaml": "<yaml-cifrado>",
+    "original_filename": "workflow.yaml",
+    "encryption_scheme": "FERNET+RSA-OAEP",
+    "yaml_operational_contract": "root_user_session_only_v1"
+  }
 }
 ```
 
-### 4.6. Retomando com `edit`
+Foreground preserva a mesma `thread_id` e a correlação da pausa. Isso é uma
+continuação, não uma execução nova.
 
-```json
-POST /agent/continue
-{
-  "resume": {
-    "decisions": [
-      {
-        "type": "edit",
-        "edited_action": {
-          "name": "calculator",
-          "args": {
-            "expression": "241 * 17"
-          }
-        }
-      }
-    ]
-  },
-  "user_email": "analista@empresa.com",
-  "correlation_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "thread_id": "agent_0f4d7c2b8a9e4d31b72fa2c9607b6f21",
-  "mode": "deepagent",
-  "yaml_config": "app/yaml/hil-deepagent-minimo.yaml"
-}
-```
+## 5. Configuração da aprovação assíncrona
 
-Importante: o arquivo `app/yaml/hil-deepagent-minimo.yaml` aparece nos exemplos OpenAPI do router, mas não foi localizado no workspace lido. Use esse caminho apenas como referência do contrato do endpoint, não como arquivo confirmado.
+DeepAgent usa
+`middlewares.human_in_the_loop.async_approval`. WorkflowAgent usa
+`settings.human_in_the_loop.async_approval`.
 
-### 4.7. Resposta esperada do continue
-
-```json
-{
-  "resume": {"decisions": [{"type": "approve"}]},
-  "response": "DeepAgent retomado e finalizado",
-  "steps": ["continue_deepagent"],
-  "tools_used": [],
-  "metrics": {
-    "status": "completed",
-    "mode": "deepagent",
-    "stage": "continue"
-  },
-  "processing_time_ms": 94.1,
-  "correlation_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "thread_id": "agent_0f4d7c2b8a9e4d31b72fa2c9607b6f21",
-  "success": true,
-  "error": null
-}
-```
-
-## 5. HIL assíncrono: banco + notificação + decisão posterior
-
-## 5.1. Quando ele existe
-
-O HIL assíncrono é habilitado pelo bloco `middlewares.human_in_the_loop.async_approval` no supervisor ativo.
-
-O contrato canônico confirmado aceita:
-
-- `enabled`
-- `ttl_seconds`
-- `expiration_policy`
-- `require_approver_match`
-- `channels`
-- `approvers`
-
-Os canais aceitos no contrato lido são `whatsapp` e `email`.
-
-## 5.2. Exemplo de configuração válida
+### 5.1. DeepAgent
 
 ```yaml
 multi_agents:
-  - id: supervisor-operacao
+  - id: "supervisor-operacao"
     execution:
-      type: deepagent
+      type: "deepagent"
     middlewares:
       human_in_the_loop:
         enabled: true
         async_approval:
           enabled: true
-          ttl_seconds: 600
-          expiration_policy: expire
+          ttl_seconds: 3600
+          expiration_policy: "expire"
           require_approver_match: true
           channels:
-            - type: whatsapp
+            - type: "whatsapp"
               enabled: true
-              channel_id: canal-operacao
-              template_id: hil_aprovacao_operacao
-            - type: email
-              enabled: true
-              template_id: hil_aprovacao_email
+              channel_id: "canal-operacao"
+              template_id: "hil_aprovacao_operacao"
           approvers:
-            - user_email: aprovador@empresa.com
-              user_code: aprovador-1
+            - user_email: "aprovador@empresa.com"
+              user_code: "aprovador-1"
               channel_user_ids:
                 whatsapp: "5511999999999"
 ```
 
-## 5.3. Regras operacionais importantes
+### 5.2. WorkflowAgent
 
-Se `whatsapp` estiver habilitado, ao menos um aprovador precisa ter `channel_user_ids.whatsapp`.
-
-Se `email` estiver habilitado, ao menos um aprovador precisa ter `user_email`.
-
-Cada canal habilitado exige `template_id`.
-
-`ttl_seconds` precisa ficar entre 60 e 604800.
-
-## 5.4. O que é persistido no banco
-
-O pedido durável fica em `agent_background.agent_hil_approval_requests`.
-
-Os campos operacionais mais importantes confirmados são:
-
-- `approval_request_id`
-- `run_id`
-- `correlation_id`
-- `thread_id`
-- `task_id`
-- `user_email`
-- `user_code`
-- `supervisor_id`
-- `agent_mode`
-- `action_requests`
-- `review_configs`
-- `allowed_decisions`
-- `status`
-- `notification_status`
-- `approval_token_hash`
-- `approval_token_hint`
-- `expected_approver_email`
-- `expected_channel`
-- `expected_channel_user_id`
-- `decision_type`
-- `decision_payload`
-- `decided_by_email`
-- `decided_by_user_code`
-- `decided_channel`
-- `decided_channel_user_id`
-- `expires_at`
-
-O token bruto não é persistido. O banco guarda hash e um hint curto.
-
-## 5.5. Como consultar operacionalmente sem abrir o banco
-
-O endpoint administrativo confirmado para runs de background é este.
-
-```http
-GET /admin/background-executions/hil?access_key=...&status=pending&limit=50
+```yaml
+workflows:
+  - id: "workflow-conciliacao"
+    enabled: true
+    settings:
+      human_in_the_loop:
+        enabled: true
+        async_approval:
+          enabled: true
+          ttl_seconds: 3600
+          expiration_policy: "fail_run"
+          require_approver_match: true
+          channels:
+            - type: "email"
+              enabled: true
+              template_id: "hil_aprovacao_email"
+          approvers:
+            - user_email: "aprovador@empresa.com"
+              user_code: "aprovador-1"
 ```
 
-Ele lista aprovações HIL duráveis sem expor token ou hash.
+Contrato compartilhado:
 
-Observação importante: a listagem administrativa confirmada no código foi encontrada no slice de background. Não foi localizado um endpoint administrativo equivalente, genérico e separado, para todas as aprovações HIL fora desse escopo.
+- canais declarativos aceitos: `whatsapp` e `email`;
+- `ttl_seconds`: 60 a 604800; default 3600;
+- `expiration_policy`: `expire` ou `fail_run`;
+- canal habilitado exige `template_id`;
+- WhatsApp exige `channel_user_ids.whatsapp` de ao menos um aprovador;
+- e-mail exige `user_email`;
+- `async_approval.enabled=true` exige HIL principal habilitado.
 
-## 6. Decidindo o HIL assíncrono por API
+## 6. Persistência
 
-### 6.1. Quando usar
+O pedido atual vive em
+`agent_background.agent_hil_approval_requests`. Campos relevantes:
 
-Use `POST /agent/hil/decisions` quando você já tem o `approval_token` e quer resolver a pendência por uma API segura, sem depender do botão do canal.
+- identidade: `environment`, `approval_request_id`, `tenant_id`,
+  `client_code`, `supervisor_id`, `agent_mode`;
+- vínculo: `run_id` opcional, `correlation_id`, `thread_id`;
+- usuário: `user_email`, `user_code`;
+- contrato: `protocol_version`, `action_requests`, `review_configs`,
+  `allowed_decisions`;
+- lifecycle HIL: `status`, `notification_status`, `expires_at`;
+- token: `approval_token_hash` e `approval_token_hint`;
+- aprovador esperado: `expected_approver_email`, `expected_channel`,
+  `expected_channel_user_id`;
+- entrega: `notification_channel`, `notification_provider`,
+  `provider_message_id`;
+- decisão: `decision_type`, `decision_payload`, identidades do decisor,
+  `decided_channel` e `decided_at`;
+- auditoria adicional: `metadata`, `created_at`, `updated_at`.
 
-Essa rota é a superfície correta para:
+Não há coluna `task_id` nessa tabela. O token bruto também não é persistido;
+somente hash e hint. `run_id` é opcional porque o mesmo contrato também atende
+pausas não ligadas a um run factual background.
 
-- `approve`
-- `reject`
-- `edit`
-- múltiplas ações com `resume` tipado completo
+A tabela legada `public.agent_hil_approval_requests` pode existir fisicamente,
+mas não é a tabela do runtime atual.
 
-### 6.2. Exemplo com `approve`
+## 7. Carregar a revisão segura
+
+```http
+POST /agent/hil/review-context
+Content-Type: application/json
+
+{
+  "approval_token": "<token-recebido>",
+  "approval_request_id": "hil_01J..."
+}
+```
+
+Resposta:
 
 ```json
-POST /agent/hil/decisions
 {
-  "approval_token": "token-seguro-recebido-pelo-aprovador",
+  "status": "pending",
+  "approval_request_id": "hil_01J...",
+  "correlation_id": "20260728_120000-...",
+  "thread_id": "thread_01J...",
+  "mode": "workflow",
+  "decision_endpoint": "/agent/hil/decisions",
+  "notification_channel": "whatsapp",
+  "notification_provider": "meta_whatsapp",
+  "hil": {
+    "pending": true,
+    "protocol_version": "hil-http-v1",
+    "message": "Revise a ação.",
+    "allowed_decisions": ["approve", "edit", "reject"],
+    "action_requests": [],
+    "review_configs": [],
+    "interrupt_id": null,
+    "interrupt_ids": [],
+    "resume_endpoint": "/agent/continue"
+  }
+}
+```
+
+O token pode estar no fragmento `#` de uma URL de revisão, pois fragmentos não
+são enviados ao servidor no request inicial. O JavaScript da página lê o
+fragmento e envia o segredo no corpo do `POST`; ele não deve migrar o token
+para query string.
+
+## 8. Registrar a decisão
+
+### 8.1. Aprovar, rejeitar ou responder
+
+```http
+POST /agent/hil/decisions
+Content-Type: application/json
+
+{
+  "approval_token": "<token-recebido>",
+  "approval_request_id": "hil_01J...",
   "decision_type": "approve",
-  "yaml_config": "app/yaml/agente.yaml",
   "approver_email": "aprovador@empresa.com",
-  "approver_user_code": "aprovador-1",
-  "correlation_id": "corr-chamada-decisao"
+  "decided_channel": "webchat"
 }
 ```
 
-### 6.3. Exemplo com `edit`
+### 8.2. Editar uma ação
+
+Para uma única ação:
 
 ```json
-POST /agent/hil/decisions
 {
-  "approval_token": "token-seguro-recebido-pelo-aprovador",
+  "approval_token": "<token-recebido>",
+  "approval_request_id": "hil_01J...",
   "decision_type": "edit",
-  "yaml_config": "app/yaml/agente.yaml",
   "approver_email": "aprovador@empresa.com",
+  "decided_channel": "webchat",
   "edited_action": {
-    "name": "human_gate",
-    "args": {
-      "approved": true,
-      "reason": "ajuste manual"
-    }
+    "name": "enviar_pagamento",
+    "args": {"fornecedor_id": "fornecedor-42", "valor": 1200.0}
   }
 }
 ```
 
-### 6.4. Regras importantes dessa rota
+Para múltiplas ações, envie `resume.decisions` completo na mesma ordem de
+`action_requests`. Workflow HIL assíncrono aceita exatamente uma decisão/ação
+por retomada.
 
-Se `decision_type=edit` e houver mais de uma ação pendente, o serviço exige `resume` tipado completo.
+## 9. Branch `200`: continuação inline
 
-Se o pedido tiver `agent_mode=workflow`, a decisão assíncrona ainda não suporta a retomada. O serviço retorna erro de modo não suportado.
-
-Na implementação atual, o router de decisão por POST envia `decided_channel="email"` ao serviço de decisão.
-
-## 7. Decidindo o HIL assíncrono por WhatsApp
-
-## 7.1. Como o payload interativo é montado
-
-O codec do payload curto do botão usa este formato:
-
-```text
-hil_approval|approval_request_id|decision_type|approval_token
-```
-
-Exemplo real produzido nos testes:
-
-```text
-hil_approval|apr-123|approve|token-seguro-123
-```
-
-### 7.2. Limitação prática do payload curto
-
-O codec de botão aceita apenas `approve` e `reject`.
-
-Isso significa que o caminho de canal interativo não é a superfície certa para `edit`. Se você precisa editar argumentos, use `POST /agent/hil/decisions` com `edited_action` ou `resume` completo.
-
-### 7.3. Como o webhook processa a decisão
-
-O webhook chega em:
-
-```http
-POST /channels/{channel_id}/messages
-```
-
-Se o payload for reconhecido como decisão HIL, o `ChannelMessageProcessor` chama o `HilApprovalChannelBridge` antes do fluxo agentic comum.
-
-O bridge monta `HilApprovalDecisionCommand` com:
-
-- `approval_token`
-- `approval_request_id`
-- `decision_type`
-- `decided_channel="whatsapp"`
-- `decided_channel_user_id=incoming.payload.sender_id`
-- `decided_by_email` e `decided_by_user_code` vindos de `user_session`, quando existirem
-
-Em seguida, o serviço resolve o pedido e continua a execução original.
-
-### 7.4. Exemplo conceitual de body recebido no webhook
-
-```json
-POST /channels/wa-hil/messages
-{
-  "object": "whatsapp_business_account",
-  "entry": [
-    {
-      "changes": [
-        {
-          "value": {
-            "messages": [
-              {
-                "from": "5511999999999",
-                "type": "interactive",
-                "interactive": {
-                  "button_reply": {
-                    "title": "Aprovar",
-                    "id": "hil_approval|approval-1|approve|token-seguro"
-                  }
-                }
-              }
-            ]
-          }
-        }
-      ]
-    }
-  ]
-}
-```
-
-## 8. Como configurar o canal para usar WhatsApp
-
-## 8.1. O que o runtime precisa
-
-Para o canal conseguir enviar mensagens HIL por WhatsApp, o runtime precisa resolver duas camadas de configuração.
-
-Primeira camada: a definição do canal, com `channel_id`, `channel_type`, `yaml_path` e política de segurança.
-
-Segunda camada: as credenciais do WhatsApp em `security_keys`, com as chaves canônicas:
-
-- `access_token`
-- `phone_number_id`
-- `api_version` opcional
-- `base_url` opcional
-- `timeout` opcional
-
-## 8.2. Onde as credenciais podem estar
-
-O cliente Meta WhatsApp procura as credenciais em `security_keys` nestes escopos:
-
-- raiz de `security_keys`
-- `security_keys.active_channel.{channel_id}`
-- `security_keys.channels.{channel_id}`
-
-Se `access_token` ou `phone_number_id` estiverem ausentes ou com placeholder, o envio falha fechado.
-
-## 8.3. Exemplo de definição de canal
-
-O registry local do repositório contém um exemplo deste tipo:
+Quando o pedido não pertence a uma execução background, a decisão resolve e
+continua na mesma chamada:
 
 ```json
 {
-  "channel_id": "whatsapp_suporte",
-  "channel_type": "whatsapp",
-  "description": "Canal de suporte via WhatsApp",
-  "yaml_path": "app/yaml/rag-config-food.yaml",
-  "execution_mode": "ask",
-  "queue_mode": "redis",
-  "security": {
-    "secret_token": null,
-    "allowed_ips": []
+  "status": "resolved",
+  "approval_request_id": "hil_01J...",
+  "decision_type": "approve",
+  "correlation_id": "20260728_120000-...",
+  "thread_id": "thread_01J...",
+  "continuation": {
+    "resume": {"decisions": [{"type": "approve"}]},
+    "response": "Execução retomada.",
+    "steps": [],
+    "tools_used": [],
+    "metrics": {},
+    "processing_time_ms": 340.2,
+    "correlation_id": "20260728_120000-...",
+    "thread_id": "thread_01J...",
+    "success": true,
+    "error": null,
+    "hil": null
   },
-  "metadata": {
-    "default_user_email": "suporte@empresa.com"
-  }
+  "continuation_job_id": null,
+  "continuation_correlation_id": null,
+  "previous_execution_correlation_id": null
 }
 ```
 
-## 8.4. Registro manual do canal
+## 10. Branch `202`: segundo job
 
-Se você quiser registrar o canal pela API de channels, o endpoint confirmado é:
-
-```http
-POST /channels/register
-```
-
-Ele recebe `ChannelDefinition` e persiste a definição no registry local do canal.
-
-## 8.5. Provisionamento operacional do número WhatsApp
-
-O caminho operacional de onboarding confirmado no código é este.
-
-### Passo 1. Iniciar provisionamento
+Quando o pedido pertence a background, a decisão é resolvida atomicamente e
+um segundo job é publicado:
 
 ```json
-POST /api/whatsapp/provision/start
 {
-  "client_code": "cliente-1",
-  "phone_e164": "+5511999999999",
-  "channel_id": "canal-operacao"
+  "status": "continuation_submission_confirmed",
+  "approval_request_id": "hil_01J...",
+  "decision_type": "approve",
+  "correlation_id": "20260728_120000-...",
+  "thread_id": "thread_01J...",
+  "continuation": null,
+  "continuation_job_id": "job_01J...",
+  "continuation_correlation_id": "20260728_121500-...",
+  "previous_execution_correlation_id": "20260728_120000-..."
 }
 ```
 
-Esse passo registra o número localmente e inicia a etapa de verificação na Meta.
+O segundo job suporta DeepAgent e WorkflowAgent. Ele pode concluir, falhar ou
+gerar outra rodada HIL. `202` não autoriza a UI a exibir “execução concluída”;
+ela deve acompanhar `continuation_job_id`.
 
-### Passo 2. Assumir o webhook
+## 11. WhatsApp e outros canais
 
-```json
-POST /api/whatsapp/provision/takeover
-{
-  "client_code": "cliente-1",
-  "phone_e164": "+5511999999999",
-  "channel_id": "canal-operacao",
-  "ensure_template": true
-}
-```
+O serviço de notificação monta botões diretos apenas para `approve` e
+`reject`. Quando `edit` é permitido, ele acrescenta um link para a UI segura
+de revisão. Um canal simples não edita argumentos dentro do botão.
 
-Esse passo usa `MultiTenantWhatsAppManager.ensure_webhook_subscription(...)`, marca `webhook_configured=true` e atualiza o telefone no diretório.
+Na volta:
 
-## 8.6. Verificação do webhook Meta
+1. o webhook entra em `/channels/{channel_id}/messages`;
+2. `HilApprovalChannelBridge` procura o payload HIL nos botões ou no texto;
+3. a bridge valida token, pedido, status, expiração, decisão e principal;
+4. chama o mesmo `HilApprovalDecisionService` usado pela API;
+5. o fluxo comum do canal é pulado para impedir que a decisão também vire uma
+   mensagem normal ao agente.
 
-O desafio de verificação é confirmado por:
+O payload do botão é construído por `HilApprovalDecisionPayloadCodec`; não
+monte strings próprias para imitar esse contrato.
 
-```http
-GET /channels/{channel_id}/messages?hub.mode=subscribe&hub.challenge=...&hub.verify_token=...
-```
+Os channels reconhecidos pelo modelo de decisão incluem `whatsapp`, `email`,
+`teams`, `slack`, `webchat` e `instagram`, mas o bloco declarativo
+`async_approval.channels` atualmente configura somente WhatsApp e e-mail.
 
-O endpoint confere o token do cliente (`meta_webhook_verify_token`) no diretório e devolve o `hub.challenge` quando a assinatura é válida.
+## 12. Segurança e idempotência
 
-## 8.7. Assinatura do webhook de mensagens
+O serviço valida:
 
-O `POST /channels/{channel_id}/messages` valida HMAC pelo `secret_token` do canal quando ele está configurado.
+- token não vazio e hash correspondente;
+- `approval_request_id`, quando enviado, coerente com o token;
+- status e expiração;
+- decisão presente em `allowed_decisions`;
+- identidade/canal esperados;
+- shape de `edit` e ordem das decisões;
+- modo `agent`, `deepagent` ou `workflow`;
+- separação entre correlação anterior e correlação do segundo job.
 
-Se o token existir e o header `X-Hub-Signature-256` vier ausente ou inválido, o webhook falha com 401.
+Erros importantes:
 
-## 9. Regras e validações importantes
+| HTTP | Significado |
+| --- | --- |
+| `400` | decisão/shape inválido |
+| `403` | pedido, canal ou aprovador não corresponde ao esperado |
+| `404` | token/pedido não localizado |
+| `409` | conflito de resolução ou replay incompatível |
+| `410` | pedido expirado |
+| `503` | submissão do segundo job indisponível |
 
-### 9.1. Ordem das decisões
+Replay idêntico de uma submissão background confirmada pode recuperar a mesma
+confirmação; replay divergente falha. O cliente nunca deve gerar uma nova
+decisão para “forçar” progresso sem consultar o estado real.
 
-No `resume`, a lista `decisions` precisa seguir a ordem de `hil.action_requests`.
+## 13. Observabilidade
 
-### 9.2. Uma decisão vence
+Eventos centrais:
 
-O repositório resolve o pedido pendente de forma atômica. A primeira decisão válida vence. Chamadas posteriores encontram estado não pendente.
+- `hil.decision.received`;
+- `hil.decision.accepted` ou rejeição estruturada;
+- `hil.continuation.submission_confirmed`;
+- `hil.continuation.publish_failed`;
+- `hil.continuation.finished`;
+- `hil.decision.channel.detected`;
+- `hil.decision.channel.rejected`.
 
-### 9.3. Expiração
+Registre somente ids, presença de identidade, contagens e status. Token,
+argumentos sensíveis, YAML e credenciais não devem aparecer no log.
 
-Se `expires_at` passar, o pedido vira `expired` ou `failed` conforme a política configurada.
+Em background, use três identidades juntas:
 
-### 9.4. Match de aprovador
+- `previous_execution_correlation_id`: execução que pausou;
+- `continuation_correlation_id`: segundo job;
+- `continuation_job_id`: lifecycle no Job Core.
 
-Quando `require_approver_match=true`, o sistema valida canal, usuário do canal, e-mail e `user_code` contra os aprovadores permitidos.
+## 14. Troubleshooting
 
-## 10. O que acontece em caso de sucesso
+### A notificação não foi enviada
 
-### 10.1. Sucesso síncrono
+Confirme `async_approval.enabled`, canal habilitado, `template_id`, aprovador e
+identificador de destino. Depois leia `notification_status` e os eventos da
+correlação.
 
-`/agent/execute` devolve `hil`, o cliente envia `resume`, `/agent/continue` devolve resposta final e a pausa pendente é marcada como resolvida.
+### O botão foi recebido como mensagem normal
 
-### 10.2. Sucesso assíncrono por API
+Confirme que o payload foi produzido pelo codec oficial e que a definição do
+canal entra pela bridge antes do runtime conversacional.
 
-O pedido durável muda para `resolved`, `decision_type` é preenchido, a continuação executa e a resposta final volta no corpo de `AgentHilDecisionResponse`.
+### `edit` não aparece como botão
 
-### 10.3. Sucesso assíncrono por WhatsApp
+É o comportamento esperado. A edição usa a UI segura; botões diretos cobrem
+aprovar/rejeitar.
 
-O botão chega ao webhook, o bridge intercepta, resolve a decisão, retoma a thread e devolve um snapshot com `execution.success` e `hil_approval_decision.status=resolved`.
+### A decisão respondeu `202`
 
-## 11. O que acontece em caso de erro
+Consulte o segundo job. Não chame `/workflow/continue` nem `/agent/continue`
+em paralelo para a mesma aprovação.
 
-Pedido inexistente: HTTP 404 em `/agent/hil/decisions`.
+### Workflow foi rejeitado por múltiplas decisões
 
-Pedido expirado: HTTP 410.
+Workflow HIL assíncrono aceita exatamente uma ação/decisão por retomada.
+Modele uma nova rodada para a próxima ação.
 
-Pedido já resolvido ou não pendente: HTTP 409.
+## 15. Fontes executáveis
 
-Canal ou aprovador incompatível: HTTP 403.
-
-`edit` sem `edited_action` ou `resume`: HTTP 400.
-
-Canal WhatsApp sem `channel_id`: falha fechada no adapter.
-
-Canal WhatsApp sem `channel_user_ids.whatsapp`: falha fechada no adapter.
-
-Canal cadastrado sem `yaml_path` ou `client_code`: erro de execução do canal.
-
-## 12. Troubleshooting
-
-### Sintoma: a execução pausa, mas não há pedido durável
-
-Verifique se `async_approval.enabled=true` no supervisor ativo.
-
-No trecho lido, a criação do pedido durável foi confirmada no caminho assíncrono DeepAgent. Se você estiver usando apenas o fluxo síncrono da API, o contrato `hil` existe, mas o despacho durável não foi confirmado no mesmo trecho.
-
-### Sintoma: WhatsApp não envia a notificação
-
-Confira:
-
-- `channel_id` do canal no bloco `async_approval.channels`
-- `security_keys` com `access_token` e `phone_number_id`
-- `yaml_path` e `client_code` do canal
-- `template_id` do canal assíncrono
-
-### Sintoma: o botão do WhatsApp chega, mas a decisão falha
-
-Confira:
-
-- `sender_id` do webhook contra `channel_user_ids.whatsapp`
-- expiração do pedido
-- status `pending`
-- se o pedido já não foi resolvido antes
-
-### Sintoma: preciso editar argumentos pelo canal
-
-O caminho de botão curto não suporta `edit`. Use `POST /agent/hil/decisions` com `edited_action` ou `resume` completo.
-
-### Sintoma: preciso retomar workflow por decisão assíncrona
-
-Esse suporte não foi encontrado no serviço atual. O código confirma erro de modo não suportado para `workflow` no caso de decisão assíncrona por token.
-
-## 13. Como colocar para funcionar
-
-### 13.1. Pré-requisitos confirmados
-
-- Canal com `channel_id`, `channel_type=whatsapp`, `yaml_path` e `client_code` válidos.
-- `security_keys` resolvíveis pelo `ClientDirectory`.
-- Credenciais canônicas do WhatsApp (`access_token`, `phone_number_id`).
-- Token de verificação Meta para o `GET /channels/{channel_id}/messages`.
-- `secret_token` do canal, quando quiser validação HMAC no webhook.
-- Supervisor DeepAgent com HIL e `async_approval` configurados.
-
-### 13.2. Validação mínima
-
-1. Chame `POST /agent/execute` e confirme resposta com `hil.pending=true`.
-2. Se estiver usando HIL síncrono, chame `POST /agent/continue` com o mesmo `thread_id`.
-3. Se estiver usando HIL assíncrono, confirme a criação do pedido durável.
-4. Envie ou receba a decisão por `POST /agent/hil/decisions` ou por `POST /channels/{channel_id}/messages`.
-5. Verifique logs `hil.decision.accepted` e `hil.continuation.finished`.
-
-## 14. Checklist de entendimento
-
-- Entendi qual endpoint publica a pausa HIL.
-- Entendi qual endpoint retoma a execução.
-- Entendi quando usar `/agent/hil/decisions`.
-- Entendi o papel da tabela `agent_hil_approval_requests`.
-- Entendi como o WhatsApp entra como canal de decisão.
-- Entendi quais credenciais o runtime realmente lê.
-- Entendi os limites atuais de `edit` e `workflow`.
-
-## 15. Evidências no código
-
+- `src/api/schemas/agent_hil_models.py`
 - `src/api/routers/agent_router.py`
-  - Motivo da leitura: contratos públicos de execute, continue e decision.
-  - Comportamento confirmado: `POST /agent/continue`, `POST /agent/hil/decisions`, exemplos OpenAPI e envelope `hil`.
-
-- `src/api/services/agent_hil_continuation_service.py`
-  - Motivo da leitura: confirmar que a continuação usa `Command(resume=...)` na mesma thread.
-  - Comportamento confirmado: retomada reaproveita `thread_id` e `correlation_id`.
-
 - `src/api/services/hil_approval_decision_service.py`
-  - Motivo da leitura: validar regras de decisão assíncrona.
-  - Comportamento confirmado: `edit` com múltiplas ações exige `resume` completo; `workflow` não é suportado nesse caso de uso.
-
+- `src/api/services/hil_approval_review_query_service.py`
+- `src/api/services/hil_background_approval_service.py`
 - `src/api/services/hil_approval_notification_service.py`
-  - Motivo da leitura: confirmar adapters, retry e payload de canal.
-  - Comportamento confirmado: WhatsApp e e-mail; payload curto só para `approve` e `reject`.
-
-- `src/api/routers/channel_router.py`
-  - Motivo da leitura: confirmar webhook GET/POST e interceptação HIL.
-  - Comportamento confirmado: `GET /channels/{channel_id}/messages` valida Meta; `POST /channels/{channel_id}/messages` intercepta decisão HIL.
-
-- `src/channel_layer/clients/meta_whatsapp_client.py`
-  - Motivo da leitura: confirmar chaves canônicas de credenciais.
-  - Comportamento confirmado: `access_token`, `phone_number_id`, `api_version`, `base_url`, `timeout`.
-
-- `src/security/channel_repository.py`
-  - Motivo da leitura: confirmar persistência do telefone WhatsApp por canal.
-  - Comportamento confirmado: `register_whatsapp_phone(...)` exige `client_code` e `yaml_path` para registrar o número.
-
-- `src/api/routers/whatsapp_provision_router.py`
-  - Motivo da leitura: confirmar APIs de provisionamento.
-  - Comportamento confirmado: `POST /api/whatsapp/provision/start` e `POST /api/whatsapp/provision/takeover`.
-
+- `src/api/services/hil_approval_channel_bridge.py`
+- `src/api/services/background_hil_continuation_submission_service.py`
+- `src/api/services/background_hil_continuation_execution_service.py`
+- `src/api/services/workflow_hil_continuation_service.py`
+- `src/api/repositories/agent_hil_approval_requests_repository.py`
 - `scripts/sql/20260502_create_agent_background_schema.sql`
-  - Motivo da leitura: confirmar a estrutura durável do pedido HIL.
-  - Comportamento confirmado: tabela com status, notificação, token em hash, decisão e expiração.
+
+Tutorial prático: [WorkflowAgent com Skills e HIL pelas APIs](../usuario/TUTORIAL-101-WORKFLOW-SKILLS-HIL.md).

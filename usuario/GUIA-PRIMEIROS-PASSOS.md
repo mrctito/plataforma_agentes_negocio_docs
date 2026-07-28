@@ -61,24 +61,28 @@ ingestão), use:
 ./run.sh +a +w +s
 ```
 
-A porta da API segue estritamente a variável `FASTAPI_PORT` do arquivo `.env`. O valor padrão da aplicação é
-**5555**. Não invente outra porta: confira o `.env` se tiver dúvida.
+A porta da API segue estritamente a variável obrigatória `FASTAPI_PORT` do arquivo `.env`; não existe fallback
+operacional que autorize presumir `8000`, `5555` ou qualquer outro valor. Monte uma URL base uma vez e reutilize-a
+em todas as chamadas:
 
-> Observação importante: os exemplos de cliente externo em `examples/` (Python/JavaScript) usam, por padrão,
-> `http://localhost:8000` no texto histórico. A porta real do seu ambiente é a do `.env`. Para o ambiente
-> local padrão deste repositório, use `http://localhost:5555`. Sempre prefira a porta do `.env` real.
+```bash
+set -a
+source .env
+set +a
+export API_BASE_URL="http://${FASTAPI_HOST}:${FASTAPI_PORT}"
+```
 
 Para confirmar que a API respondeu, faça o health check:
 
 ```bash
-curl http://localhost:5555/health
+curl "${API_BASE_URL}/health"
 ```
 
 Uma resposta com `"status": "healthy"` indica que o boundary HTTP está de pé.
 
 > Pegadinha de ambiente: se a API parar de responder depois de ciclos de sobe/desce, trate primeiro como
 > **porta presa** (defeito comum em VS Code + WSL), não como bug de endpoint:
-> `sudo fuser -k 5555/tcp` e confirme com `sudo lsof -i :5555`.
+> `sudo fuser -k "${FASTAPI_PORT}/tcp"` e confirme com `sudo lsof -i :"${FASTAPI_PORT}"`.
 
 ## Passo 2: preparar credencial, e-mail e YAML
 
@@ -155,7 +159,7 @@ async function primeiraPergunta({ baseUrl, yamlText, question, userEmail, apiKey
 
 // Uso:
 primeiraPergunta({
-  baseUrl: 'http://localhost:5555',
+  baseUrl: window.location.origin,
   yamlText: '/* conteúdo do seu YAML de app/yaml/ */',
   question: 'Qual é o procedimento descrito no documento?',
   userEmail: 'developer@empresa.com',
@@ -193,7 +197,8 @@ Esse comando reconstrói a história da execução pelo log — é o jeito ofici
 ## Erros comuns no primeiro contato
 
 - **"API não está disponível"**: a API não subiu ou está em outra porta. Confira `./run.sh +a`, o `FASTAPI_PORT`
-  do `.env` e o health check em `/health`. Cheque também porta presa (`sudo fuser -k 5555/tcp`).
+  do `.env` e o health check em `/health`. Cheque também porta presa com
+  `sudo fuser -k "${FASTAPI_PORT}/tcp"`.
 - **HTTP 401 (não autenticado)**: a chave de acesso está ausente ou inválida. Confirme `authentication.access_key`
   no YAML, ou envie uma `X-API-Key` válida. Lembre: basta **uma** das duas fontes.
 - **HTTP 422 (validação)**: o corpo da requisição está fora do contrato. Para `qa`, o envelope correto é
@@ -213,7 +218,7 @@ modos de execução, com tratamento de erro e histórico.
 ## Evidências no código
 
 - `run.sh` — launcher oficial; flags `+a`, `+w`, `+s`.
-- `.env` — `FASTAPI_PORT` (default da aplicação: 5555).
+- `.env` — `FASTAPI_HOST` e `FASTAPI_PORT`, ambos lidos pelo bootstrap HTTP.
 - `app/ui/static/js/shared/layout-mestre-api.js` — `LAYOUT_API_CONFIG.endpoints`, headers, `_executarRequisicao`.
 - `app/ui/static/js/plataforma-agentes-ia-crypto.js` — `PayloadCrypto.buildEncryptedData`, `injectUserEmailInYaml`.
 - `src/api/routers/crypto_router.py` — `POST /crypto/session-key`.
