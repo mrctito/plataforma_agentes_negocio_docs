@@ -14,6 +14,10 @@ Referencias tecnicas principais:
 4. [README-TECNICO-AG-UI-REPLAY-E-AUDITORIA.md](../tecnico/README-TECNICO-AG-UI-REPLAY-E-AUDITORIA.md)
 5. [README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md](../tecnico/README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md)
 6. [templates/ag-ui-official-third-party](../templates/ag-ui-official-third-party)
+7. [README-TECNICO-CHAT-QA-FONTES-NA-UI.md](../tecnico/README-TECNICO-CHAT-QA-FONTES-NA-UI.md)
+   — como capturar as fontes do Q&A/RAG e exibi-las no chat. Leitura obrigatoria para quem monta
+   chat em modo Q&A: a resposta do modelo vem SEM citacao no corpo do texto, e relacionar as
+   fontes no final e responsabilidade do cliente.
 
 ## 0. Tres caminhos para colocar um chat conversando com um agente da plataforma
 
