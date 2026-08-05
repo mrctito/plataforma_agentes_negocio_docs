@@ -278,8 +278,9 @@ A criação do componente e o método definirConfiguracao(config) devem aceitar 
 - userEmail: e-mail obrigatório da sessão.
 - apiKey: chave obrigatória enviada no padrão da aplicação.
 - mode: modo de operação.
-- executionMode: aceito por compatibilidade, mas **sem efeito real** — o envio é sempre
-  síncrono (ver seção 16).
+- executionMode: aceito por compatibilidade, mas **não seleciona o transporte** — no ramo
+  clássico ele é normalizado para `direct_sync`; o SSE é ativado somente pelo gate
+  `agUiSseTransport` + renderer + modo/projeto descrito na seção 16.
 - chatRenderer: renderer declarado do chat (`jspuro` | `copilotkit`). Default `jspuro`.
   Junto com `mode` e `agUiSseTransport`, decide se o transporte AG-UI por SSE é ativado
   (ver seção 18.1).
