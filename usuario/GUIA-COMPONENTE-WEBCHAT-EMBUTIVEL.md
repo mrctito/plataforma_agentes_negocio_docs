@@ -276,7 +276,9 @@ A criação do componente e o método definirConfiguracao(config) devem aceitar 
   com YAML, payload criptografado nem API key no navegador.
 - yamlFilename: nome lógico do YAML.
 - userEmail: e-mail obrigatório da sessão.
-- apiKey: chave obrigatória enviada no padrão da aplicação.
+- apiKey: chave explícita enviada no padrão da aplicação quando o boundary exigir;
+  `setApiKey` vence a credencial resolvida do YAML, e o fluxo `projectKey` não envia essa
+  chave pelo navegador.
 - mode: modo de operação.
 - executionMode: aceito por compatibilidade, mas **não seleciona o transporte** — no ramo
   clássico ele é normalizado para `direct_sync`; o SSE é ativado somente pelo gate
