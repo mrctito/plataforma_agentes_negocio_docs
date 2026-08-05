@@ -120,14 +120,22 @@ O bloco `ag_ui.generative` no YAML **não é suficiente sozinho** para o chat em
 
 ```javascript
 const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
-  mode: 'deepagent',          // obrigatório: só deepagent ativa o transporte A2UI
+  mode: 'deepagent',          // obrigatório para gerar e transportar A2UI
   chatRenderer: 'jspuro',     // precisa bater com o chat_renderer do YAML
-  agUiSseTransport: true,     // opt-in explícito — sem isso, segue no síncrono de sempre
+  agUiSseTransport: true,     // opt-in explícito do transporte SSE
   // ... demais configs (yaml, email, apiKey) ...
 });
 ```
 
-Esse confinamento é proposital (ver `embeddable-chat-runtime.js::isAgUiSseTransportEnabled`): **qualquer** outra combinação de modo/renderer (Q&A/RAG, workflow, agente simples, ou `chatRenderer: 'copilotkit'` no mesmo componente) permanece no caminho síncrono de sempre, sem tentar o transporte SSE. Sem os três — `mode: 'deepagent'`, `chatRenderer: 'jspuro'` e `agUiSseTransport: true` — o A2UI nunca ativa mesmo com o YAML correto.
+Para **A2UI**, os três valores acima são obrigatórios porque a geração visual pertence ao
+supervisor DeepAgent. Isso não significa que o transporte SSE seja exclusivo do A2UI:
+Q&A/RAG também usa SSE com `mode: 'qa'`, e um host autorizado pode usá-lo com
+`projectKey`. `workflow`, agente clássico e `chatRenderer: 'copilotkit'` no componente
+continuam fora desse gate. Sem DeepAgent + `jspuro` + flag, o A2UI não ativa mesmo com o
+YAML correto.
+
+Para texto progressivo sem visualização, veja o
+[Tutorial 101 de chat com streaming](TUTORIAL-CHAT-PLATAFORMA.md).
 
 Os scripts que a página host precisa carregar estão na seção "Como carregar os scripts" mais abaixo.
 
@@ -265,8 +273,8 @@ Se você vai criar uma página HTML nova e quer que ela suporte A2UI no chat emb
 <!-- 4. Bridge ESM: liga os renderizadores (inclusive A2UI) e publica em window. -->
 <script type="module" src="/ui/static/js/shared/ag-ui-spec-render-bridge.js"></script>
 
-<!-- 5. Transporte SSE opt-in (só ativa em mode:'deepagent' + chatRenderer:'jspuro'
-     + agUiSseTransport:true; demais combinações seguem no síncrono de sempre). -->
+<!-- 5. Transporte SSE opt-in. Para A2UI: deepagent + jspuro + flag.
+     O mesmo transporte também atende texto em qa ou por projectKey. -->
 <script src="/ui/static/js/shared/embeddable-chat-ag-ui-transport.js"></script>
 <script type="module" src="/ui/static/js/shared/ag-ui-embeddable-transport-bridge.js"></script>
 
@@ -334,7 +342,9 @@ R: Via hook `buildPayloadText` (Parte 4). Independente do A2UI — funciona em q
 R: Abra a bancada `ui-embeddable-chat-test.html` (ou o WebChat v3) com um YAML que tenha o bloco `ag_ui.generative`, `mode: 'deepagent'`, `chatRenderer: 'jspuro'` e `agUiSseTransport: true`. Peça uma pergunta sem visualização (deve vir texto) e uma pedindo gráfico (deve desenhar). Se algo falhar, veja "Por que às vezes aparece texto" acima e confira o console do navegador.
 
 **P: O A2UI funciona com Q&A (RAG) ou Workflow?**
-R: Não. O transporte SSE só ativa com `mode: 'deepagent'` — Q&A/RAG, workflow e agente simples continuam sempre no caminho síncrono de sempre, mesmo que o YAML tenha (por engano) um bloco `ag_ui.generative` em outro contexto.
+R: Não. A geração A2UI pertence ao supervisor DeepAgent. Isso não impede Q&A/RAG de usar
+o mesmo transporte SSE para texto progressivo com `mode: 'qa'`; apenas não transforma o
+Q&A em gerador de A2UI. Workflow e agente clássico continuam fora desse gate no componente.
 
 **P: Qual a diferença entre a Superfície A e a Superfície B na prática?**
 R: Superfície A = chat embutível que também sabe desenhar (este tutorial). Superfície B = tela dedicada fora do chat, consumindo capability packs próprios (ex.: `retail_demo`) diretamente em `/ag-ui/runs`. São mecanismos independentes; um YAML pode ter os dois, mas eles não se misturam.

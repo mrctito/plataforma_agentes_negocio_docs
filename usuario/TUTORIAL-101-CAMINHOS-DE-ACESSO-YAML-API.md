@@ -128,6 +128,9 @@ chave; e o hash da release garante que o que está no ar é exatamente o que foi
 
 ## Onde aprofundar
 
+- Referência de cada tela administrativa que publica/ativa/religa (Caminhos 2 e 3), diagrama do
+  modelo de chaves de API e passo a passo de um incidente real de configuração defasada:
+  [TUTORIAL-101-CICLO-DE-VIDA-YAML-POR-CLIENTE.md](TUTORIAL-101-CICLO-DE-VIDA-YAML-POR-CLIENTE.md)
 - Modelo de dados completo (tabelas, FKs, invariantes, lifecycle de release):
   [README-SCHEMA-BANCO.md](../tecnico/README-SCHEMA-BANCO.md)
 - Gestão SaaS × Tenant (telas admin, endpoints de projeto/release/plano):

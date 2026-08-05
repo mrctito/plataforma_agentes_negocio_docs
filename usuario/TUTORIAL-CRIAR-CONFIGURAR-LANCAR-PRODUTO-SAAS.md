@@ -97,6 +97,12 @@ Auditoria consomem endpoints que já existiam no backend; consulte
 `docs/tecnico/README-TECNICO-GESTAO-SAAS-TENANT.md` para o contrato técnico completo dessas rotas e
 da gestão de planos.
 
+Antes de publicar/ativar, vale saber quem confere o resultado depois: o Painel do YAML mostra, para
+qualquer cliente, se a cópia publicada bate com o arquivo e se a release ativa realmente corresponde
+a ela — é o primeiro lugar a olhar se um cliente disser que não está vendo a mudança. Referência
+completa de cada tela deste ciclo (publicar, criar/ativar release, religar chave) e do modelo de
+chaves de API: [TUTORIAL-101-CICLO-DE-VIDA-YAML-POR-CLIENTE.md](TUTORIAL-101-CICLO-DE-VIDA-YAML-POR-CLIENTE.md).
+
 ## 6. Configure canais externos quando aplicável
 
 Um canal precisa apontar para o mesmo tenant e projeto SaaS e declarar a operação executada. Para a

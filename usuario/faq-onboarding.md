@@ -522,8 +522,10 @@ backend responde `HTTP 202`, ou quando vem `status_url`/`polling_url`/`stream_ur
 não recebe a resposta final na hora. Ele pega o `task_id` e faz polling em
 `GET /api/v1/status/{task_id}` (enviando o header `X-API-Key`), a cada ~1s, até o status virar terminal
 (`completed`, `failed`, `cancelled`) ou de pausa (`paused`, `awaiting_human_decision`). O resultado final
-sai de `result`/`data` do payload de status. O componente embutível faz esse polling automaticamente; um
-cliente próprio precisa implementá-lo.
+sai de `result`/`data` do payload de status. Isso descreve um **cliente clássico próprio**. O componente
+embutível atual não faz polling: seu ramo clássico normaliza o envio para `direct_sync`; quando o gate
+SSE está ativo, ele usa `POST /ag-ui/runs` e recebe eventos progressivos. Não confunda polling de job com
+streaming textual.
 
 Onde no código:
 - `app/ui/static/js/shared/layout-mestre-api.js` - `_extrairInfoAssincrona`
@@ -535,16 +537,35 @@ Pergunta: Devo construir meu próprio cliente HTTP ou usar o componente pronto?
 
 Resposta:
 Para telas da própria plataforma, a opção padrão é **embutir** o componente oficial
-`PrometeuEmbeddableChatRuntime` — ele já cuida de handshake, cifra, envio por modo, polling e
+`PrometeuEmbeddableChatRuntime` — ele cuida de handshake, cifra, envio clássico, transporte SSE opt-in e
 `correlation_id`, sem reabrir contrato. Criar um runtime de chat paralelo numa tela é violação de reuso.
 Construir cliente próprio (em Python, Node, etc.) só faz sentido para integração externa fora do browser
-da plataforma; nesse caso, siga o mesmo contrato de payload e criptografia dos exemplos canônicos, sem
-inventar formato.
+da plataforma; para streaming externo, use um BFF e `@ag-ui/client`, sem expor YAML ou API key.
 
 Onde no código:
 - `app/ui/static/js/shared/embeddable-chat-runtime.js`
 - `.claude/rules/componente-chat-embutivel.md`
 - `examples/rag_api_client.py`, `examples/rag_api_client.js` (clientes externos de referência)
+
+### 5.6.6
+Pergunta: Como ativo resposta em streaming no componente global?
+
+Resposta:
+Use `agUiSseTransport: true`, `chatRenderer: "jspuro"` e uma rota suportada: `mode: "qa"`,
+`mode: "deepagent"` ou `projectKey`. Carregue
+`embeddable-chat-ag-ui-transport.js` e `ag-ui-embeddable-transport-bridge.js` antes de
+`embeddable-chat-runtime.js`. O componente faz `POST /ag-ui/runs`, atualiza uma única bolha e preserva o
+`X-Correlation-Id`. Não use `EventSource`, pois ele faz `GET`, nem crie callback/parser `onToken`
+paralelo. Tutorial completo: [TUTORIAL-CHAT-PLATAFORMA.md](TUTORIAL-CHAT-PLATAFORMA.md).
+
+### 5.6.7
+Pergunta: Como aprovo uma pausa HIL recebida no streaming?
+
+Resposta:
+No componente, observe o evento `hil-pending` e chame `responderHil("approve")`,
+`responderHil("reject")` ou `responderHil("edit", edicoes)`. Não escreva a decisão como mensagem de
+chat: conversa e retomada HIL são contratos diferentes. Em integração externa, envie o `resume` ao BFF;
+o servidor reinjeta YAML, e-mail confiável e API key antes de chamar a plataforma.
 
 ## 6. Tools avançadas
 

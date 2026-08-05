@@ -678,6 +678,10 @@ AG-UI (Agent-Generated UI, ou Generative UI) é a capacidade de o DeepAgent resp
 
 O gráfico é **condicional**: a mesma pergunta, sem pedir visualização, continua vindo em texto normal. Só aparece quando o usuário pede explicitamente.
 
+Este capítulo configura **A2UI**, não o streaming textual em geral. Q&A/RAG e projetos
+resolvidos por `projectKey` podem receber texto por SSE sem declarar
+`multi_agents[].ag_ui.generative`.
+
 ### 35.2. O bloco `ag_ui.generative` no supervisor
 
 Diferente de um mecanismo mais antigo (baseado em subagente de saída dedicado e schema de dashboard versionado, removido do código), a configuração atual é **um único bloco** dentro do supervisor DeepAgent — não exige declarar nenhum subagente extra:
@@ -714,7 +718,7 @@ Quando o bloco existe, a plataforma binda a tool `generate_a2ui` diretamente no 
 
 ### 35.3. Como o gráfico chega ao chat
 
-O envelope A2UI (`{a2ui_operations: [createSurface, updateComponents]}`) sai como resultado da chamada `generate_a2ui` dentro do stream SSE de `POST /ag-ui/runs`. O componente de chat embutível (`PrometeuEmbeddableChatRuntime`) consome esse stream de forma **opt-in**: a tela host precisa ligar `agUiSseTransport: true` junto com `mode: 'deepagent'` e `chatRenderer: 'jspuro'` na configuração do componente — sem isso, o chat segue no caminho síncrono de sempre e nunca vê o envelope, mesmo com o YAML correto. Detalhe de ativação: [TUTORIAL-101-GENERATIVE-UI.md](../usuario/TUTORIAL-101-GENERATIVE-UI.md).
+O envelope A2UI (`{a2ui_operations: [createSurface, updateComponents]}`) sai como resultado da chamada `generate_a2ui` dentro do stream SSE de `POST /ag-ui/runs`. O componente de chat embutível (`PrometeuEmbeddableChatRuntime`) consome esse stream de forma **opt-in**: para A2UI, a tela host precisa ligar `agUiSseTransport: true` junto com `mode: 'deepagent'` e `chatRenderer: 'jspuro'` — sem isso, o chat não recebe o envelope, mesmo com o YAML correto. O transporte também atende Q&A e `projectKey`, mas esses caminhos não passam a gerar A2UI. Detalhe de ativação: [TUTORIAL-101-GENERATIVE-UI.md](../usuario/TUTORIAL-101-GENERATIVE-UI.md).
 
 ### 35.4. Erros a evitar (comprovados em runtime)
 
@@ -731,4 +735,5 @@ O envelope A2UI (`{a2ui_operations: [createSurface, updateComponents]}`) sai com
 - Tutorial passo a passo, catálogo de componentes e FAQ: [TUTORIAL-101-GENERATIVE-UI.md](../usuario/TUTORIAL-101-GENERATIVE-UI.md)
 - Renderer, ChartAdapter e como adicionar um componente novo: [README-TECNICO-AG-UI-RUNTIME-COMPARTILHADO-DO-FRONTEND.md](./README-TECNICO-AG-UI-RUNTIME-COMPARTILHADO-DO-FRONTEND.md), seção 7.2
 - Ativação por host e ordem de scripts do componente de chat: [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md)
+- Tutorial de chat textual em streaming, HIL, `projectKey` e fallback classico: [TUTORIAL-CHAT-PLATAFORMA.md](../usuario/TUTORIAL-CHAT-PLATAFORMA.md)
 - O YAML exemplo comentado: [app/yaml/rag-config-pdv-vendas-demo.yaml](../../app/yaml/rag-config-pdv-vendas-demo.yaml)

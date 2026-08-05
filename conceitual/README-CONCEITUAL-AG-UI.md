@@ -98,14 +98,27 @@ O slice atual tem sete capacidades estruturais importantes, todas confirmadas no
 
 Isso muda o enquadramento correto da feature. O AG-UI deste repositorio nao e apenas a demo de varejo. A demo de varejo e a vitrine mais tangivel do slice. Mas a infraestrutura ja serve tambem como boundary agentic mais amplo, com executionKind para deepagent, workflow e dominios governados.
 
-Existe ainda uma **segunda forma** de consumir AG-UI no frontend: o **componente global de chat embutivel** (`PrometeuEmbeddableChatRuntime`) e as telas que o hospedam — a pagina oficial de WebChat (`ui-webchat-v3.html`, host do componente desde 2026-06-10), a URL administrativa espelhada (`ui-admin-plataforma-webchat.html`) e a bancada de teste (`ui-embeddable-chat-test.html`). Quando o agente devolve um spec conhecido, o componente o desenha como UI visual; quando devolve so texto, mostra texto. Os specs reconhecidos hoje sao dois:
+Existe ainda uma **segunda forma** de consumir AG-UI no frontend: o **componente global de
+chat embutivel** (`PrometeuEmbeddableChatRuntime`). Ele aparece no WebChat v3, no detalhe
+de projeto DNIT/Gesdoc, na tela SaaS baseada em `projectKey` e na bancada isolada. Quando o
+agente devolve um spec conhecido, o componente o desenha como UI visual; quando devolve so
+texto, mostra texto progressivamente ou como resposta completa, conforme o transporte.
+
+O gate SSE do componente atende tres entradas: Q&A/RAG (`mode: "qa"`), DeepAgent
+(`mode: "deepagent"`) e projeto autorizado pelo servidor (`projectKey`). Em todos os casos,
+a host tambem precisa declarar `chatRenderer: "jspuro"` e `agUiSseTransport: true`. Os
+specs visuais reconhecidos hoje sao dois:
 
 - **CapabilitiesSpec** — painel "o que voce faz / sobre o que falo", com cards de assuntos e perguntas-exemplo clicaveis. Emitido pela tool builtin `descrever_capacidades`, auto-injetada em todo supervisor DeepAgent. Nunca expoe nomes internos de ferramenta ou subdominio. Chega no corpo da resposta normal, sem stream.
 - **A2UI** — visualizacao condicional gerada pelo supervisor DeepAgent (cards, tabela, graficos) quando o YAML declara o bloco `ag_ui.generative` e o usuario pede uma visualizacao. Chega pelo mesmo stream `/ag-ui/runs`, consumido de forma opt-in pelo componente.
 
 No caminho dedicado `POST /ag-ui/runs`, essa governanca vale para os dois runtimes agenticos suportados no boundary. A tela pede uma interface governada por `uiSpecId`, e o backend materializa esse identificador a partir do YAML do tenant no dono canonico correto: `multi_agents[].ag_ui.ui_specs` quando o alvo e DeepAgent e `workflows[].ag_ui.ui_specs` quando o alvo e Workflow. Na pratica, essa e a forma de configurar e reutilizar interfaces governadas no fluxo AG-UI dedicado.
 
-Atualizacao 2026-06-10: o **WebChat v3** (`ui-webchat-v3.html`) migrou para o componente embutivel (motor proprio removido) e carrega a cadeia AG-UI completa antes do componente — a renderizacao estruturada esta **ativa** nele, comprovada em runtime real. O detalhe de ativacao, seguranca e estado por tela esta no [guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md).
+Atualizacao 2026-08-04: o **WebChat v3** (`ui-webchat-v3.html`) usa o componente embutivel
+e carrega a cadeia AG-UI antes dele. O contrato do componente e do transporte possui testes
+focados; a rodada documental desta atualizacao nao executou um E2E browser + API-live do SSE.
+O detalhe de ativacao, seguranca e estado por tela esta no
+[guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md).
 
 ## 8. O que a feature disponibiliza
 

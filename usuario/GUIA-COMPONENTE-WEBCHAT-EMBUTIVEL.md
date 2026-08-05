@@ -60,9 +60,9 @@ O que isso significa na prática:
   os selects de modo/execução e os filtros de metadados, e re-liga as funções satélites
   (histórico localStorage, export, análise de log, alerta de background) sobre as APIs e
   eventos do componente;
-- a fonte de verdade do contrato HTTP (payload, criptografia, headers, endpoints,
-  correlation_id, sync/async) **não** é mais o JS da v3 — é a fonte única
-  `app/ui/static/js/shared/layout-mestre-api.js`, consumida pelo componente;
+- a fonte de verdade do ramo HTTP clássico (payload, criptografia, headers e endpoints)
+  é `app/ui/static/js/shared/layout-mestre-api.js`; o ramo SSE usa o transporte AG-UI
+  oficial descrito na seção 18.1;
 - qualquer dúvida sobre contrato, payload, criptografia, headers, endpoint ou tratamento
   de resposta deve ser resolvida lendo a fonte única e a seção 35.2 deste guia.
 
@@ -111,9 +111,15 @@ Runtime de polling assíncrono (histórico — ver nota da seção 16):
 
 app/ui/static/js/shared/ui-webchat-async-runtime.js
 
-Página host administrativa espelhada da v3:
+Transporte SSE do componente e bridge para o cliente AG-UI oficial:
 
-app/ui/static/ui-admin-plataforma-webchat.html
+app/ui/static/js/shared/embeddable-chat-ag-ui-transport.js
+app/ui/static/js/shared/ag-ui-embeddable-transport-bridge.js
+
+Cliente e store de estado AG-UI usados pela bridge:
+
+app/ui/static/js/shared/ag-ui-client.js
+app/ui/static/js/shared/ag-ui-state-store.js
 
 Página de teste isolada (bancada) do componente:
 
@@ -175,7 +181,7 @@ Isso é intencional.
 A v1 não deve mascarar contrato quebrado com fallback escondido.
 
 `window.WebchatAsyncRuntime` **não** é mais checado pelo componente (ver seção 16 —
-desde a decisão "Slice A", o chat é sync-only e não faz mais polling). O parâmetro
+desde a decisão "Slice A", o ramo clássico é `direct_sync` e não faz polling). O parâmetro
 `asyncRuntime` ainda é aceito no construtor só para não quebrar hosts/testes antigos que
 o injetam, mas nunca é usado internamente. A bancada de teste isolada
 (`ui-embeddable-chat-test.js`) ainda faz sua própria checagem fail-closed desse script por
@@ -183,9 +189,16 @@ herança histórica — isso é uma característica da bancada, não do componen
 
 Arquivos normalmente carregados antes do componente:
 
+```html
 <script src="/ui/static/js/shared/layout-mestre-api.js"></script>
 <script src="/ui/static/js/shared/ui-webchat-runtime-utils.js"></script>
+<script src="/ui/static/js/shared/embeddable-chat-ag-ui-transport.js"></script>
+<script type="module" src="/ui/static/js/shared/ag-ui-embeddable-transport-bridge.js"></script>
 <script src="/ui/static/js/shared/embeddable-chat-runtime.js"></script>
+```
+
+Os dois scripts de transporte são necessários somente quando a host habilita SSE. A
+bridge importa o cliente e o store AG-UI oficiais; a host não cria parser SSE próprio.
 
 ## 9. Fluxo mental do componente
 
@@ -198,8 +211,10 @@ O fluxo esperado é:
 5. O componente valida se possui contexto mínimo para enviar.
 6. O usuário digita uma pergunta.
 7. O componente monta o payload seguindo o padrão da ui-webchat-v3.html.
-8. O componente chama a API usando o cliente canônico.
-9. O componente recebe a resposta.
+8. O componente escolhe um dos dois caminhos oficiais: cliente clássico, ou
+   `POST /ag-ui/runs` com SSE quando o gate opt-in está satisfeito.
+9. No SSE, o componente atualiza uma única mensagem provisória conforme os fragmentos
+   chegam; no clássico, recebe a resposta completa.
 10. O componente atualiza mensagens, estado, correlation_id, última resposta e histórico.
 11. A host page pode reagir por eventos ou lendo o estado exportado.
 
@@ -215,7 +230,7 @@ Ela deve cuidar de:
 - informar userEmail;
 - informar apiKey;
 - escolher mode;
-- escolher executionMode;
+- escolher conscientemente entre o ramo clássico e o SSE;
 - informar filtros de metadados, se houver;
 - ouvir eventos do componente;
 - ler estado exportado quando necessário;
@@ -238,7 +253,8 @@ O componente deve cuidar de:
 - renderizar campo de digitação;
 - renderizar botão de envio;
 - controlar estado de envio;
-- impedir duplo envio acidental;
+- impedir reentrada enquanto o estado ainda é `sending`; durante `streaming`, a host deve
+  evitar iniciar outra rodada (limite da seção 18.3);
 - montar o payload conforme a ui-webchat-v3.html;
 - enviar a pergunta para a API;
 - tratar resposta;
@@ -256,6 +272,8 @@ A criação do componente e o método definirConfiguracao(config) devem aceitar 
 - apiBaseUrl: base da API. Se não for informada, usa a origem da página.
 - yamlContent: conteúdo YAML em texto puro.
 - encryptedPayload: payload já preparado pela host page, usado quando a host não trabalhar com yamlContent.
+- projectKey: chave de projeto autorizada pelo servidor. Quando usada, não pode competir
+  com YAML, payload criptografado nem API key no navegador.
 - yamlFilename: nome lógico do YAML.
 - userEmail: e-mail obrigatório da sessão.
 - apiKey: chave obrigatória enviada no padrão da aplicação.
@@ -266,7 +284,8 @@ A criação do componente e o método definirConfiguracao(config) devem aceitar 
   Junto com `mode` e `agUiSseTransport`, decide se o transporte AG-UI por SSE é ativado
   (ver seção 18.1).
 - agUiSseTransport: liga o transporte AG-UI por SSE opt-in (default `false`). Só ativa de
-  fato quando `mode === 'deepagent'` **e** `chatRenderer === 'jspuro'` (ver seção 18.1).
+  fato com `chatRenderer === 'jspuro'` e uma destas rotas: `mode === 'qa'`,
+  `mode === 'deepagent'` ou `projectKey` presente (ver seção 18.1).
 - scopeRef: bucket lógico da conversa (ex.: `projectId` de um projeto DNIT). Quando
   informado, viaja no envio como `scope_ref` e o backend grava/lista o turno naquele
   bucket; vazio = bucket geral.
@@ -294,9 +313,13 @@ A criação do componente e o método definirConfiguracao(config) devem aceitar 
 
 O componente só deve permitir envio quando existir contexto mínimo válido.
 
-Contexto mínimo (regra canônica de `app/ui/CLAUDE.md`: YAML e x-api-key são fontes **alternativas** de credencial — basta uma — e o e-mail é obrigatório):
+Contexto mínimo (regra canônica de `app/ui/CLAUDE.md`: a configuração deve vir de uma
+fonte autorizada e o e-mail é obrigatório):
 
-- **uma** fonte de credencial: `yamlContent` **ou** `encryptedPayload` **ou** `apiKey`;
+- no fluxo explícito, **uma** fonte de credencial/configuração: `yamlContent` **ou**
+  `encryptedPayload` **ou** `apiKey`;
+- no fluxo de projeto, `projectKey` sozinho como fonte de configuração; o servidor resolve
+  a configuração autorizada;
 - `userEmail` (sempre obrigatório).
 
 O `apiKey` separado **não** é exigido quando o YAML já carrega a credencial em
@@ -353,38 +376,33 @@ O modo `agent` é puro: vai para `POST /agent/execute` sem `mode: "deepagent"` (
 
 Quem decide como cada modo monta payload e chama backend é a fonte única `layout-mestre-api.js` (dispatch do `enviar()`), consumida pelo componente.
 
-## 16. Modos de execução (Slice A: componente é sync-only)
+## 16. Modos de execução: clássico síncrono ou SSE
 
-**Mudança de comportamento em relação a versões anteriores deste guia:** o componente
-**não oferece mais** escolha real de modo de execução. Comprovado em
-`embeddable-chat-runtime.js`, função `normalizeExecutionMode` — qualquer valor recebido
-(`auto`, `direct_sync`, `direct_async` ou vazio) é normalizado para `direct_sync`, sempre:
+O componente tem dois transportes, escolhidos por contrato:
 
-```javascript
-function normalizeExecutionMode(_mode) {
-    // Decisão do usuário (Slice A): TODO webchat opera SOMENTE em modo síncrono...
-    return 'direct_sync';
-}
-```
+1. **Ramo clássico:** qualquer `executionMode` recebido (`auto`, `direct_sync`,
+   `direct_async` ou vazio) é normalizado para `direct_sync`. O componente não faz
+   polling.
+2. **Ramo SSE:** quando `agUiSseTransport === true`, `chatRenderer === 'jspuro'` e o modo
+   é `qa`/`deepagent` ou existe `projectKey`, a rodada usa `POST /ag-ui/runs` e recebe
+   eventos AG-UI progressivos.
 
 Na prática:
 
 - o campo `executionMode` e o método `setExecutionMode(mode)` continuam existindo na API
   (compatibilidade), mas **não mudam** o comportamento de envio;
-- o componente não faz mais polling de status: a resposta final chega na própria resposta
-  HTTP do envio (`result.dados`), sem ramo assíncrono;
-- o backend é chamado com `execution_mode: "direct_sync"` em todo envio, e o caminho
-  síncrono é protegido por um timeout guard no backend (DeepAgent síncrono);
-- `cancelar()` (seção 18.3) só cancela o `fetch` em andamento — não existe mais estado
-  "aguardando polling" para cancelar;
+- no clássico, a resposta final chega no mesmo request HTTP;
+- no SSE, `run_id` e `thread_id` pertencem ao protocolo AG-UI e não substituem o
+  `correlation_id` criado pelo backend;
+- `cancelar()` tem o limite descrito na seção 18.3;
 - `window.WebchatAsyncRuntime` (`ui-webchat-async-runtime.js`, método
   `waitForTaskCompletion`) deixou de ser usado pelo componente — o arquivo continua
   existindo e ainda é carregado por algumas páginas (herança histórica), mas nenhuma
   chamada real acontece a partir do componente embutível.
 
-Se você leu uma versão anterior deste guia com `auto`/`direct_sync`/`direct_async` como
-escolhas reais com comportamento distinto, isso está desatualizado: essa escolha existia
-antes da decisão "Slice A" e não existe mais no caminho do chat embutível.
+Se você leu uma versão anterior deste guia dizendo que o componente inteiro era
+"sync-only", leia como "o ramo clássico é `direct_sync`". O streaming SSE é outro
+transporte e está ativo apenas pelo gate opt-in acima.
 
 ## 17. API pública principal
 
@@ -464,7 +482,12 @@ Quando a resposta do backend traz um **spec AG-UI conhecido** (um bloco de dados
 
 "Spec AG-UI" aqui significa: um objeto que o agente devolve descrevendo *o que mostrar* (ex.: "estes são meus assuntos", "este é o dashboard de vendas"), seguindo um contrato fixo. O componente reconhece o contrato, valida que ele é seguro e o transforma em DOM. AG-UI = *Agent-Generated UI*, interface gerada pelo agente.
 
-> Importante não confundir transporte com detecção: o **CapabilitiesSpec** chega no corpo da resposta normal dos endpoints de chat (`/rag/execute`, `/agent/execute`, ou a resposta síncrona equivalente em modo `deepagent`), sem stream. Já o **A2UI** (item 2 abaixo) chega pelo mesmo runtime de streaming `/ag-ui/runs` descrito no [manual técnico de AG-UI](../tecnico/README-TECNICO-AG-UI.md), consumido de forma **opt-in** por um transporte dedicado dentro do próprio componente — o componente ainda não expõe timeline/sidecar como a Superfície B, só extrai o envelope final e desenha. Nos dois casos, a detecção do spec acontece sobre uma mensagem já normalizada, então o restante desta seção vale igual para ambos.
+> Importante não confundir transporte com detecção: o **CapabilitiesSpec** pode chegar no
+> corpo da resposta clássica. O transporte SSE de `/ag-ui/runs` também atende texto
+> progressivo de Q&A/RAG, DeepAgent e projetos autorizados por `projectKey`; ele não existe
+> somente para A2UI. O **A2UI** (item 2 abaixo) é uma capacidade visual adicional do
+> DeepAgent. Nos dois transportes, a detecção do spec acontece sobre uma mensagem já
+> normalizada.
 >
 > Se em vez deste componente pronto você precisa falar o protocolo AG-UI diretamente — UI própria consumindo `POST /ag-ui/runs` por SSE, ou um cliente React com **CopilotKit** via `POST /ag-ui/copilotkit/runs` — o guia dedicado é [GUIA-AG-UI-SDK-TERCEIROS.md](GUIA-AG-UI-SDK-TERCEIROS.md) (seção 0 explica quando cada caminho faz sentido; seção 2.2 mapeia, recurso a recurso, o que dos recursos do CopilotKit funciona de fato com os DeepAgents desta plataforma).
 
@@ -505,8 +528,8 @@ A feature tem duas partes: carregar os scripts certos (uma vez, na host) e, opci
 <script src="/ui/static/js/shared/embeddable-chat-spec-runtime.js"></script>
 <!-- bridge ESM: liga os renderizadores oficiais e publica o runtime montado em window -->
 <script type="module" src="/ui/static/js/shared/ag-ui-spec-render-bridge.js"></script>
-<!-- transporte SSE opt-in do A2UI (só ativa em mode:'deepagent' + chatRenderer:'jspuro' +
-     agUiSseTransport:true na config do componente; demais combinações seguem síncronas) -->
+<!-- transporte SSE opt-in: qa, deepagent ou projectKey + chatRenderer:'jspuro' +
+     agUiSseTransport:true; demais combinações seguem no ramo clássico -->
 <script src="/ui/static/js/shared/embeddable-chat-ag-ui-transport.js"></script>
 <script type="module" src="/ui/static/js/shared/ag-ui-embeddable-transport-bridge.js"></script>
 <!-- por fim, o componente -->
@@ -517,7 +540,7 @@ A ordem importa porque cada peça depende da anterior: o adapter ApexCharts só 
 
 **2. CapabilitiesSpec não precisa de mais nada:** `renderStructured` já vem **ligado por padrão**. Para forçar o modo 100% texto (ex.: um parceiro que só quer texto), passe `renderStructured: false` na configuração, ou chame `componente.setRenderStructured(false)` em runtime.
 
-**3. A2UI precisa de YAML + 3 flags na config do componente.** No backend: declare o bloco `multi_agents[].ag_ui.generative` no supervisor DeepAgent (catálogo de componentes + `chat_renderer`). Na host: ligue `mode: 'deepagent'`, `chatRenderer: 'jspuro'` e `agUiSseTransport: true` na configuração do componente — as três juntas ativam o transporte SSE opt-in que consome o envelope A2UI. Passo a passo: [TUTORIAL-101-GENERATIVE-UI.md](TUTORIAL-101-GENERATIVE-UI.md). O CapabilitiesSpec continua auto-injetado, sem depender dessas flags.
+**3. A2UI precisa de YAML + 3 flags na config do componente.** No backend: declare o bloco `multi_agents[].ag_ui.generative` no supervisor DeepAgent (catálogo de componentes + `chat_renderer`). Na host: ligue `mode: 'deepagent'`, `chatRenderer: 'jspuro'` e `agUiSseTransport: true` na configuração do componente — as três juntas ativam o transporte SSE opt-in que pode carregar o envelope A2UI. Essas flags são requisitos do A2UI, não de todo streaming textual: Q&A e `projectKey` também podem usar SSE sem declarar visualização generativa. Passo a passo: [TUTORIAL-101-GENERATIVE-UI.md](TUTORIAL-101-GENERATIVE-UI.md). O CapabilitiesSpec continua auto-injetado, sem depender dessas flags.
 
 **4. Onboarding (opcional):** para mostrar o painel de capacidades já no **estado vazio** do chat (antes da primeira pergunta), como boas-vindas:
 
@@ -549,10 +572,10 @@ O CapabilitiesSpec ainda carrega quatro flags de segurança (`htmlAllowed`, `scr
 
 ### Estado real por host (honesto)
 
-A feature está **ativa** apenas onde o wiring completo foi carregado:
+A renderização estruturada está ativa apenas onde o wiring visual completo foi carregado.
+Isso é diferente do transporte textual SSE, que pode existir sem os renderizadores A2UI:
 
-- **`ui-webchat-v3.html`** (a página oficial de WebChat, host do componente desde 2026-06-10): carrega a cadeia AG-UI completa (ApexCharts → adapter → adapter-apexcharts → spec-runtime) **antes** do componente, com gate falha-fechada que exige o spec runtime resolvido → **ATIVA** (render estruturado comprovado em runtime real no gate da Fase B).
-- **`ui-admin-plataforma-webchat.html`** (espelho administrativo da v3): reutiliza a mesma cadeia visual e operacional da host oficial → **ATIVA**.
+- **`ui-webchat-v3.html`** (a página oficial de WebChat, host do componente desde 2026-06-10): carrega a cadeia AG-UI completa (ApexCharts → adapter → adapter-apexcharts → spec-runtime) **antes** do componente, com gate falha-fechada que exige o spec runtime resolvido → **ATIVA pelo wiring e pelos testes focados**. A rodada documental de 2026-08-04 não repetiu prova browser + API-live.
 - **`ui-embeddable-chat-test.html`** (bancada de teste isolada): wiring completo → **ATIVA**.
 
 ## 18.2 HIL (Human-in-the-loop) no componente
@@ -590,15 +613,21 @@ await chat.responderHil('edit', edicoes);      // aprovar com argumentos editado
 
 ## 18.3 Cancelamento de envio
 
-`cancelar()` (alias `cancel()`) aborta o envio síncrono em andamento via `AbortController`
-(o `signal` é repassado à fonte única). Desde a decisão "Slice A" (seção 16) o componente
-não faz mais polling de status, então não existe mais um caminho assíncrono separado para
+`cancelar()` (alias `cancel()`) aborta o envio enquanto o estado global ainda é `sending`.
+No ramo clássico, o `AbortController` é repassado à fonte única. Desde a decisão "Slice A"
+(seção 16) o componente não faz polling, então não existe um job assíncrono separado para
 cancelar.
 
 O componente materializa o estado "cancelado" na conversa (não vira erro genérico), emite
-o evento `send-cancelled` e fica pronto para o próximo envio. Durante um envio, o próprio
-DOM do componente mostra o botão **Cancelar**; a host pode ligar atalhos próprios (a v3
-liga a tecla Esc) chamando `cancelar()`.
+o evento `send-cancelled` e fica pronto para o próximo envio. No SSE, depois que o primeiro
+fragmento muda o estado para `streaming`, a API pública atual não garante o cancelamento da
+conexão inteira. Não prometa cancelamento durante todo o stream sem evolução e teste do
+contrato.
+
+O mesmo recorte vale para reentrada: o guard de `enviarPergunta` e o composer desabilitado
+checando `sending` não serializam uma segunda rodada iniciada durante `streaming`. Hosts não
+devem disparar `perguntar(...)` enquanto o estado público estiver em qualquer uma dessas
+duas fases.
 
 ## 18.4 Hidratação de conversa (restaurar histórico e mensagens externas)
 
@@ -753,10 +782,11 @@ Status técnicos esperados na v1:
 - idle
 - ready
 - sending
-- waiting
+- streaming
 - error
 
-Outros status podem existir no futuro, mas a v1 deve ser simples.
+`completed` e `cancelled` podem aparecer como resultado/status de mensagem ou interação;
+não são novos estados globais do componente.
 
 ## 21. Eventos emitidos
 
@@ -894,18 +924,15 @@ ao escolher uma conversa → `chat.carregarSessao({ sessionId, messages: store.o
 **Ordem de init importa:** monte o componente (que cria/segura o store) **antes** de ler o
 histórico — inverter quebra o load.
 
-**Estado de adoção (comprovado lendo cada host):**
+**Estado de adoção confirmado nos hosts atuais:**
 
 - **WebChat v3** (`ui-webchat-v3.js`, método `_montarChatEmbutivel`) — `mode: 'backend'`, sem
   `scopeRef` (bucket geral). As conversas vêm do banco via `/chat/conversations`, não mais de
   `localStorage`.
 - **Detalhe de projeto DNIT** (`gesdoc-project-detail.js`, método `chatInicializarSessoes`) —
   `mode: 'backend'`, `scopeRef: projectId` (cada projeto só vê as próprias conversas).
-- **admin-plataforma-webchat** (`ui-admin-plataforma-webchat.js`) — ainda em `mode: 'local'`
-  (localStorage, chave `webchat_admin_history`); não foi migrado para o modo backend.
-
-A persistência em **banco** deixou de ser backlog: já existe e está em produção em dois dos
-três hosts. O endpoint físico é `src/api/routers/chat_conversations_router.py` (`GET`/`PATCH`/
+A persistência em **banco** deixou de ser backlog: já existe nos dois hosts listados. O
+endpoint físico é `src/api/routers/chat_conversations_router.py` (`GET`/`PATCH`/
 `DELETE /chat/conversations`); o `POST` de "nova conversa" não existe como chamada de rede —
 é um gesto local do front (gera o id, o backend persiste o turno lazy no primeiro envio com
 `conversation_id`).
@@ -921,7 +948,8 @@ O objetivo é separar dois problemas diferentes:
 1. validar se o componente funciona corretamente por conta própria;
 2. validar depois se uma tela host específica conseguiu embutir o componente corretamente.
 
-A implementação não deve depender exclusivamente da página ui-admin-plataforma-webchat.html para provar que o componente funciona.
+A implementação não deve depender exclusivamente de uma página host de produto para provar
+que o componente funciona.
 
 Deve existir uma página de teste isolada, simples e dedicada ao componente, capaz de montar o PrometeuEmbeddableChatRuntime diretamente em um container controlado.
 
@@ -948,7 +976,10 @@ Essa página de teste deve permitir validar:
 - envio programático com perguntar(texto);
 - comportamento básico de redimensionamento.
 
-Também deve existir um teste automatizado E2E para essa página isolada.
+Existe teste Playwright para a página isolada. Na cobertura atual, ele valida o ramo
+clássico com a chamada interceptada; não deve ser apresentado como prova API-live do SSE.
+O contrato incremental SSE é protegido por testes frontend focados do transporte e do
+componente.
 
 O teste E2E deve abrir a página de teste do componente, aplicar uma configuração válida, enviar uma pergunta e validar o comportamento real do componente.
 
@@ -962,7 +993,8 @@ O teste deve validar, no mínimo:
 - o histórico interno recebeu a interação;
 - o correlation_id foi preservado quando retornado pelo backend.
 
-A tela host oficial ui-admin-plataforma-webchat.html também pode ter testes próprios, mas ela não deve ser o único lugar onde o componente é validado.
+Cada tela host real também pode ter testes próprios, mas ela não deve ser o único lugar
+onde o componente é validado.
 
 A regra é:
 
@@ -993,27 +1025,43 @@ Se a host não reservar altura útil, o chat não terá onde crescer.
 
 ## 25. Exemplo mínimo de host page
 
+HTML:
+
+```html
 <div id="chat-host" style="width:100%;height:480px"></div>
 <div id="chat-summary"></div>
 
 <script src="/ui/static/js/shared/layout-mestre-api.js"></script>
 <script src="/ui/static/js/shared/ui-webchat-runtime-utils.js"></script>
+<script src="/ui/static/js/shared/embeddable-chat-ag-ui-transport.js"></script>
+<script type="module" src="/ui/static/js/shared/ag-ui-embeddable-transport-bridge.js"></script>
 <script src="/ui/static/js/shared/embeddable-chat-runtime.js"></script>
+<script src="/ui/static/js/minha-host-chat.js"></script>
+```
 
-<script>
+JavaScript da host, mantido em arquivo externo:
+
+```javascript
+document.addEventListener('DOMContentLoaded', () => {
   const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
-    yamlContent: 'mode: rag',
+    yamlContent: window.minhaTela.yamlContent,
     yamlFilename: 'config.yaml',
-    userEmail: 'analista@empresa.com',
-    apiKey: 'x-api-key-real',
+    userEmail: window.minhaTela.userEmail,
+    apiKey: window.minhaTela.apiKey,
     mode: 'qa',
+    chatRenderer: 'jspuro',
+    agUiSseTransport: true,
     onChange(state) {
       document.getElementById('chat-summary').textContent = state.statusMessage || '';
     }
   });
 
   chat.mount(document.getElementById('chat-host'));
-</script>
+});
+```
+
+Veja explicação passo a passo, exemplos de DeepAgent/HIL, `projectKey` e fallback clássico
+no [Tutorial 101 de chat com streaming](TUTORIAL-CHAT-PLATAFORMA.md).
 
 ## 26. Exemplo com host reagindo ao estado exportado
 
@@ -1068,16 +1116,19 @@ root.addEventListener('prometeu-embeddable-chat:error', (event) => {
 function syncHostIntoComponent(snapshot) {
   chat.definirConfiguracao({
     yamlContent: snapshot.yamlContent,
-    encryptedPayload: snapshot.payloadContent,
     yamlFilename: snapshot.yamlFilename || 'config.yaml',
     userEmail: snapshot.userEmail,
     apiKey: snapshot.apiKey,
     mode: modeSelect.value,
-    executionMode: executionModeSelect.value,
+    chatRenderer: 'jspuro',
+    agUiSseTransport: true,
     metadataFilters: parseMetadataFilters(),
   });
 }
 ```
+
+O exemplo escolhe `yamlContent`. Se a host usar `encryptedPayload` ou `projectKey`, ela
+deve omitir as outras fontes; não envie duas configurações concorrentes.
 
 A ideia importante:
 
@@ -1085,20 +1136,18 @@ A ideia importante:
 - o componente consome o contexto;
 - os dois continuam desacoplados.
 
-## 29. Página administrativa espelhada da v3
+## 29. Hosts reais para estudar
 
-A página abaixo deve espelhar a mesma experiência visual e operacional da host oficial:
+Os melhores exemplos atuais são:
 
-app/ui/static/ui-admin-plataforma-webchat.html
+- `app/ui/static/ui-webchat-v3.html` + `app/ui/static/js/ui-webchat-v3.js`: host geral;
+- `app/ui/static/ui-dnit-project-detail.html` +
+  `app/ui/static/js/gesdoc-project-detail.js`: Q&A/RAG com SSE e sessões por projeto;
+- `app/ui/static/ui-saas-project.html` + `app/ui/static/js/saas-project-public.js`: host
+  que passa `projectKey`, sem YAML nem API key no navegador.
 
-Ela deve demonstrar:
-
-- carga de YAML same-origin;
-- sincronização com o contexto da página;
-- troca de modo e execução fora do chat;
-- uso do componente como bloco principal da tela;
-- ausência de cliente HTTP paralelo;
-- ausência de renderização duplicada da conversa.
+Em todos, procure o mesmo desenho: a host carrega contexto e monta o componente; o
+componente é dono do envio e da conversa.
 
 ## 30. Validação isolada do componente
 
@@ -1112,7 +1161,7 @@ Essa tela deve permitir validar:
 
 - carregamento ou injeção de YAML;
 - preenchimento manual de pergunta;
-- envio real para a API;
+- envio ao boundary do navegador, real ou interceptado conforme o teste;
 - montagem correta do payload;
 - recebimento e exibição da resposta;
 - preservação de correlation_id;
@@ -1147,7 +1196,8 @@ O teste deve abrir a tela de teste isolada do componente e validar, no mínimo:
 - correlation_id preservado quando retornado;
 - histórico interno atualizado.
 
-O teste deve validar o componente de verdade, independente de ele estar embutido na tela host final.
+O teste valida o componente isolado de verdade, mas com boundary clássico interceptado.
+Ele não prova uma sessão SSE contra uma API viva.
 
 ## 31.1 Definição de 100% verde: componente embutível **E** backend, ambos verdes
 
@@ -1231,7 +1281,6 @@ A v1 está pronta quando:
 - obterUltimaInteracao() retorna a última interação;
 - o componente funciona em tela de teste isolada;
 - existe teste E2E validando o componente isoladamente;
-- a tela ui-admin-plataforma-webchat.html funciona como espelho administrativo da host oficial;
 - não existe cliente HTTP paralelo;
 - não existe renderização duplicada da conversa fora do componente;
 - não existe código legado morto relacionado ao componente;
@@ -1265,11 +1314,28 @@ O campo mode existe para isso.
 
 ### Posso forçar síncrono ou assíncrono?
 
-Não mais.
+Não pelo campo `executionMode`.
 
-Desde a decisão "Slice A" (seção 16), o componente é sempre síncrono. O campo
-`executionMode`/`setExecutionMode` ainda é aceito por compatibilidade, mas não muda o
-comportamento — o valor é sempre normalizado para `direct_sync` internamente.
+Desde a decisão "Slice A" (seção 16), o ramo clássico é sempre `direct_sync`. Para receber
+texto progressivo, use o gate explícito `agUiSseTransport: true` +
+`chatRenderer: 'jspuro'` com Q&A, DeepAgent ou `projectKey`.
+
+### Existe callback `onToken` para eu montar o texto?
+
+Não. O componente atualiza a própria bolha e publica snapshots por `onChange(state)` ou
+`prometeu-embeddable-chat:state-change`. Durante a resposta, observe
+`state.status === 'streaming'` e a última mensagem sem recriar o DOM.
+
+### Posso usar `EventSource` para chamar `/ag-ui/runs`?
+
+Não. `EventSource` usa `GET`, enquanto o endpoint oficial exige `POST` com JSON. Carregue o
+transporte e a bridge oficiais.
+
+### Q&A também pode usar SSE ou isso é só para A2UI?
+
+Q&A usa SSE com `mode: 'qa'`, `chatRenderer: 'jspuro'` e
+`agUiSseTransport: true`. A2UI é uma capacidade visual adicional do DeepAgent, não o nome
+do transporte.
 
 ### Como pego a última resposta sem ler o DOM?
 
@@ -1316,11 +1382,12 @@ Antes de considerar uma nova host page pronta, confirme:
 - existe um container com altura útil;
 - as dependências canônicas foram carregadas;
 - o componente foi montado no container correto;
-- a host page injeta yamlContent ou encryptedPayload;
+- a host page injeta uma fonte autorizada: yamlContent, encryptedPayload ou projectKey;
 - a host page injeta userEmail;
-- a host page injeta apiKey;
+- a host page injeta apiKey somente quando o fluxo autorizado exige;
 - a host page define mode;
-- a host page define executionMode ou aceita o padrão auto;
+- a host page decide se habilita o gate SSE; `executionMode` não seleciona transporte;
+- se habilitar SSE, carrega transporte e bridge antes do componente;
 - a host page observa correlationId ou lastResponse se precisar de rastreabilidade;
 - a host page não criou cliente HTTP paralelo;
 - a host page não recriou a renderização da conversa;
@@ -1332,8 +1399,8 @@ Antes de considerar uma nova host page pronta, confirme:
 
 Estado da convergência após a migração da Fase B (2026-06-10):
 
-- O componente, a URL administrativa espelhada (`ui-admin-plataforma-webchat.html`) **e a página oficial
-  `ui-webchat-v3.html`** usam `layout-mestre-api.js` como ponto único de payload,
+- O componente e a página oficial `ui-webchat-v3.html` usam `layout-mestre-api.js` como
+  ponto único do ramo clássico de payload,
   criptografia e HTTP — incluindo o HTTP das decisões HIL (`enviarDecisaoHil`/
   `enviarResumeHil`). O motor próprio da v3 (~2.100 linhas de payload/fetch/criptografia/
   HIL/polling/markdown) foi removido; a v3 é host fino.
@@ -1348,13 +1415,15 @@ contrato (`tests/frontend/ui_gesdoc_project_detail_runtime_contract.test.js`,
 `ui_gesdoc_project_detail_layout_contract.test.js`) garantem que o runtime paralelo não
 volta.
 
-## 35.2 Comunicação com a API: o fluxo HTTP real, ponta a ponta
+## 35.2 Comunicação com a API: os dois fluxos reais
 
 Esta seção consolida em um único lugar a sequência HTTP que o componente executa por
 baixo. Ela não substitui a montagem de payload (detalhada em
 [README-TECNICO-WEBCHAT-MONTAGEM-PAYLOAD.md](../tecnico/README-TECNICO-WEBCHAT-MONTAGEM-PAYLOAD.md)),
 mas explica a ordem real das chamadas — útil para quem precisa diagnosticar a rede ou
 construir uma interface própria (ver [GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](GUIA-INTEGRADOR-CHAT-PLATAFORMA.md)).
+
+### 35.2.1 Ramo clássico (`direct_sync`)
 
 1. **Handshake criptográfico** — quando há YAML, `PayloadCrypto.buildEncryptedData(...)`
    chama `POST /crypto/session-key` e recebe `{ session_id, public_key_pem, expires_at,
@@ -1383,6 +1452,25 @@ construir uma interface própria (ver [GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](GUIA-
    `WebchatAsyncRuntime.waitForTaskCompletion` que fazia esse papel não é mais chamado por
    ele (ver seção 16).
 
+### 35.2.2 Ramo SSE (`POST /ag-ui/runs`)
+
+Quando o gate opt-in da seção 16 está satisfeito, o componente não passa pelos endpoints
+clássicos acima. Ele:
+
+1. monta `thread_id`, `run_id`, `user_email`, `input` e exatamente uma fonte de
+   configuração;
+2. mapeia `qa` para `execution_kind: "rag_qa"`, mantém `deepagent`, ou envia somente
+   `project_key` para o servidor resolver a execução autorizada;
+3. faz `POST /ag-ui/runs` com `Accept: text/event-stream` pelo cliente AG-UI oficial;
+4. captura `X-Correlation-Id` sem inventar o identificador;
+5. acumula os eventos de texto em uma única mensagem provisória e a substitui pela
+   mensagem final;
+6. preserva `sources` do Q&A, envelope A2UI e pendência HIL quando presentes.
+
+O host observa esse processo por `onChange`; não cria `fetch`, parser SSE ou bolhas
+paralelas. O exemplo copiável está no
+[Tutorial 101 de chat com streaming](TUTORIAL-CHAT-PLATAFORMA.md).
+
 ![35.2 Comunicação com a API: o fluxo HTTP real, ponta a ponta](../assets/diagrams/docs-guia-componente-webchat-embutivel-diagrama-01.svg)
 
 ## 36. Resumo final
@@ -1394,8 +1482,8 @@ a tela host configura e observa; o componente renderiza e conversa.
 A página ui-webchat-v3.html é hoje o exemplo real de host completo do componente — para
 ver "como integrar", leia o `ui-webchat-v3.js`.
 
-Para dúvidas de contrato HTTP (payload, YAML, criptografia, endpoints, correlation_id),
-a fonte de verdade é a fonte única `layout-mestre-api.js` e a seção 35.2 deste guia.
+Para dúvidas do ramo clássico, a fonte de verdade é `layout-mestre-api.js`. Para o SSE,
+consulte o transporte, a bridge e a seção 35.2 deste guia.
 
 O componente embutível é o único motor de conversa das telas migradas: sem lógica
 duplicada, sem cliente paralelo e sem legado morto para trás.

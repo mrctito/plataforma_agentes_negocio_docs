@@ -1,329 +1,372 @@
-# Tutorial: montar um chat funcional na plataforma, ponta a ponta
+# Tutorial 101: chat da plataforma com resposta em streaming
 
-Este é o tutorial guiado de chat da Plataforma de Agentes de IA. Diferente do
-[GUIA-PRIMEIROS-PASSOS.md](GUIA-PRIMEIROS-PASSOS.md), que entrega **uma** resposta com o menor número de passos,
-aqui você vai construir um **chat funcional completo**, reutilizável, cobrindo os 4 modos de conversa, o
-tratamento de erro e a leitura de `correlation_id`.
+Este tutorial ensina a embutir o componente global `PrometeuEmbeddableChatRuntime` em uma tela web, enviar uma mensagem para a API da plataforma e exibir a resposta enquanto ela chega.
 
-O caminho **recomendado** é embutir o componente oficial da plataforma, o `PrometeuEmbeddableChatRuntime`. Ele já
-resolve handshake criptográfico, cifra do YAML, envio por modo e `correlation_id`, sem reabrir contrato. Criar um
-runtime de chat paralelo numa tela é violação de reuso — quando o componente atende, embuta o componente; quando
-faltar algo, a decisão correta é **evoluí-lo**, não criar outro ao lado.
+Ao terminar, voce sabera:
 
-> Pré-requisito: faça o [GUIA-PRIMEIROS-PASSOS.md](GUIA-PRIMEIROS-PASSOS.md) primeiro. Lá você sobe a aplicação
-> (`./run.sh +a`, host e porta obrigatórios de `FASTAPI_HOST`/`FASTAPI_PORT`), prepara credencial + e-mail + YAML e
-> confirma que a API
-> responde. Este tutorial assume que esse ambiente já está de pé e **não repete** essa preparação.
+- quando usar streaming SSE e quando manter o fluxo classico;
+- como carregar os scripts na ordem correta;
+- como montar um chat Q&A/RAG com uma unica bolha crescendo durante a resposta;
+- como usar DeepAgent com Human-in-the-Loop (HIL);
+- como usar `projectKey` sem entregar YAML ou API key ao navegador;
+- como acompanhar estado, fontes e `correlation_id` sem criar um protocolo paralelo;
+- como diagnosticar os erros mais comuns.
 
-Leituras de aprofundamento que este tutorial cruza, sem duplicar:
+> **Regra principal:** se a tela esta dentro da plataforma e ja possui o YAML ou o `projectKey`, use o componente global. Nao monte `fetch`, parser SSE, payload, criptografia ou bolhas de mensagem por conta propria.
 
-- [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md) — contrato completo do componente
-  (API pública, eventos, estado exportado, configuração).
-- [README-TECNICO-WEBCHAT-MONTAGEM-PAYLOAD.md](../tecnico/README-TECNICO-WEBCHAT-MONTAGEM-PAYLOAD.md) — como o corpo HTTP é
-  montado por baixo, com fidelidade ao código.
-- [GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](GUIA-INTEGRADOR-CHAT-PLATAFORMA.md) — para quem precisa de uma interface
-  100% própria, sem o componente.
+## 1. O que significa streaming neste chat
 
-## 1. O modelo mental: host configura, componente conversa
+No fluxo com SSE, a tela faz um `POST /ag-ui/runs`. A conexao HTTP permanece aberta e a API envia eventos AG-UI progressivamente.
 
-A separação de responsabilidades é o coração deste tutorial:
+O componente global cuida do trabalho dificil:
 
-- **a tela host** (sua página) decide o contexto: qual YAML usar, qual e-mail, qual chave de acesso, qual modo de
-  conversa e qual modo de execução. Ela reserva um espaço na página e observa o que acontece.
-- **o componente** renderiza a conversa (lista de mensagens, campo de pergunta, botão, status), monta o payload
-  pelo caminho canônico, chama a API, trata a resposta e o erro, preserva o `correlation_id` e mantém o histórico
-  da sessão.
+1. monta o payload oficial;
+2. abre o `POST` com `Accept: text/event-stream`;
+3. interpreta os eventos AG-UI;
+4. cria uma unica mensagem provisoria do assistente;
+5. atualiza essa mesma mensagem conforme novos fragmentos chegam;
+6. substitui a mensagem provisoria pela mensagem final;
+7. preserva fontes, HIL, A2UI, `thread_id` e o `correlation_id` oficial.
 
-A tela host **não** desenha a conversa, **não** monta payload por conta própria, **não** cria cliente HTTP
-paralelo e **não** inventa `correlation_id`. Se você se pegar fazendo qualquer uma dessas coisas, parou de usar o
-componente e começou a reabrir o problema que ele existe para resolver.
+Portanto, streaming nao significa criar uma bolha para cada token. A experiencia correta e uma unica bolha crescendo.
 
-## 2. Conceitos que este tutorial usa
+### 1.1. Streaming SSE e fluxo classico nao sao a mesma coisa
 
-Estes conceitos já foram introduzidos no quickstart; aqui vão ganhar profundidade prática:
+| Necessidade | Configuracao | Transporte usado |
+|---|---|---|
+| Q&A/RAG com texto progressivo | `mode: "qa"`, `chatRenderer: "jspuro"` e `agUiSseTransport: true` | `POST /ag-ui/runs`, SSE |
+| DeepAgent com texto progressivo e HIL | `mode: "deepagent"`, `chatRenderer: "jspuro"` e `agUiSseTransport: true` | `POST /ag-ui/runs`, SSE |
+| Projeto autorizado pelo servidor | `projectKey` e `agUiSseTransport: true` | `POST /ag-ui/runs`, SSE |
+| Streaming desativado ou modo nao suportado | flag ausente/falsa, outro renderer ou modo como `workflow` | endpoints classicos, resposta completa |
 
-- **Modos de conversa (`mode`)**: definem como a pergunta é processada e qual endpoint é chamado.
-  - `qa` (RAG, pergunta e resposta sobre uma base de conhecimento) -> `POST /rag/execute`;
-  - `agent` (agente que executa uma tarefa) -> `POST /agent/execute`;
-  - `deepagent` (supervisão multi-agente, o caminho moderno de agentes) -> `POST /agent/execute` com
-    `mode: "deepagent"`;
-  - `workflow` (grafo determinístico de etapas) -> `POST /workflow/execute`.
-  O alias `rag` é aceito e tratado internamente como `qa`.
-- **`executionMode` (campo vestigial, sem efeito real):** existe na API do componente por
-  compatibilidade, mas o envio é sempre síncrono — o componente não faz mais polling de
-  status. Detalhe e evidência de código na seção 7.
-- **`correlation_id`**: o identificador oficial da execução, lido do header `X-Correlation-Id` ou do corpo. O
-  componente apenas captura, exibe e propaga; nunca cria.
+O componente falha fechado. Ativar apenas `agUiSseTransport: true` nao obriga qualquer modo a usar SSE. O renderer tambem precisa ser `jspuro`, e o fluxo precisa ser Q&A, DeepAgent ou baseado em `projectKey`.
 
-## 3. Carregar as dependências obrigatórias
+## 2. Antes de comecar
 
-O componente reutiliza a infraestrutura canônica da plataforma e **falha fechado** se faltar qualquer
-dependência. Carregue os scripts compartilhados **antes** do componente, nesta ordem:
+Voce precisa de:
+
+- uma pagina servida pela aplicacao;
+- um elemento HTML que recebera o chat;
+- o e-mail real do usuario autenticado;
+- exatamente uma fonte de configuracao autorizada:
+  - `yamlContent` ja carregado pelo host; ou
+  - `encryptedPayload`; ou
+  - `projectKey` resolvido pelo servidor;
+- API key somente quando o fluxo autorizado realmente exigir e o host ja a possuir.
+
+Nunca:
+
+- exponha YAML, token ou API key no console;
+- grave segredo em HTML;
+- invente `correlation_id`;
+- envie `projectKey` junto com YAML explicito;
+- use `EventSource`, pois ele faz `GET` e o endpoint oficial exige `POST` com JSON;
+- concatene tokens manualmente no DOM.
+
+## 3. Carregue os scripts na ordem correta
+
+Exemplo de HTML do host:
 
 ```html
+<div id="chat-container" aria-label="Conversa com o assistente"></div>
+
+<!-- Opcionais quando o host recebe YAML criptografado. -->
+<script src="/ui/static/js/plataforma-agentes-ia-crypto.js"></script>
+<script src="/ui/static/js/shared/yaml-access-key-extractor.js"></script>
+
+<!-- Fundacao compartilhada do chat. -->
 <script src="/ui/static/js/shared/layout-mestre-api.js"></script>
 <script src="/ui/static/js/shared/ui-webchat-runtime-utils.js"></script>
-<script src="/ui/static/js/shared/embeddable-chat-runtime.js"></script>
-```
 
-Essas dependências precisam existir no escopo global do browser: `window.prometeuLayoutMestreApi` e
-`window.WebchatRuntimeUtils`. Se uma delas faltar, o construtor do componente lança erro explícito (por exemplo,
-"prometeuLayoutMestreApi é obrigatório para o chat embutível."). Isso é intencional: a v1 não mascara contrato
-quebrado com fallback escondido.
+<!-- Necessarios quando a tela usa DeepAgent com HIL. -->
+<script src="/ui/static/js/shared/ui-webchat-hil-contract.js"></script>
+<script src="/ui/static/js/shared/hil-review-panel.js"></script>
 
-> `window.WebchatAsyncRuntime` (`ui-webchat-async-runtime.js`) não precisa mais ser carregado por esse motivo: o
-> componente não faz polling de status desde a decisão "Slice A" (seção 7) e não checa mais essa dependência.
->
-> O helper de criptografia (`plataforma-agentes-ia-crypto.js`, que expõe `window.PayloadCrypto`) também precisa
-> estar disponível quando o fluxo usar YAML em texto, pois é ele quem faz o handshake e a cifra. Quando a host já
-> entrega um payload pré-criptografado, esse passo é dispensado.
+<!-- Transporte SSE oficial e ponte para o componente global. -->
+<script src="/ui/static/js/shared/embeddable-chat-ag-ui-transport.js"></script>
+<script type="module" src="/ui/static/js/shared/ag-ui-embeddable-transport-bridge.js"></script>
 
-## 4. Reservar o container
-
-O componente ocupa 100% da largura e da altura do container onde é montado. Quem define o tamanho é a host. Sem
-altura útil, o chat não tem onde crescer:
-
-```html
-<div id="chat-host" style="width: 100%; height: 480px; min-height: 480px;"></div>
-```
-
-## 5. Montar o chat: exemplo funcional completo
-
-O exemplo abaixo é um chat completo e funcional usando o componente oficial. Ele cria a instância, monta no
-container, expõe um controle para trocar de modo, e reage aos eventos do componente (resposta, erro, mudança de
-estado). Os nomes de método e de evento são fiéis a `app/ui/static/js/shared/embeddable-chat-runtime.js`.
-
-```html
-<!-- Controles da host (fora do componente) -->
-<label>Modo:
-  <select id="seletor-modo">
-    <option value="qa">qa (RAG)</option>
-    <option value="agent">agent</option>
-    <option value="deepagent">deepagent</option>
-    <option value="workflow">workflow</option>
-  </select>
-</label>
-
-<!-- Container do chat -->
-<div id="chat-host" style="width:100%;height:480px;min-height:480px"></div>
-
-<!-- Painel observador da host -->
-<div id="barra-status"></div>
-<div id="rotulo-correlation"></div>
-
-<!-- Dependências canônicas (ordem importa) -->
-<script src="/ui/static/js/shared/layout-mestre-api.js"></script>
-<script src="/ui/static/js/shared/ui-webchat-runtime-utils.js"></script>
+<!-- Componente global. -->
 <script src="/ui/static/js/shared/embeddable-chat-runtime.js"></script>
 
-<script>
-  // 1) Contexto resolvido pela host. Em produção, o YAML vem da carga same-origin
-  //    (?yaml=<arquivo>.yaml) e o e-mail da sessão federada. Aqui ilustramos os campos.
-  const contexto = {
-    yamlContent: '/* conteúdo do seu YAML de app/yaml/ */',
-    yamlFilename: 'config.yaml',
-    userEmail: 'developer@empresa.com',
-    apiKey: '',                 // vazio se o YAML já traz authentication.access_key
-  };
+<!-- Codigo especifico da sua tela. Em producao, mantenha-o em arquivo externo. -->
+<script src="/ui/static/js/minha-tela-chat.js"></script>
+```
 
-  const barraStatus = document.getElementById('barra-status');
-  const rotuloCorrelation = document.getElementById('rotulo-correlation');
+O host pode omitir os scripts opcionais que nao usa. Nao altere a ordem relativa entre transporte, bridge e componente.
 
-  // 2) Cria o componente. onChange e onEvent são os canais de observação da host.
+## 4. Exemplo A: Q&A/RAG com texto em streaming
+
+Este e o exemplo recomendado quando a tela ja carregou um YAML RAG pelo resolvedor oficial da plataforma.
+
+### 4.1. HTML
+
+```html
+<main>
+  <h1>Assistente de documentos</h1>
+  <p id="chat-status" role="status">Preparando o chat...</p>
+  <div id="chat-container"></div>
+</main>
+```
+
+Inclua tambem os scripts da secao anterior.
+
+### 4.2. JavaScript do host
+
+Crie `minha-tela-chat.js`:
+
+```javascript
+document.addEventListener("DOMContentLoaded", () => {
+  // Valores entregues pelos boundaries oficiais da tela.
+  const yamlTextAlreadyLoaded = window.minhaTela.yamlContent;
+  const authenticatedUserEmail = window.minhaTela.userEmail;
+  const apiKeyFromAuthorizedHost = window.minhaTela.apiKey;
+  const statusElement = document.getElementById("chat-status");
+
   const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
-    yamlContent: contexto.yamlContent,
-    yamlFilename: contexto.yamlFilename,
-    userEmail: contexto.userEmail,
-    apiKey: contexto.apiKey,
-    mode: 'qa',                 // modo de conversa inicial
-    // Observação reativa: estado exportado do componente
+    yamlContent: yamlTextAlreadyLoaded,
+    yamlFilename: "configuracao-rag.yaml",
+    userEmail: authenticatedUserEmail,
+    apiKey: apiKeyFromAuthorizedHost,
+    mode: "qa",
+    chatRenderer: "jspuro",
+    agUiSseTransport: true,
+
     onChange(state) {
-      barraStatus.textContent = state.statusMessage || '';
-      rotuloCorrelation.textContent = state.correlationId
-        ? `correlation_id: ${state.correlationId}`
-        : 'correlation_id: aguardando backend';
-    },
-    // Observação por evento tipado (question-sent, response-received, error, ...)
-    onEvent(evento) {
-      if (evento.type === 'error') {
-        console.error('Falha visível do chat:', evento.payload);
+      if (statusElement) {
+        statusElement.textContent = `Estado do chat: ${state.status}`;
+      }
+
+      // A observacao publica e por estado. Nao existe callback publico onToken.
+      const lastMessage = state.messages.at(-1);
+      if (
+        state.status === "streaming" &&
+        lastMessage?.role === "assistant"
+      ) {
+        console.debug("Resposta em andamento", {
+          receivedCharacters: lastMessage.content.length,
+        });
       }
     },
   });
 
-  // 3) Monta no container. mount(container) retorna o elemento raiz do componente,
-  //    útil para ouvir eventos DOM no namespace prometeu-embeddable-chat:*.
-  const root = chat.mount(document.getElementById('chat-host'));
-
-  root.addEventListener('prometeu-embeddable-chat:response-received', (event) => {
-    console.log('Resposta recebida:', event.detail);
-  });
-
-  // 4) Troca de modo de conversa, sem recriar o componente.
-  document.getElementById('seletor-modo').addEventListener('change', (e) => {
-    chat.setMode(e.target.value); // 'qa' | 'agent' | 'deepagent' | 'workflow'
-  });
-</script>
-```
-
-O usuário digita no campo do componente e envia por clique ou Enter (Shift+Enter quebra linha). Você também pode
-disparar perguntas por código: `chat.perguntar('texto')` envia direto, e `chat.preencherPergunta('texto')` apenas
-preenche o campo sem enviar.
-
-## 6. Os 4 modos de conversa na prática
-
-A única coisa que muda entre os modos, do ponto de vista da host, é o valor de `mode`. O componente cuida do
-endpoint e do formato do corpo:
-
-```javascript
-// Q&A (RAG) sobre uma base de conhecimento — POST /rag/execute
-chat.setMode('qa');
-chat.perguntar('Quais são os requisitos descritos no manual?');
-
-// Agente que executa uma tarefa — POST /agent/execute
-chat.setMode('agent');
-chat.perguntar('Gere um resumo executivo do contrato anexado.');
-
-// DeepAgent (supervisão multi-agente, caminho moderno) — POST /agent/execute (mode=deepagent)
-chat.setMode('deepagent');
-chat.perguntar('Coordene a análise técnica e a checagem de conformidade do documento.');
-
-// Workflow (grafo determinístico de etapas) — POST /workflow/execute
-chat.setMode('workflow');
-chat.perguntar('Inicie o fluxo de triagem com os dados informados.');
-```
-
-Para Q&A, você pode restringir a busca por metadados:
-
-```javascript
-chat.setMode('qa');
-chat.setMetadataFilters({ categoria: 'engenharia', ano: 2026 });
-chat.perguntar('O que mudou nas normas técnicas neste ano?');
-```
-
-Para Workflow, é comum manter uma thread de conversa:
-
-```javascript
-chat.setMode('workflow');
-chat.setThreadId('thread-atendimento-001');
-chat.perguntar('Continuar o atendimento do protocolo anterior.');
-```
-
-> Diferença entre `agent` e `deepagent`: ambos chamam `/agent/execute`, mas `deepagent` força o runtime moderno
-> de supervisão multi-agente (`mode: "deepagent"` no corpo). No contrato público do backend, `mode` aceita apenas
-> `deepagent`; o `agent` clássico no corpo é legado e bloqueado. Detalhe em
-> [README-TECNICO-WEBCHAT-MONTAGEM-PAYLOAD.md](../tecnico/README-TECNICO-WEBCHAT-MONTAGEM-PAYLOAD.md).
-
-## 7. Por que não existem mais "3 modos de execução" (componente é sync-only)
-
-Versões anteriores deste tutorial descreviam `auto`/`direct_sync`/`direct_async` como três escolhas reais, com
-polling automático em `direct_async`. Isso mudou: uma decisão do produto ("Slice A") tornou o componente
-**sempre síncrono**. Evidência no código (`embeddable-chat-runtime.js`, função `normalizeExecutionMode`):
-
-```javascript
-function normalizeExecutionMode(_mode) {
-    // Decisão do usuário (Slice A): TODO webchat opera SOMENTE em modo síncrono...
-    return 'direct_sync';
-}
-```
-
-Na prática, para quem usa o componente:
-
-- `chat.setExecutionMode(...)` e a opção `executionMode` na configuração continuam aceitos (não quebram sua
-  chamada), mas **não mudam** o comportamento — o valor é sempre normalizado para `direct_sync`;
-- não existe mais polling: a resposta final chega na própria resposta HTTP do envio, sem passos extras;
-- para tarefas longas de agente, o backend continua respondendo síncrono, protegido por um timeout guard interno
-  (não é responsabilidade da host acompanhar progresso).
-
-Se você precisa **mesmo assim** de acompanhamento assíncrono manual (por exemplo, construindo uma interface
-própria fora do componente — seção 11), o mecanismo de polling ainda existe no backend e em
-`layout-mestre-api.js`/`ui-webchat-async-runtime.js`, mas o componente embutível não o aciona mais.
-
-## 8. Tratamento de erro e `correlation_id`
-
-O componente **mostra o erro real do backend** e preserva o `correlation_id`, em vez de esconder a falha. Você
-observa isso de três formas complementares:
-
-1. **Estado exportado** (via `onChange` ou `chat.obterEstadoAtual()`): os campos `lastError`, `status` (`error`) e
-   `correlationId`.
-2. **Evento de erro** (`prometeu-embeddable-chat:error` no DOM, ou `onEvent` com `evento.type === 'error'`).
-3. **Visualmente na conversa**: a mensagem de erro útil aparece na própria área de mensagens.
-
-```javascript
-const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
-  yamlContent: contexto.yamlContent,
-  userEmail: contexto.userEmail,
-  apiKey: contexto.apiKey,
-  mode: 'qa',
-  onChange(state) {
-    if (state.status === 'error' && state.lastError) {
-      // lastError já vem normalizado pelo componente.
-      console.error('Erro do backend:', state.lastError);
-      console.log('correlation_id para investigar o log:', state.correlationId);
-    }
-  },
+  chat.mount(document.getElementById("chat-container"));
 });
 ```
 
-Pontos de disciplina, fiéis ao contrato do produto:
+O componente renderiza textarea, botao de envio, mensagens, estado e `correlation_id`. O host nao precisa desenhar nem atualizar as bolhas.
 
-- **O `correlation_id` é sempre do backend.** O componente lê o header `X-Correlation-Id` ou o corpo; nunca
-  inventa um valor local. Se a barra de status exibir "aguardando backend", é porque a resposta ainda não trouxe o
-  id — o que, em erro, indica falha de observabilidade do backend, não algo para a UI contornar.
-- **Erro com mensagem útil deve aparecer.** Não engula o erro do backend; o componente já o surfa para o usuário e
-  preserva o id para rastreabilidade.
-- **Para investigar a causa raiz**, use o `correlation_id` capturado:
+### 4.3. O payload enviado pelo componente
 
-  ```bash
-  python -m src.log_analyzer query --correlation-id <correlation-id-capturado>
-  ```
+Para `mode: "qa"`, o componente mapeia o modo para `execution_kind: "rag_qa"` e envia o contrato oficial para `/ag-ui/runs`. O payload inclui, conforme o caso:
 
-## 9. Histórico e leitura de estado
+- `thread_id`;
+- `run_id`;
+- `user_email`;
+- `input` com a mensagem do usuario;
+- uma unica fonte de configuracao autorizada.
 
-O componente mantém o histórico da sessão em memória. A host pode lê-lo sem tocar no DOM:
+Nao monte esse JSON no host. A lista serve para entender o contrato, nao para duplicar o componente.
+
+### 4.4. Como ler a resposta final e as fontes
+
+Durante o stream, observe `state.status === "streaming"`. Quando a rodada termina, consulte o estado atual:
 
 ```javascript
-const estado = chat.obterEstadoAtual();   // snapshot completo (input, messages, lastResponse, correlationId, ...)
-const historico = chat.obterHistorico();  // lista de interações da sessão
-const ultima = chat.obterUltimaInteracao(); // última pergunta + resposta associadas
-chat.limparHistorico();                   // limpa a conversa programaticamente
+const state = chat.getState();
+const finalResponse = state.lastResponse;
+const sources = finalResponse?.sources ?? [];
 ```
 
-A persistência externa (banco, Redis, localStorage) não é responsabilidade do componente; se você precisar dela,
-faça pela host consumindo o estado exportado e os eventos.
+No Q&A, as fontes chegam pelo estado AG-UI e sao preservadas no payload final. Nao tente deduzir fonte a partir do texto exibido.
 
-## 10. Checklist de uma host bem feita
+## 5. Exemplo B: DeepAgent com streaming e HIL
 
-- O container tem altura útil (sem altura, o chat não cresce).
-- As dependências canônicas (`layout-mestre-api.js`, `ui-webchat-runtime-utils.js` e, quando usar YAML em texto,
-  `plataforma-agentes-ia-crypto.js`) foram carregadas, na ordem certa, antes do componente.
-- A host injeta `yamlContent` (ou `encryptedPayload`) + `userEmail`; a chave vai por `apiKey` **ou** já está no
-  YAML em `authentication.access_key` (alternativas, basta uma; e-mail sempre obrigatório).
-- A host observa `correlationId`/`lastResponse` quando precisa de rastreabilidade.
-- A host **não** criou cliente HTTP paralelo, **não** recriou a renderização da conversa e **não** duplicou
-  montagem de payload.
+O HIL pausa a execucao e pede uma decisao humana. A decisao deve ser enviada pelo metodo proprio; escrever "aprovar" no chat nao resolve a interrupcao.
 
-## 11. Quando você não pode usar o componente
+```javascript
+const pendingHilElement = document.getElementById("hil-pending");
 
-Se a integração é fora do navegador da plataforma (um backend Python/Node consumindo a API), o componente não se
-aplica. Nesse caso, siga o mesmo contrato de payload e criptografia, mas implementando o cliente você mesmo:
+const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
+  yamlContent: window.minhaTela.yamlContent,
+  yamlFilename: "agente.yaml",
+  userEmail: window.minhaTela.userEmail,
+  apiKey: window.minhaTela.apiKey,
+  mode: "deepagent",
+  chatRenderer: "jspuro",
+  agUiSseTransport: true,
 
-- exemplos completos por linguagem em [README-EXEMPLOS-INTEGRACAO-API.md](README-EXEMPLOS-INTEGRACAO-API.md) e nos
-  arquivos `examples/`;
-- montagem exata do corpo em [README-TECNICO-WEBCHAT-MONTAGEM-PAYLOAD.md](../tecnico/README-TECNICO-WEBCHAT-MONTAGEM-PAYLOAD.md);
-- interface própria ponta a ponta (handshake + cifra + envio + polling) no
-  [GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](GUIA-INTEGRADOR-CHAT-PLATAFORMA.md).
+  onEvent(event) {
+    if (event.type === "hil-pending" && pendingHilElement) {
+      pendingHilElement.hidden = false;
+    }
+  },
+});
 
-Mesmo nesses casos, a regra de reuso continua valendo: dentro da plataforma, embuta o componente; criar um chat
-paralelo só se justifica com requisito comprovado que o componente não cobre — e a saída certa é evoluí-lo.
+chat.mount(document.getElementById("chat-container"));
 
-## 12. Evidências no código
+document.getElementById("approve-button").addEventListener("click", async () => {
+  await chat.responderHil("approve");
+});
 
-- `app/ui/static/js/shared/embeddable-chat-runtime.js` — `createGenericEmbeddableChat`, `mount`, `setMode`,
-  `setExecutionMode`, `perguntar`, `obterEstadoAtual`, eventos `prometeu-embeddable-chat:*`.
-- `app/ui/static/js/shared/layout-mestre-api.js` — endpoints por modo, headers, polling (`_extrairInfoAssincrona`).
-- `app/ui/static/js/shared/ui-webchat-async-runtime.js` — `waitForTaskCompletion` (loop de polling).
-- `app/ui/static/js/plataforma-agentes-ia-crypto.js` — `PayloadCrypto.buildEncryptedData`, `injectUserEmailInYaml`.
-- `src/api/routers/rag_router.py`, `agent_router.py`, `workflow_router.py` — boundaries por modo.
-- `src/api/routers/streaming_router.py` — `/api/v1/status/{task_id}` (acompanhamento assíncrono).
-- `.claude/rules/componente-chat-embutivel.md` — regra de reuso e estado de adoção do componente.
+document.getElementById("reject-button").addEventListener("click", async () => {
+  await chat.responderHil("reject");
+});
+```
+
+Decisoes aceitas:
+
+- `approve`: aprova e continua;
+- `reject`: rejeita;
+- `edit`: envia uma edicao estruturada no segundo argumento, quando o contrato da interrupcao permitir.
+
+Depois da decisao, o componente usa o fluxo de retomada existente. Ele preserva `thread_id` e o contexto HIL recebido do backend.
+
+> Generative UI/A2UI e uma capacidade adicional do DeepAgent. O mesmo transporte SSE tambem pode entregar apenas texto. Para renderizacao A2UI, carregue ainda os scripts e os renderers descritos no [Tutorial 101 de Generative UI](./TUTORIAL-101-GENERATIVE-UI.md).
+
+## 6. Exemplo C: `projectKey` sem YAML nem API key no navegador
+
+Use esta forma quando um projeto autorizado pelo servidor e a fonte de configuracao.
+
+```javascript
+const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
+  projectKey: "projeto-autorizado-pelo-servidor",
+  userEmail: window.sessao.email,
+  mode: "agent",
+  chatRenderer: "jspuro",
+  agUiSseTransport: true,
+});
+
+chat.mount(document.getElementById("chat-container"));
+```
+
+Neste fluxo, o navegador nao deve enviar:
+
+- `yamlContent`;
+- `encryptedPayload`;
+- `apiKey`;
+- `execution_kind` inventado pelo host.
+
+O servidor resolve a configuracao e o tipo de execucao autorizados para aquele projeto. Se `projectKey` competir com uma fonte explicita de YAML, o componente falha antes de iniciar a chamada.
+
+## 7. Exemplo D: fallback consciente para o fluxo classico
+
+Nem todo chat precisa de streaming. Para manter o fluxo classico e receber a resposta completa:
+
+```javascript
+const chat = window.EmbeddableChatRuntime.createGenericEmbeddableChat({
+  yamlContent: window.minhaTela.yamlContent,
+  userEmail: window.minhaTela.userEmail,
+  apiKey: window.minhaTela.apiKey,
+  mode: "workflow",
+  chatRenderer: "jspuro",
+  agUiSseTransport: false,
+});
+
+chat.mount(document.getElementById("chat-container"));
+```
+
+O componente usa o endpoint classico aplicavel e so exibe a resposta do assistente quando ela termina. No componente embutivel atual, esse ramo e `direct_sync`; configurar `executionMode: "direct_async"` ou `"auto"` nao transforma o componente em cliente de polling.
+
+Se um integrador construir um cliente classico proprio, polling e cancelamento assincrono pertencem ao contrato descrito no [Guia de integracao do chat](./GUIA-INTEGRADOR-CHAT-PLATAFORMA.md), e nao ao componente desta pagina.
+
+## 8. Identificadores: nao confunda os tres
+
+| Identificador | Quem fornece | Para que serve |
+|---|---|---|
+| `thread_id` | cliente/componente, preservado na conversa | agrupa as rodadas de uma conversa |
+| `run_id` | cliente/componente, novo por rodada | identifica a rodada no protocolo AG-UI |
+| `correlation_id` | boundary oficial da API | rastreia a execucao nos logs e volta no header `X-Correlation-Id` |
+
+O componente pode criar `thread_id` e `run_id` locais para o protocolo. Ele nunca cria `correlation_id`; apenas captura e exibe o valor devolvido pela API.
+
+## 9. Estados que o host pode observar
+
+Use `onChange(state)` ou `chat.getState()`:
+
+| `state.status` | Significado pratico |
+|---|---|
+| `idle` | componente ainda sem configuracao pronta |
+| `ready` | pronto para receber mensagem |
+| `sending` | requisicao iniciada e ainda sem o primeiro fragmento |
+| `streaming` | texto progressivo sendo recebido |
+| `error` | a rodada falhou |
+
+`completed` e `cancelled` podem aparecer como resultado/status de mensagem ou interacao. Eles nao devem ser tratados como novos estados globais do componente.
+
+## 10. Cancelamento: limite atual importante
+
+O botao/metodo de cancelamento do componente consegue interromper a rodada enquanto o estado global ainda e `sending`. Depois que o primeiro fragmento muda o estado para `streaming`, o contrato publico atual nao garante cancelamento de toda a conexao em andamento.
+
+Nao anuncie cancelamento durante todo o stream para o usuario final sem uma evolucao comprovada do componente e testes correspondentes.
+
+O guard de reentrada e o estado desabilitado do composer tambem cobrem apenas `sending`.
+Portanto, a host nao deve iniciar outra chamada programatica nem orientar uma segunda
+pergunta enquanto `state.status === "streaming"`. O runtime atual nao garante serializacao
+de duas rodadas sobrepostas depois do primeiro fragmento.
+
+## 11. Erros comuns e diagnostico
+
+Antes de alterar codigo, responda estas perguntas:
+
+1. `agUiSseTransport` esta exatamente como `true`?
+2. `chatRenderer` esta como `jspuro`?
+3. O modo e `qa`, `deepagent`, ou existe um `projectKey` valido?
+4. Os scripts do cliente AG-UI e da bridge carregaram antes do primeiro envio?
+5. O `userEmail` real foi informado?
+6. Existe exatamente uma fonte de configuracao?
+7. A requisicao e `POST /ag-ui/runs` com `Accept: text/event-stream`?
+8. O response devolveu `X-Correlation-Id`?
+9. A tela esta tentando usar `EventSource` ou parser SSE paralelo?
+10. A tela criou varias bolhas em vez de deixar o componente atualizar uma unica mensagem?
+
+Use a aba Network do navegador para confirmar metodo, endpoint, status e headers. Nao exponha corpo com segredo em print ou console.
+
+### 11.1. A resposta veio inteira, sem streaming
+
+Isso normalmente significa que o componente escolheu conscientemente o ramo classico. Confira flag, renderer e modo. `workflow` e `copilotkit`, por exemplo, nao entram no ramo SSE apenas porque a flag esta ligada.
+
+### 11.2. A chamada falhou antes de chegar ao backend
+
+Confirme se `projectKey` foi combinado indevidamente com YAML, payload criptografado ou API key. Esse conflito deve falhar fechado.
+
+### 11.3. Recebi texto, mas nao recebi fontes
+
+Confirme se a execucao Q&A produziu `sources` no snapshot de estado AG-UI. O componente preserva as fontes recebidas; ele nao as inventa.
+
+### 11.4. O HIL apareceu, mas digitar "sim" nao continuou
+
+Use `chat.responderHil("approve")`, `"reject"` ou `"edit"`. Mensagem de chat e decisao HIL sao canais diferentes.
+
+### 11.5. Posso usar `EventSource`?
+
+Nao. `EventSource` abre `GET`; `/ag-ui/runs` exige `POST` com JSON. Use o componente global dentro da plataforma ou o cliente AG-UI oficial atras de um BFF, conforme o guia de parceiros.
+
+### 11.6. Posso atualizar o DOM a cada token pelo host?
+
+Nao e necessario. Observe o estado apenas quando a tela precisar de telemetria ou controles externos. A bolha e responsabilidade do componente.
+
+## 12. Guia rapido para validar o exemplo
+
+1. Abra a pagina autenticada.
+2. Confirme que o chat chegou ao estado `ready`.
+3. Envie uma pergunta.
+4. Na aba Network, confirme `POST /ag-ui/runs` e `text/event-stream`.
+5. Observe uma unica bolha do assistente crescer.
+6. Ao final, confirme a resposta consolidada, as fontes quando existirem e o `correlation_id` exibido.
+7. No DeepAgent, force um caso HIL e confirme que os botoes chamam `responderHil`.
+8. Revise console e requests para garantir que nenhum segredo foi exposto.
+
+## 13. Evidencia e limite desta documentacao
+
+O contrato descrito aqui foi confirmado no componente global, no transporte AG-UI, na bridge, no endpoint `/ag-ui/runs`, nos hosts oficiais e nos testes focados existentes. A investigacao documental que originou este tutorial encontrou 53 testes frontend focados verdes para o transporte e o componente.
+
+Essa evidencia nao equivale a uma prova E2E com backend real e navegador real para todos os exemplos desta pagina. A rodada backend focada observada na investigacao nao encerrou normalmente, e nao houve validacao API-live do SSE nessa mesma rodada. Por isso, o tutorial separa o contrato executavel comprovado daquilo que ainda requer uma execucao integrada no ambiente de destino.
+
+## 14. Proximos guias
+
+- [Guia completo do componente WebChat embutivel](./GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md)
+- [Guia para integradores do chat da plataforma](./GUIA-INTEGRADOR-CHAT-PLATAFORMA.md)
+- [Guia AG-UI para SDKs e parceiros externos](./GUIA-AG-UI-SDK-TERCEIROS.md)
+- [Tutorial 101 de Generative UI](./TUTORIAL-101-GENERATIVE-UI.md)
+- [FAQ de onboarding](./faq-onboarding.md)

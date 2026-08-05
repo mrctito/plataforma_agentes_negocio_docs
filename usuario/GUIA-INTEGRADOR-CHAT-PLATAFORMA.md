@@ -18,8 +18,8 @@ não pôde ser confirmado no código, isso está declarado explicitamente — na
 A plataforma já oferece um **componente de chat pronto e reutilizável**, o
 `PrometeuEmbeddableChatRuntime`. Ele renderiza a conversa (lista de mensagens, campo de
 texto, botão enviar, linha de status com o identificador de rastreamento), monta o pedido,
-cifra o YAML, chama o endpoint certo de cada modo e faz o acompanhamento assíncrono — tudo
-isso seguindo o contrato oficial, sem você reimplementar nada.
+cifra o YAML, chama o endpoint clássico certo ou abre o transporte SSE AG-UI quando o gate
+opt-in está ativo — tudo seguindo o contrato oficial, sem você reimplementar nada.
 
 **Caminho recomendado (na esmagadora maioria dos casos):** embutir esse componente. Ele é o
 padrão oficial da própria plataforma. Veja como em
@@ -40,11 +40,24 @@ do payload em
 exemplos prontos em [README-EXEMPLOS-INTEGRACAO-API.md](README-EXEMPLOS-INTEGRACAO-API.md).
 O catálogo completo de endpoints está em [API-ENDPOINTS-SWAGGER.md](../tecnico/API-ENDPOINTS-SWAGGER.md).
 
+### Escolha o guia certo
+
+| Sua necessidade | Caminho recomendado |
+|---|---|
+| Tela servida pela plataforma, com chat pronto e streaming | [Tutorial 101 de chat com streaming](TUTORIAL-CHAT-PLATAFORMA.md) + componente global |
+| Interface externa própria, com tokens/eventos SSE | [Guia AG-UI para terceiros](GUIA-AG-UI-SDK-TERCEIROS.md) + BFF + `@ag-ui/client` |
+| Interface própria sobre endpoints clássicos | Continue neste guia |
+
+Da seção 1 em diante, este documento explica os **endpoints clássicos**. O endpoint
+`GET /api/v1/status/stream/{task_id}` acompanha o estado de um job assíncrono; ele não é o
+stream textual AG-UI de `POST /ag-ui/runs`.
+
 Uma observação honesta: construir do zero significa que **você** passa a ser responsável por
 cifrar o YAML corretamente, montar o envelope, escolher o endpoint por modo, ler o
-identificador de rastreamento e fazer o polling assíncrono. O componente já faz tudo isso. Não
-existe "promessa" de que sua UI própria seja melhor — ela só é necessária quando o requisito
-visual ou de plataforma realmente exige.
+identificador de rastreamento e, neste caminho clássico próprio, fazer polling quando pedir
+execução assíncrona. O componente atual não faz esse polling: seu ramo clássico é
+`direct_sync`, e o ramo progressivo usa SSE AG-UI. Não existe "promessa" de que sua UI própria
+seja melhor — ela só é necessária quando o requisito visual ou de plataforma realmente exige.
 
 ---
 

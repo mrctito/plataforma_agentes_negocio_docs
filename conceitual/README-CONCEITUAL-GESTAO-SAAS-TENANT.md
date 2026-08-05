@@ -1,5 +1,104 @@
 # Manual conceitual, executivo, comercial e estrategico: Gestao SaaS x Tenant e telas de administracao
 
+## 0. Comece por aqui — a corrente do YAML em linguagem simples (101)
+
+> Leia esta secao antes de qualquer outra se voce nunca mexeu neste modulo. Ela nao usa nome de
+> tabela: explica **o caminho que um arquivo YAML percorre ate virar o que o cliente consome**, e os
+> quatro mal-entendidos que mais causam problema. O restante do manual detalha cada peca.
+
+### O YAML tem duas vidas
+
+Existe **o arquivo** (`app/yaml/rag-config-cliente.yaml`, versionado no repositorio) e existe **uma
+copia congelada dele dentro do banco de dados**. Sao coisas diferentes, e essa e a fonte numero um de
+confusao.
+
+Quando voce publica um YAML, a plataforma **tira uma fotografia** do arquivo naquele instante e
+guarda essa fotografia. A partir dai o arquivo e a fotografia seguem vidas separadas: **editar o
+arquivo nao muda a fotografia ja tirada**. O cliente continua recebendo a fotografia antiga ate que
+alguem publique uma nova e a coloque no ar.
+
+Isso e proposital — e o que garante que ninguem quebre um cliente em producao editando um arquivo
+sem querer. Mas surpreende quem espera que salvar o arquivo ja mude o comportamento.
+
+### A corrente, do arquivo ate o cliente
+
+```text
+   arquivo em app/yaml/
+        │
+        │  PUBLICAR  →  tira uma fotografia. Cria, mas NAO coloca no ar.
+        ▼
+   versao guardada no banco  (a fotografia; imutavel)
+        │
+        │  CRIAR RELEASE  →  empacota a fotografia com um selo de conferencia (hash)
+        ▼
+   release  (nasce como rascunho, depois vira publicada)
+        │
+        │  ATIVAR  →  o unico passo que muda o que o cliente ve
+        ▼
+   release ativa  →  consumida por: chave de API, canal (WhatsApp/Instagram) ou projectKey
+```
+
+Uma analogia que ajuda: publicar e **imprimir uma edicao** do jornal; ativar e **colocar aquela
+edicao na banca**. Imprimir dez edicoes nao muda nada para o leitor — ele so le a que esta na banca.
+
+### Os quatro mal-entendidos que mais custam caro
+
+**1. "Editei o arquivo, entao o sistema ja mudou."** Nao. O arquivo alimenta a proxima fotografia;
+quem esta no ar continua sendo a fotografia anterior.
+
+**2. "Publiquei, entao ja esta valendo."** Nao. Publicar cria e nao tem efeito nenhum sobre o
+cliente. **Ativar** e o passo que troca o que ele recebe. Essa separacao existe para voce poder
+preparar a mudanca com calma e virar a chave na hora certa.
+
+**3. "Se eu corrigir a release, resolve."** Release nao se corrige: ela e imutavel de proposito, para
+que a auditoria consiga dizer exatamente o que estava no ar em cada data. Para mudar, publica-se
+outra e ativa-se.
+
+**4. "Existe um caminho so para chegar na configuracao."** Existem dois, e eles podem divergir em
+silencio: a tela pode enviar **o conteudo do arquivo** direto na requisicao, ou o sistema pode
+resolver **pela fotografia guardada no banco**, seguindo o vinculo do cliente. Se o arquivo foi
+atualizado e a fotografia nao, um caminho funciona e o outro nao — sem erro visivel ate alguem
+tentar.
+
+### Um caso real, para o conceito nao ficar abstrato
+
+Em 2026-08-01 uma entrega removeu chaves de configuracao que deixaram de existir. Os **arquivos**
+foram limpos na mesma entrega. As **fotografias no banco**, nao — e ninguem percebeu, porque nenhuma
+tela mostra "esta fotografia esta defasada em relacao ao arquivo".
+
+Resultado: 24 versoes ativas continuavam guardando configuracao que o codigo novo recusa. Quem
+consumisse pelo caminho do banco receberia erro; quem consumisse enviando o arquivo, nao. O sintoma
+so apareceu quando alguem foi rodar uma ingestao.
+
+A licao que vale guardar: **limpar o arquivo e so metade do trabalho** — a outra metade e republicar
+e reativar o que aponta para ele.
+
+### Quem consome a release ativa
+
+Tres caminhos, e vale saber qual e o do seu cliente:
+
+- **Chave de API** — o cliente manda um `X-API-Key` e a chave aponta para uma versao especifica.
+- **Canal** (WhatsApp/Instagram) — o canal aponta para uma versao.
+- **`projectKey`** — a requisicao cita o projeto e o sistema resolve pela release ativa dele.
+
+Cada um desses vinculos e reapontado separadamente. Publicar uma versao nova **nao** reaponta nenhum
+deles automaticamente — e por isso que "atualizar tudo" exige percorrer os tres.
+
+### Onde fazer cada coisa hoje
+
+- **Painel do YAML (o caminho normal):** é um **wizard**. Abre sem você informar nada, compara
+  arquivo x cópia x release x consumo de todos os clientes de uma vez e, quando acha alguém
+  recebendo versão antiga, conduz a atualização passo a passo — dizendo antes de cada passo o que
+  muda, para quem e como desfazer. As duas telas abaixo continuam existindo como caminho avançado,
+  para fazer um passo isolado fora da sequência guiada.
+- **Versoes e chaves por YAML:** tela de governanca de `tenant_yaml` (publica versao, emite, religa e
+  revoga chave).
+- **Projetos, releases e ativacao:** tela de produtos SaaS.
+
+> **Referência de cada tela, o modelo de chaves de API (uma chave pode ter vínculo direto E vínculo
+> de projeto ao mesmo tempo) e um passo a passo de incidente real:**
+> [TUTORIAL-101-CICLO-DE-VIDA-YAML-POR-CLIENTE.md](../usuario/TUTORIAL-101-CICLO-DE-VIDA-YAML-POR-CLIENTE.md).
+
 ## 1. O que e esta capacidade
 
 O modulo SaaS transforma um YAML de tenant, ja usado para configurar agentes, RAG, ingestao e ETL,

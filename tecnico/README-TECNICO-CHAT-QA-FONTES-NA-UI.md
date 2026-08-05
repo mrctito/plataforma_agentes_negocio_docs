@@ -21,37 +21,59 @@ nenhuma referência.
 
 ## 2. O contrato: `sources`
 
-A resposta do `ask` traz `sources: list[dict]` (`src/api/schemas/rag_models.py`), uma entrada por
-documento que sustentou a resposta. Os campos que interessam para exibição:
+A resposta do `ask` traz `sources: list[dict]` (`src/api/schemas/rag_models.py`), **uma entrada por
+documento** que sustentou a resposta. Os campos que interessam para exibição:
 
 | Campo | O que é | Sempre presente? |
 |---|---|---|
-| `reference` | **Referência pronta para exibir**: nome do documento + código da norma/manual + página, já formatada | Sim |
-| `title` / `document_title` | Nome do documento, desambiguado quando há repetição | Sim |
+| `reference` | **Referência pronta para exibir**: nome do documento + código da norma/manual + páginas, já formatada | Sim |
+| `title` / `document_title` | Nome do documento, desambiguado quando dois documentos diferentes têm o mesmo nome | Sim |
 | `codigo_norma` | Código da norma (ex.: `DNIT-TER 198_2021`) | Só quando o documento tem |
 | `codigo_manual` | Código do manual (ex.: `IPR 715`) | Só quando o documento tem |
-| `page` | Número da página do trecho | Quando o documento é paginado |
+| `pages` | **Todas** as páginas daquele documento que sustentaram a resposta, sem repetição e em ordem crescente (ex.: `["4", "5", "6"]`) | Quando o documento é paginado |
+| `page` | A **primeira** página da lista acima. Existe para consumidores que leem um valor escalar | Quando o documento é paginado |
 | `page_url` | Caminho/URL de origem do documento | Quando disponível |
-| `relevance_score` | Score de relevância do trecho | Sim |
-| `content_preview` | Trecho do conteúdo (200–300 caracteres) | Sim |
+| `relevance_score` | Score do **melhor** trecho recuperado daquele documento | Sim |
+| `content_preview` | Trecho do conteúdo (200–300 caracteres) do melhor trecho | Sim |
+
+### Uma linha por documento, não por trecho
+
+O RAG recupera **trechos**, e vários trechos costumam vir do mesmo PDF. O backend agrupa esses
+trechos por documento antes de devolver `sources`: cinco trechos de dois PDFs viram duas entradas,
+cada uma com as páginas consolidadas.
+
+```text
+DNIT 161_2022 ... .pdf | Norma DNIT-EM 161_2022 | p. 4, 5, 6
+DNIT 380_2022 ... .pdf | Norma DNIT 380_2022 | p. 6
+```
+
+O agrupamento é por identidade do documento — `document_id` e, quando ele falta, o caminho de
+origem. Dois documentos **diferentes** com o mesmo nome de arquivo continuam sendo duas entradas,
+desambiguadas pelo id (`Relatorio.pdf (doc-2)`) ou por sufixo numérico (`Relatorio.pdf #2`).
+
+Consequência prática para sua UI: **não deduplique nem agrupe fontes do seu lado**. Se você conta
+linhas de fonte para exibir "N documentos consultados", esse número agora é de documentos, não de
+trechos.
 
 ### Use `reference` — não recomponha a string
 
 `reference` é montada no backend pelo **mesmo** código que rotula o contexto enviado ao modelo
 (`GenerationEngine._build_document_reference`). Ela já resolve as regras chatas:
 
-- ordem: **nome do documento → código da norma → código do manual → página**;
+- ordem: **nome do documento → código da norma → código do manual → páginas**;
 - omite o que não existe, sem deixar separador solto;
-- preserva a desambiguação quando dois trechos vêm do mesmo documento.
+- junta as páginas do mesmo documento numa lista só, ordenada e sem repetição;
+- preserva a desambiguação quando dois documentos distintos têm o mesmo nome.
 
 Recompor isso no seu front duplica uma regra de domínio numa segunda linguagem — quando a regra
 mudar no backend, sua UI fica divergente e ninguém percebe.
 
-Formato resultante, com e sem código:
+Formato resultante — com código, sem código e com várias páginas:
 
 ```text
 715_manual_de_hidrologia_basica.pdf | Manual IPR 715 | p. 15
 GUIA_DE_ANALISE_2018_VERSAO_BETA.pdf | p. 89
+DNIT 161_2022 – EM – Geocompostos drenantes.pdf | Norma DNIT-EM 161_2022 | p. 4, 5, 6
 ```
 
 ### Documento sem código é normal, não é erro
@@ -104,9 +126,18 @@ curl -s http://localhost:5555/ui/static/js/shared/ui-webchat-runtime-utils.js | 
 ## 5. Quantas fontes vêm na resposta
 
 `qa_system.formatting.max_source_references` (YAML) define o limite. Ele governa **duas** coisas
-de propósito: quantas fontes voltam ao cliente e quantos documentos entram no contexto do modelo.
-Manter os dois iguais evita a resposta citar N documentos enquanto a UI exibe N+k — inclusive
-fontes que o modelo nunca leu.
+de propósito: quantos trechos entram no contexto do modelo e quantos trechos alimentam a lista de
+fontes. Manter os dois iguais evita a resposta citar N documentos enquanto a UI exibe N+k —
+inclusive fontes que o modelo nunca leu.
+
+Atenção: o limite corta **trechos**, e a lista final é agrupada por documento (§2). Com o limite em
+5, cinco trechos do mesmo PDF viram **uma** entrada em `sources`. Ou seja, a lista devolvida pode
+ser bem menor que o limite — e isso é o comportamento correto, não perda de fonte.
+
+Para conferir esse efeito no log da execução, o passo `generation:sources_selected` registra
+`chunks_considered` (trechos que entraram), `sources_selected` (fontes devolvidas),
+`documents_grouped` (documentos que tinham mais de um trecho) e `chunks_merged` (quantos trechos
+foram absorvidos pelo agrupamento).
 
 ## 6. Como conferir o metadado de um documento
 
@@ -124,6 +155,7 @@ Detalhes e demais ferramentas de acesso: `.claude/rules/ferramentas-acesso-dados
 
 - Contrato da resposta: `src/api/schemas/rag_models.py`
 - Composição da referência e das fontes: `src/qa_layer/rag_engine/generation_engine.py`
-  (`_build_document_reference`, `_format_intelligent_sources`)
+  (`_build_document_reference`, `_format_intelligent_sources`, `_reduce_source_candidates`,
+  `_build_source_identity_key`)
 - Regras de prompt (proibição de citar no corpo): `src/shared/prompts/default_prompts.py`
 - Helper de exibição: `app/ui/static/js/shared/ui-webchat-runtime-utils.js`

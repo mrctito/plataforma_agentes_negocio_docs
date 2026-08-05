@@ -8,8 +8,9 @@ O recorte executavel confirmado no codigo inclui estas superficies publicas.
 
 1. GET /ag-ui/capabilities.
 2. POST /ag-ui/runs.
-3. GET /ag-ui/runs/{run_id}/events.
-4. GET /ag-ui/threads/{thread_id}/events.
+3. POST /ag-ui/copilotkit/runs.
+4. GET /ag-ui/runs/{run_id}/events.
+5. GET /ag-ui/threads/{thread_id}/events.
 
 O recorte executavel confirmado do lado web inclui estas superficies de reuso.
 
@@ -20,7 +21,12 @@ O recorte executavel confirmado do lado web inclui estas superficies de reuso.
 5. app/ui/static/js/shared/ag-ui-sidecar-chat.js.
 6. app/ui/static/js/shared/ag-ui-retail-demo-page.js.
 
-Existe uma segunda superficie de consumo AG-UI no frontend: o chat embutivel (`PrometeuEmbeddableChatRuntime`) tambem consome `/ag-ui/runs` via SSE, de forma **opt-in** e confinada a `mode: 'deepagent'` + `chatRenderer: 'jspuro'` — detalhe na seção 1A logo abaixo. As superficies de reuso desse caminho sao:
+Existe uma segunda superficie de consumo AG-UI no frontend: o chat embutivel
+(`PrometeuEmbeddableChatRuntime`) tambem consome `/ag-ui/runs` via SSE, de forma **opt-in**.
+O gate exige `chatRenderer: 'jspuro'`, `agUiSseTransport: true` e uma destas entradas:
+`mode: 'qa'`, `mode: 'deepagent'` ou `projectKey`. A2UI continua restrito ao DeepAgent;
+Q&A e `projectKey` usam o mesmo transporte para texto progressivo. As superficies de reuso
+desse caminho sao:
 
 1. app/ui/static/js/shared/embeddable-chat-spec-runtime.js (deteccao de spec + registry de renderizadores + renderer de Capacidades).
 2. app/ui/static/js/shared/ag-ui-spec-render-bridge.js (ponte ESM que liga os renderizadores oficiais ao componente UMD).
@@ -29,10 +35,16 @@ Existe uma segunda superficie de consumo AG-UI no frontend: o chat embutivel (`P
 5. app/ui/static/js/shared/ag-ui-chart-adapter.js + ag-ui-chart-adapter-apexcharts.js (porta de grafico neutra + adapter ApexCharts, reutilizada pelo renderer A2UI).
 6. src/api/schemas/ag_ui_capabilities_models.py (contrato fail-closed do **CapabilitiesSpec**).
 7. src/agentic_layer/tools/system_tools/describe_capabilities.py (tool builtin `descrever_capacidades`, auto-injetada em todo supervisor DeepAgent).
+8. app/ui/static/js/shared/embeddable-chat-runtime.js (gate de transporte, estado publico e
+   uma unica mensagem incremental).
 
 Os dois specs reconhecidos hoje nessa superficie sao CapabilitiesSpec (painel de capacidades, via resposta normal do chat) e A2UI (envelope `{a2ui_operations}` do resultado da tool `generate_a2ui`, via SSE opt-in). Um mecanismo anterior baseado em DashboardSpec/UISpec nessa mesma superficie foi removido do codigo (reset registrado no handover `docs/.interno/.planos/ag-ui-generico-2.md`); qualquer material citando `output_subagent`, `DashboardSpec` ou `middlewares.generative_ui_dashboard` descreve algo que nao existe mais. Ativacao, ordem de scripts e estado por host estao no [guia do componente embutivel](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md).
 
 O tutorial de entrada para quem vai configurar AG-UI pela primeira vez (como fazer o DeepAgent desenhar A2UI condicional via YAML, o painel de capacidades, bind de campos, FAQ) esta em [TUTORIAL-101-GENERATIVE-UI.md](../usuario/TUTORIAL-101-GENERATIVE-UI.md).
+
+Para embutir chat textual em streaming, incluindo Q&A, DeepAgent/HIL, `projectKey` e
+fallback classico, use o
+[Tutorial 101 de chat com streaming](../usuario/TUTORIAL-CHAT-PLATAFORMA.md).
 
 Detalhamento técnico por etapa:
 
@@ -61,7 +73,11 @@ Wiring de ponta a ponta, na ordem real de execução:
 3. No boundary AG-UI (`ag_ui_deepagent_adapter.py`), o servidor injeta o catálogo (`a2ui_schema` serializado) em `state["ag-ui"]["a2ui_schema"]` via um context-entry oficial do `LangGraphAgent` (descrição mágica que o SDK roteia automaticamente) — o catálogo vem sempre do YAML, nunca do request.
 4. Quando o supervisor decide desenhar, ele chama `generate_a2ui`, que lê os dados **do histórico da conversa** (resultados de tools já chamadas pelos especialistas via `task` + `dyn_sql`) e produz o envelope `{a2ui_operations: [createSurface, updateComponents]}`.
 5. Esse envelope viaja no `TOOL_CALL_RESULT` da chamada, dentro do stream SSE de `POST /ag-ui/runs`.
-6. No frontend, o transporte opt-in do componente de chat (`embeddable-chat-ag-ui-transport.js` + `ag-ui-embeddable-transport-bridge.js`) só ativa quando o host liga `agUiSseTransport: true` **e** `mode: 'deepagent'` **e** `chatRenderer: 'jspuro'`; qualquer outra combinação segue no caminho síncrono de sempre.
+6. No frontend, o transporte opt-in do componente de chat
+   (`embeddable-chat-ag-ui-transport.js` + `ag-ui-embeddable-transport-bridge.js`) carrega
+   A2UI quando o host liga `agUiSseTransport: true`, `mode: 'deepagent'` e
+   `chatRenderer: 'jspuro'`. O transporte geral tambem atende `qa` e `projectKey`, mas
+   esses caminhos nao ganham A2UI por isso.
 7. `embeddable-chat-spec-runtime.js::detectAgUiSpec` reconhece o envelope pelo discriminador `a2ui_operations` (array).
 8. `ag-ui-a2ui-surface-renderer.js` valida e desenha, fail-closed, contra um catálogo fechado de 8 componentes (`Card`, `Column`, `Row`, `Text`, `Divider`, `BarChart`, `LineChart`, `DataTable`); gráficos reutilizam a mesma porta neutra `ChartAdapter` + ApexCharts de outras superfícies AG-UI. Componente fora do catálogo, ou qualquer parte malformada, derruba a superfície inteira para texto — nunca renderiza pela metade.
 9. Quando `chat_renderer: copilotkit`, a rota de compatibilidade `POST /ag-ui/copilotkit/runs` repassa o mesmo envelope A2UI sem filtro para um cliente React com o SDK oficial CopilotKit (`@ag-ui/a2ui-middleware`).
@@ -146,8 +162,10 @@ Caracteristicas confirmadas.
 1. Responde com text/event-stream.
 2. Devolve X-Correlation-Id no header.
 3. Exige autenticacao por X-API-Key ou sessao.
-4. Exige fonte de configuracao explicita por `yaml_config`, `yaml_inline_content` ou `encrypted_data`.
-5. Deriva o runtime pelo YAML e falha fechado em ambiguidade.
+4. Exige `user_email` e exatamente uma origem autorizada: `projectKey`, ou uma fonte
+   explicita por `yaml_config`, `yaml_inline_content` ou `encrypted_data`.
+5. Com `projectKey`, resolve a configuracao autorizada no servidor; com fonte explicita,
+   deriva o runtime pelo YAML. Fontes concorrentes falham fechado.
 6. Rejeita `executionKind` divergente e segredos fora do contrato.
 
 Este e o caminho publico novo para integracoes de terceiros. O cliente externo confiavel envia o envelope canônico, a plataforma resolve autenticacao e runtime pelo YAML e o browser nao precisa inventar selecao paralela por `agent_id`.
@@ -565,6 +583,15 @@ O wrapper Plataforma de Agentes de IA ainda preserva as necessidades da platafor
 
 O comportamento confirmado em teste mostra tambem que o cliente nao tenta reconectar por padrao. Isso evita replay implicito de POST, o que seria perigoso em execucao agentic.
 
+No chat embutivel, a bridge cria cliente e store novos por rodada. O transporte publica os
+fragmentos no callback interno `onText`; o componente cria uma unica mensagem provisoria
+com status `streaming`, atualiza o mesmo objeto/DOM e, no fim, troca pela mensagem
+consolidada. A API publica da host e `onChange(state)`/`getState()`, nao `onToken`.
+
+O resultado final preserva `sources` extraidas de `STATE_SNAPSHOT.state.sources`, o
+envelope A2UI, a pendencia HIL e o `threadId`. O `correlation_id` vem somente do header
+`X-Correlation-Id`; `run_id` e `thread_id` nao o substituem.
+
 ### 10.2. Store de estado
 
 createAgUiStateStore reconstrui o estado local da UI. Ele guarda run, messages, tools, state, activities, steps, interrupts, rawEvents, customEvents e lastEvent. Ele tambem aplica JSON Patch completo, inclusive move, copy e test.
@@ -605,6 +632,24 @@ AgUiGovernedDemoPageController (classe JS em `ag-ui-retail-demo-page.js`) concen
 6. Atualiza a area principal a partir de STATE_SNAPSHOT.
 
 Isso mostra que o frontend das demos ja foi desenhado como padrao de integracao, nao como paginas totalmente independentes.
+
+### 11.3. Hosts do componente embutivel e limite da evidencia
+
+O transporte SSE do componente aparece no WebChat v3, no detalhe de projeto DNIT/Gesdoc,
+na tela SaaS por `projectKey` e na bancada isolada. Os testes frontend focados cobrem:
+
+1. opt-in desligado mantendo o ramo classico;
+2. `qa` mapeado para `rag_qa`;
+3. DeepAgent com HIL;
+4. `projectKey` sem YAML, API key nem `execution_kind` no navegador;
+5. varios eventos `TEXT_MESSAGE_CONTENT` atualizando uma unica mensagem;
+6. fontes Q&A vindas de `STATE_SNAPSHOT`;
+7. envelope A2UI e `X-Correlation-Id`.
+
+Na investigacao documental de 2026-08-04, 53 testes frontend focados ficaram verdes. O
+Playwright existente da bancada intercepta o ramo classico; ele nao prova SSE contra uma
+API viva. A rodada backend focada observada nao encerrou normalmente. Portanto, a
+documentacao nao usa esses testes como alegacao de E2E integrado do streaming.
 
 ## 12. Replay e event store
 

@@ -13,7 +13,7 @@ Referencias tecnicas principais:
 3. [README-TECNICO-AG-UI-RUNTIME-COMPARTILHADO-DO-FRONTEND.md](../tecnico/README-TECNICO-AG-UI-RUNTIME-COMPARTILHADO-DO-FRONTEND.md)
 4. [README-TECNICO-AG-UI-REPLAY-E-AUDITORIA.md](../tecnico/README-TECNICO-AG-UI-REPLAY-E-AUDITORIA.md)
 5. [README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md](../tecnico/README-TECNICO-AG-UI-DOMINIO-VAREJO-DEMO.md)
-6. [templates/ag-ui-official-third-party](../templates/ag-ui-official-third-party)
+6. [templates/ag-ui-official-third-party](../../templates/ag-ui-official-third-party)
 7. [README-TECNICO-CHAT-QA-FONTES-NA-UI.md](../tecnico/README-TECNICO-CHAT-QA-FONTES-NA-UI.md)
    — como capturar as fontes do Q&A/RAG e exibi-las no chat. Leitura obrigatoria para quem monta
    chat em modo Q&A: a resposta do modelo vem SEM citacao no corpo do texto, e relacionar as
@@ -25,14 +25,13 @@ Antes de escolher entre "protocolo AG-UI cru" e "CopilotKit", vale situar as **t
 superficies reais que este repositorio oferece para conversar com um agente. Elas nao
 sao concorrentes entre si; servem publicos e restricoes tecnicas diferentes.
 
-**Status de validacao (leia antes de escolher):** os caminhos **1** e **2** (JS puro —
-componente pronto e protocolo AG-UI cru, inclusive graficos/generative UI via A2UI) sao
-**testados e funcionando**, comprovados em uso real de producao (webchat da plataforma,
-demo varejo com graficos no chat via renderer `jspuro`, paginas AG-UI com teste de
-contrato/Playwright — secao 11 do [README-TECNICO-AG-UI.md](../tecnico/README-TECNICO-AG-UI.md)).
-O caminho **3** (CopilotKit) esta **implementado, porem nao testado**: o codigo existe e
-o contrato foi mapeado por leitura, mas nenhuma validacao ponta a ponta foi executada —
-aviso completo na secao 2.1.
+**Status de validacao (leia antes de escolher):** os caminhos **1** e **2** possuem wiring
+executavel e testes focados de contrato. O componente e usado por hosts reais da
+plataforma, e 53 testes frontend focados do transporte/componente ficaram verdes na
+investigacao que sincronizou este guia. Essa evidencia nao equivale a um E2E de parceiro
+contra backend real: a mesma rodada nao executou uma prova browser + API-live do SSE. O
+caminho **3** (CopilotKit) esta implementado, mas continua sem validacao ponta a ponta
+registrada — aviso completo na secao 2.1.
 
 1. **Componente pronto `PrometeuEmbeddableChatRuntime` (JS puro, caminho mais rapido).**
    Use quando sua tela e servida pela propria origem da plataforma (ou pode carregar os
@@ -40,24 +39,23 @@ aviso completo na secao 2.1.
    `fetch`, criptografia de YAML nem parsing de evento. Ele resolve handshake, payload,
    modo de execucao, leitura de `correlation_id` e HIL sozinho. Guia completo:
    [GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md](GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md). Esse
-   componente conversa, na maior parte do tempo, com os endpoints classicos de execucao
+   componente conversa com os endpoints classicos de execucao
    (`/rag/execute`, `/agent/execute`, `/workflow/execute` — documentados no
    [GUIA-INTEGRADOR-CHAT-PLATAFORMA.md](GUIA-INTEGRADOR-CHAT-PLATAFORMA.md), que e o
    irmao deste guia para quem quer construir uma UI 100% propria sobre **esses** mesmos
-   endpoints classicos, sem AG-UI). Ele so abre uma conexao AG-UI (`POST /ag-ui/runs`)
-   de forma **opt-in**, quando o YAML declara visualizacao generativa (A2UI) e a host
-   liga o transporte SSE — detalhe em [TUTORIAL-101-GENERATIVE-UI.md](TUTORIAL-101-GENERATIVE-UI.md).
-   **Status: testado e funcionando** (uso real de producao).
+   endpoints classicos, sem AG-UI). Ele abre `POST /ag-ui/runs` de forma **opt-in** para
+   Q&A/RAG, DeepAgent ou `projectKey`, quando a host usa `chatRenderer: "jspuro"` e liga
+   `agUiSseTransport`. A2UI e uma capacidade adicional do DeepAgent, nao a unica razao
+   para usar SSE. Tutorial copiavel:
+   [TUTORIAL-CHAT-PLATAFORMA.md](TUTORIAL-CHAT-PLATAFORMA.md).
 
-2. **Protocolo AG-UI cru — `POST /ag-ui/runs` + SSE (JS puro "na unha").** Use quando
+2. **Protocolo AG-UI — `POST /ag-ui/runs` + SSE com `@ag-ui/client`.** Use quando
    voce quer uma UI 100% propria (React, Vue, mobile, outro backend) falando
    diretamente o protocolo aberto AG-UI, com replay, HIL e discovery de capabilities.
    **Este e o assunto central deste guia** — secoes 1 a 4 abaixo, com o exemplo real de
-   consumo de stream na secao 3.5.1. **Status: testado e funcionando** (o endpoint
-   `/ag-ui/runs` e o renderer `jspuro` de A2UI sao os mesmos que sustentam o webchat e a
-   demo varejo em producao; ja o exemplo especifico do template third-party tem cobertura
-   por teste de contrato automatizado — `tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py`
-   — sem registro de execucao manual por um integrador externo real).
+   consumo de stream na secao 3.5.1. O template tem teste de contrato automatizado
+   (`tests/unit/test_02-01-52_ag_ui_third_party_template_contract.py`), sem registro de
+   execucao manual por um integrador externo real nesta rodada.
 
 3. **Cliente CopilotKit (React) — `POST /ag-ui/copilotkit/runs`.** Use quando voce ja
    tem (ou vai construir) um app React usando o SDK CopilotKit e quer que ele converse
@@ -70,9 +68,10 @@ aviso completo na secao 2.1.
 Os caminhos 2 e 3 falam o **mesmo** protocolo AG-UI e o **mesmo** boundary de execucao
 (`AgUiRunOrchestrator`) — a diferenca e so o formato do envelope HTTP que cada cliente
 ja fala nativamente (`AgUiRunRequest` proprio da plataforma vs. `RunAgentInput` puro do
-CopilotKit, traduzido por um servico de compatibilidade). O caminho 1 e uma familia
-tecnica diferente (endpoints classicos de execucao), com um atalho opcional para dentro
-do mundo AG-UI quando o caso de uso pede generative UI.
+CopilotKit, traduzido por um servico de compatibilidade). O caminho 1 encapsula tanto o
+ramo classico quanto o ramo SSE; a host nao implementa nenhum dos dois. Nos caminhos 2 e
+3, o parceiro controla a interface e precisa manter o protocolo e a fronteira de
+seguranca.
 
 Se a sua duvida for "quero so um chat funcionando na minha tela o mais rapido possivel,
 e minha tela roda dentro da propria plataforma (ou pode carregar os scripts dela)",
@@ -372,7 +371,7 @@ Este fluxo parte do template oficial criado para integradores externos.
 
 ### 3.1. Copie o template operacional
 
-Use [templates/ag-ui-official-third-party](../templates/ag-ui-official-third-party).
+Use [templates/ag-ui-official-third-party](../../templates/ag-ui-official-third-party).
 
 O template tem duas partes:
 
@@ -473,7 +472,7 @@ O template demonstra o fluxo com:
 
 O frontend pode trocar completamente a camada visual. O protocolo nao muda.
 
-### 3.5.1. Exemplo real de consumo (fetch + SSE + tratamento de HIL)
+### 3.5.1. Exemplo E: browser + BFF + SSE + HIL
 
 O trecho abaixo reproduz, quase literalmente, o codigo real do template
 (`templates/ag-ui-official-third-party/frontend/src/ag-ui-client.js` e `main.js`) e
@@ -483,11 +482,45 @@ implementa no frontend** (confirmado lendo `frontend/src/main.js`: o handler de
 Se a sua integracao usa DeepAgent com HIL (secao 4.6), o bloco `if (event.outcome?.type
 === 'interrupt')` abaixo e uma extensao que voce precisa escrever — nao vem pronta.
 
+O endpoint usado pelo browser e `/api/ag-ui/runs`, pertencente ao BFF do parceiro. API
+key, e-mail confiavel e YAML ficam no BFF. Somente o BFF chama o `/ag-ui/runs` da
+plataforma.
+
+HTML minimo da interface do parceiro:
+
+```html
+<p id="status" role="status">Pronto</p>
+<p>Rastreamento: <code id="correlation-id">aguardando</code></p>
+<div id="messages" aria-live="polite"></div>
+<div id="hil-actions" hidden></div>
+<div id="sources"></div>
+```
+
 ```javascript
 import { runHttpRequest, transformHttpEventStream } from '@ag-ui/client';
+import { Observable } from 'rxjs';
+
+function createHeaderAwareEvents(httpEvents, onCorrelationId) {
+  return new Observable((subscriber) => {
+    const subscription = httpEvents.subscribe({
+      next(httpEvent) {
+        if (httpEvent?.type === 'headers') {
+          const correlationId = httpEvent.headers?.get?.('X-Correlation-Id')
+            || httpEvent.headers?.get?.('x-correlation-id')
+            || '';
+          if (correlationId) onCorrelationId?.(correlationId);
+        }
+        subscriber.next(httpEvent);
+      },
+      error(error) { subscriber.error(error); },
+      complete() { subscriber.complete(); },
+    });
+    return () => subscription.unsubscribe();
+  });
+}
 
 /** Abre o POST streaming e devolve uma Promise que resolve quando o run termina. */
-function runOfficialAgUiStream({ endpoint, payload, onEvent, signal }) {
+function runOfficialAgUiStream({ endpoint, payload, onEvent, onCorrelationId, signal }) {
   const requestInit = {
     method: 'POST',
     headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
@@ -497,7 +530,10 @@ function runOfficialAgUiStream({ endpoint, payload, onEvent, signal }) {
   };
   // runHttpRequest/transformHttpEventStream sao do SDK oficial @ag-ui/client;
   // este projeto nao reimplementa parsing de protocolo (README-TECNICO-AG-UI.md, secao 14.1, item 7).
-  const httpEvents = runHttpRequest(endpoint, requestInit);
+  const httpEvents = createHeaderAwareEvents(
+    runHttpRequest(endpoint, requestInit),
+    onCorrelationId,
+  );
   const agUiEvents = transformHttpEventStream(httpEvents);
 
   return new Promise((resolve, reject) => {
@@ -510,18 +546,75 @@ function runOfficialAgUiStream({ endpoint, payload, onEvent, signal }) {
   });
 }
 
+// Uma rodada usa uma unica bolha; cada delta atualiza o mesmo elemento.
+let currentAssistantBubble = null;
+let ultimoRunPausado = null;
+
+function setStatus(status) {
+  document.getElementById('status').textContent = status;
+}
+
+function showCorrelationId(correlationId) {
+  document.getElementById('correlation-id').textContent = correlationId;
+}
+
+function appendMessage(delta) {
+  if (!currentAssistantBubble) {
+    currentAssistantBubble = document.createElement('div');
+    currentAssistantBubble.className = 'message message--assistant';
+    document.getElementById('messages').appendChild(currentAssistantBubble);
+  }
+  currentAssistantBubble.textContent += delta;
+}
+
+function renderSources(sources) {
+  const container = document.getElementById('sources');
+  container.replaceChildren();
+  if (!Array.isArray(sources)) return;
+  for (const source of sources) {
+    const item = document.createElement('p');
+    item.textContent = typeof source === 'string'
+      ? source
+      : String(source.reference || source.title || source.document_title || 'Documento');
+    container.appendChild(item);
+  }
+}
+
+function mostrarPainelDeAprovacao({ mensagem, decisoesPermitidas, onDecidir }) {
+  const container = document.getElementById('hil-actions');
+  container.replaceChildren();
+  container.hidden = false;
+
+  const description = document.createElement('p');
+  description.textContent = mensagem || 'A execucao aguarda uma decisao.';
+  container.appendChild(description);
+
+  for (const decisao of decisoesPermitidas) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = decisao;
+    button.addEventListener('click', () => onDecidir(decisao));
+    container.appendChild(button);
+  }
+}
+
 /** Trata cada evento recebido — igual ao template, com a extensao de HIL adicionada. */
 function renderEvent(event) {
   if (event.type === 'RUN_STARTED') {
+    currentAssistantBubble = null;
     setStatus('running');
   }
   if (event.type === 'TEXT_MESSAGE_CONTENT' || event.type === 'TEXT_MESSAGE_CHUNK') {
     appendMessage(event.delta || event.content || '');
   }
+  if (event.type === 'STATE_SNAPSHOT') {
+    renderSources(event.snapshot?.sources);
+  }
   if (event.type === 'RUN_FINISHED') {
     // Extensao de HIL (nao existe no template original): checar outcome.type
     // antes de tratar o run como concluido de verdade.
     if (event.outcome?.type === 'interrupt') {
+      ultimoRunPausado = { threadId: event.threadId, runId: event.runId };
       handleHilInterrupt(event.outcome.interrupts); // AgUiInterrupt[] — ver abaixo
       return;
     }
@@ -543,17 +636,19 @@ function renderEvent(event) {
 function handleHilInterrupt(interrupts) {
   for (const interrupt of interrupts) {
     const decisoesPermitidas =
-      interrupt.responseSchema?.properties?.decisions?.items?.enum || ['approve', 'reject'];
+      interrupt.responseSchema?.properties?.decisions?.items?.enum;
+    if (!Array.isArray(decisoesPermitidas) || decisoesPermitidas.length === 0) {
+      throw new Error('Interrupcao HIL sem decisoes permitidas no responseSchema.');
+    }
     mostrarPainelDeAprovacao({
       mensagem: interrupt.message,
       decisoesPermitidas,
       onDecidir: (tipoDecisao) => enviarResume({
+        // Falha fechado se o RUN_FINISHED nao trouxe a identidade da rodada pausada.
         threadId: ultimoRunPausado.threadId,
         parentRunId: ultimoRunPausado.runId,
         interruptId: interrupt.id,
         tipoDecisao,
-        userEmail: ultimoRunPausado.userEmail,
-        yamlInlineContent: ultimoRunPausado.yamlInlineContent,
       }),
     });
   }
@@ -565,13 +660,12 @@ function handleHilInterrupt(interrupts) {
  * NOVO run (novo runId), referenciando o run pausado via parentRunId, exemplo
  * real do shape em README-TECNICO-AG-UI.md, secao 3.2.2.
  */
-async function enviarResume({ threadId, parentRunId, interruptId, tipoDecisao, userEmail, yamlInlineContent }) {
+async function enviarResume({ threadId, parentRunId, interruptId, tipoDecisao }) {
   const payload = {
     threadId,
     runId: `${threadId}-resume-${Date.now()}`,
     parentRunId,
-    user_email: userEmail,
-    yaml_inline_content: yamlInlineContent,
+    input: {},
     resume: [
       {
         interruptId,
@@ -582,33 +676,57 @@ async function enviarResume({ threadId, parentRunId, interruptId, tipoDecisao, u
     ],
   };
   return runOfficialAgUiStream({
-    endpoint: `${apiBaseUrl}/ag-ui/runs`,
+    endpoint: '/api/ag-ui/runs',
     payload,
     onEvent: renderEvent,
+    onCorrelationId: showCorrelationId,
   });
 }
 
 // --- Disparo do primeiro run ---
 const controller = new AbortController();
 await runOfficialAgUiStream({
-  endpoint: `${apiBaseUrl}/ag-ui/runs`,
+  endpoint: '/api/ag-ui/runs',
   payload: {
     threadId: 'portal-terceiro',
     runId: `run-${Date.now()}`,
-    user_email: 'operacao@cliente.exemplo',
-    input: { message: 'Resuma vendas do dia.' },
-    yaml_inline_content: '<yaml-governado-no-servidor>',
+    state: {},
+    messages: [
+      {
+        id: 'mensagem-usuario-1',
+        role: 'user',
+        content: 'Resuma vendas do dia.',
+      },
+    ],
+    tools: [],
+    context: [],
+    forwardedProps: {
+      capability: 'sales_summary',
+      parameters: {},
+      metadata: { surface: 'portal-parceiro' },
+    },
   },
   onEvent: renderEvent,
+  onCorrelationId: showCorrelationId,
   signal: controller.signal,
 });
 ```
 
-Note que este exemplo usa `input`/`user_email`/`yaml_inline_content` (o envelope
-`AgUiRunRequest` da secao 2, montado por um backend confiavel) em vez do
-`RunAgentInput` puro (`messages`/`forwardedProps`) do template — os dois formatos
-funcionam em `POST /ag-ui/runs`, mas `AgUiRunRequest` e o contrato recomendado para
-quem nao esta usando o CopilotKit (secao 2).
+O browser envia um `RunAgentInput` publico somente ao BFF. O BFF valida chaves proibidas,
+injeta `user_email`, `yaml_inline_content` ou `encrypted_data` e a `X-API-Key`, converte o
+payload para `AgUiRunRequest` e entao chama a plataforma. `POST /ag-ui/runs` da plataforma
+aceita o `AgUiRunRequest`; nao envie `RunAgentInput` puro diretamente para ele.
+
+O BFF copiavel ja esta em
+[`templates/ag-ui-official-third-party/backend/main.py`](../../templates/ag-ui-official-third-party/backend/main.py).
+O endpoint `POST /api/ag-ui/runs` chama `PublicPayloadGuard.validate_run_payload(...)` e
+`PrometeuAgUiProxy.open_run_stream(...)`; o proxy preserva o stream e o
+`X-Correlation-Id`. Em producao, adapte a configuracao estatica do template para resolver
+usuario e tenant a partir da sessao autenticada do parceiro, nunca de campos escolhidos
+pelo browser.
+
+O `input: {}` na retomada HIL permite ao BFF validar o envelope publico; a decisao real
+viaja em `resume`. YAML e e-mail continuam sendo reinjetados no servidor.
 
 ### 3.6. Reconstrua com replay
 
@@ -722,7 +840,7 @@ Exemplo pratico: uma tela de fechamento de caixa nao deve enviar SQL ao AG-UI. E
 
 ## 7. Matriz de eventos suportados no boundary Plataforma de Agentes de IA
 
-Esta matriz lista os eventos que o schema Plataforma de Agentes de IA envolve diretamente hoje em [src/api/schemas/ag_ui_models.py](../src/api/schemas/ag_ui_models.py).
+Esta matriz lista os eventos que o schema Plataforma de Agentes de IA envolve diretamente hoje em [src/api/schemas/ag_ui_models.py](../../src/api/schemas/ag_ui_models.py).
 
 | Grupo               | Eventos                                                                                     | Uso pratico na UI                                                                                                              |
 | ------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -785,7 +903,6 @@ Evidencias principais (paths a partir da raiz do repositorio; corrigidos nesta r
 13. [tests/unit/test_02-01-48_ag_ui_router.py](../../tests/unit/test_02-01-48_ag_ui_router.py)
 14. [tests/unit/test_02-01-100_ag_ui_copilotkit_compat.py](../../tests/unit/test_02-01-100_ag_ui_copilotkit_compat.py) — prova a secao 2.1 (traducao + wiring da rota) até o `AgUiRunContext` entregue ao orchestrator; não prova a cadeia até o grafo compilado do DeepAgent (limite registrado na seção 2.2, "Shared state")
 15. [tests/unit/test_02-01-38_ag_ui_event_store.py](../../tests/unit/test_02-01-38_ag_ui_event_store.py)
-16. [tests/js/ag_ui_runtime.test.js](../../tests/js/ag_ui_runtime.test.js)
 
 ## 10. Proximos passos de leitura
 

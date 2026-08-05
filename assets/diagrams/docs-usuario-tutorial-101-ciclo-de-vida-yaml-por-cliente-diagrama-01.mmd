@@ -1,0 +1,18 @@
+flowchart TD
+    KEY["Uma linha em tenant_access_keys<br/>= uma chave X-API-Key"]
+
+    KEY -->|"coluna tenant_yaml_id<br/>(gerida pela tela 1.2)"| DIRETO["Vínculo DIRETO<br/>aponta para UMA cópia (tenant_yaml)"]
+    KEY -->|"colunas saas_project_id + operation<br/>(não gerida por tela hoje)"| PROJETO["Vínculo de PROJETO<br/>aponta para um saas_project + uma operação"]
+
+    DIRETO --> COPIA[("cópia congelada<br/>tenant_yaml")]
+
+    PROJETO --> PONTEIRO{"o projeto tem<br/>release ATIVA?"}
+    PONTEIRO -->|"sim"| COPIA2[("cópia da release ativa<br/>pode ser OUTRA linha de tenant_yaml")]
+    PONTEIRO -->|"não"| ERRO["409 API key sem binding SaaS<br/>para a operação solicitada"]
+
+    subgraph REGRA["Quando a MESMA chave tem os dois vínculos"]
+        direction TB
+        R1["O endpoint chamado declara uma operação?<br/>(ask=rag, ingest, etl)"]
+        R1 -->|"sim"| R2["O vínculo de PROJETO vence.<br/>O tenant_yaml_id direto é ignorado."]
+        R1 -->|"não (endpoint sem operação declarada)"| R3["Só o vínculo direto se aplica."]
+    end
