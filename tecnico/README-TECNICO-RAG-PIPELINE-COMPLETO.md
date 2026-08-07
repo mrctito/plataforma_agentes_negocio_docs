@@ -50,6 +50,21 @@ Regras relevantes confirmadas:
 
 Esse é um ponto arquitetural importante: no recorte moderno, ausência do pipeline inteligente é erro de contrato, não “degradação natural”.
 
+### 2.4. Boundary HTTP e execução pelo Job Core
+
+O dispatcher público é `POST /rag/execute`. Para Q&A, o envelope usa `operation: ask` e o campo
+`execution_mode` aceita `auto`, `direct_sync` ou `direct_async`.
+
+- `direct_sync` executa a pergunta no request e devolve HTTP 200 com a resposta completa.
+- `direct_async` publica no Job Core, devolve HTTP 202 com identificadores e URLs de
+  acompanhamento, e executa o processo nominal `rag:ask` no worker.
+- A operação irmã `delete` usa o processo nominal `rag:delete` quando assíncrona.
+- `subprocess` é contrato legado e o boundary orienta usar `direct_async`; não existe executor RAG
+  paralelo fora do Job Core.
+
+O router unificado também recebe `ingest`, `etl` e `data_sources`, mas cada operação conserva seu
+contrato especializado. O dispatcher não transforma todos esses domínios em um único pipeline.
+
 ## 3. Fluxo executável de ponta a ponta
 
 ![3. Fluxo executável de ponta a ponta](../assets/diagrams/docs-readme-tecnico-rag-pipeline-completo-diagrama-01.svg)
@@ -469,7 +484,16 @@ Campos confirmados:
 - hybrid_retry_status
 - top_documents
 
-Além disso, QuestionService e QuestionTelemetryRecorder anexam essas métricas a logs e metadata de execução.
+Além disso, `QuestionService` e `QuestionTelemetryRecorder` anexam essas métricas aos logs e à
+metadata da execução. Quando `INTERACTION_TELEMETRY_ENABLED=true`, o recorder também envia um
+registro não bloqueante ao `InteractionTelemetryManager`, que grava em lote no PostgreSQL em
+`public.interaction_runs` pelo writer canônico.
+
+Essa persistência é **best-effort** e não é condição de sucesso do Q&A: telemetria desabilitada,
+ausência de `tenant_id`, fila cheia ou falha de persistência gera skip/drop/fallback observável,
+sem transformar uma resposta RAG válida em erro. Portanto, log da correlação e linha em
+`interaction_runs` são evidências complementares; a ausência de linha, isoladamente, não prova que
+a pergunta não executou.
 
 ## 13. Especificidades JSON, Excel e PDF
 
@@ -697,3 +721,18 @@ O ganho prático é que o LLM recebe um contexto melhor. O modelo não vira resp
   - Motivo da leitura: bloco diagnóstico da consulta.
   - Símbolo relevante: build_diagnostics e extract_retrieval_metrics.
   - Comportamento confirmado: resumo de roteamento, resultado_retrieval, ACL e hybrid_retry_status.
+
+- src/api/routers/rag_operations_router.py e src/api/routers/rag_runtime_operations_compat.py
+  - Motivo da leitura: confirmar o boundary HTTP unificado e a seleção de modo.
+  - Comportamento confirmado: `POST /rag/execute`, operação `ask`, HTTP 200/202 e rejeição do modo
+    `subprocess` em favor de `direct_async`.
+
+- src/api/services/rag_direct_async_processes.py
+  - Motivo da leitura: confirmar o wiring assíncrono no Job Core.
+  - Comportamento confirmado: processos nominais `rag:ask` e `rag:delete`, sem lifecycle local.
+
+- src/services/question/question_telemetry_recorder.py e
+  src/telemetry/interaction/interaction_telemetry_manager.py
+  - Motivo da leitura: distinguir diagnóstico em log de persistência central de interações.
+  - Comportamento confirmado: enqueue não bloqueante condicionado a
+    `INTERACTION_TELEMETRY_ENABLED` e gravação em lote de `interaction_runs`.

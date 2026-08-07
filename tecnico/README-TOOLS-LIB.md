@@ -740,17 +740,26 @@ Convenções deste catálogo:
 
 ### SkillsStoreMaterializer e índice da skills_library
 
-- Descrição: componentes que resolvem `skills_library`, validam índice e materializam conteúdo de Skills no store/backend do supervisor.
+- Descrição: componentes compartilhados que revalidam e indexam a `skills_library` raiz e
+  materializam a seleção de Skills no store dos runtimes DeepAgent e WorkflowAgent.
 - Tags: `skills`, `agentic`, `store`
 - Tipo: service e parser
 - Arquivos: `src/agentic_layer/skills/skills_store_materializer.py`, `src/agentic_layer/skills/skills_library_index.py`.
 - Linguagem: Python
-- Responsabilidade principal: centralizar descoberta e materialização de Skills sem loader local por agente.
-- Dependências principais: AST/config agentic, backend do supervisor e logging.
+- Responsabilidade principal: centralizar composição do `SKILL.md`, sanitização de `files`, versão
+  por hash e reconciliação anti-fantasma, sem loader paralelo por consumidor.
+- Dependências principais: AST/config agentic e contrato assíncrono do store; o materializador não
+  emite log, e cada slice registra o resultado com seu builder canônico.
 - Acoplamento forte com domínio: Médio; runtime agentic.
-- Uso atual: Sim; usado pelo DeepAgent supervisor e validadores/assembly.
-- Seguro reutilizar como está: Sim; Skills devem entrar pela biblioteca declarada.
-- Riscos ou limitações: path/conteúdo precisa permanecer dentro do contrato de Skills; não é filesystem genérico.
+- Uso atual: Sim; o DeepAgent materializa catálogos por supervisor/subagente em
+  `/skills/supervisor-<id>/main/` e `/skills/supervisor-<id>/subagent-<id>/`; o WorkflowAgent mantém
+  `/skills/` como source default dentro de um namespace por node. O `DocumentCompiler` publica a
+  `skills_library` para os dois targets.
+- Seguro reutilizar como está: Sim; Skills devem entrar pela biblioteca declarada e por este
+  materializador único.
+- Riscos ou limitações: a source delimita catálogo e reconciliação, não ACL nem isolamento de
+  filesystem. No DeepAgent, backend, namespace e rota `/skills/` continuam compartilhados; path e
+  conteúdo precisam permanecer dentro do contrato de Skills.
 - Sugestão de melhoria: manter índice e materializador sincronizados por teste de contrato.
 - Prioridade: Alta.
 
@@ -1700,6 +1709,22 @@ Convenções deste catálogo:
 - Seguro reutilizar como está: Sim, escolhendo a função publicada.
 - Riscos ou limitações: escaping textual não substitui DOM seguro nem validação backend.
 - Sugestão de melhoria: promover somente helpers com múltiplos consumidores reais.
+- Prioridade: Alta.
+
+### PrometeuPermissionCatalogPicker
+
+- Descrição: seletor compartilhado do catálogo de permissões de máquina. Busca o catálogo no backend (`GET /api/auth/admin/permission-catalog`), filtra o que aceita credencial técnica, desenha os cards descritivos e o checklist marcável (plano ou agrupado por família) e lê de volta o que ficou marcado.
+- Tags: `frontend`, `permissões`, `admin`
+- Tipo: componente
+- Arquivo: `app/ui/static/js/shared/permission-catalog-picker.js`
+- Linguagem: JavaScript
+- Responsabilidade principal: existir uma única implementação do "como desenhar e ler uma lista de permissões" nas telas admin — o catálogo em si nunca é duplicado em JavaScript, porque a fonte única é `PERMISSION_CATALOG` no backend.
+- Dependências principais: `PrometeuAdminApiClient.adminFetchJson` (único caminho HTTP; `fetch` cru é proibido), `PrometeuAdminUtils.escapeHtml` e o CSS `permission-catalog-card` / `permission-toggle-card` de `admin-access-governance.css`.
+- Acoplamento forte com domínio: Baixo; é parametrizado por container e não registra listener próprio — quem consome decide o efeito do `change`.
+- Uso atual: Sim; consumido por `admin-users.js` (tela de Credenciais) e por `admin-gov-permissoes-api-key.js` (wizard de permissões de chave). Coberto por `tests/frontend/permission_catalog_picker_contract.test.js`.
+- Seguro reutilizar como está: Sim. Opções: `readOnlyKeys` desabilita chaves não editáveis, `noteByKey` acrescenta a explicação de origem por chave e `grouped` agrupa por família em blocos recolhíveis (o catálogo passa de 70 permissões; em lista plana a tela vira uma parede de milhares de pixels).
+- Riscos ou limitações: `readSelection` lê o DOM, então checkbox desabilitada ou escondida por filtro **não** é reportada — quem filtra precisa preservar a marcação fora do DOM, sob pena de desmarcar em silêncio. O componente renderiza e lê; ele **não** grava, e não deve ser acoplado a nenhum fluxo de gravação.
+- Sugestão de melhoria: ligar `grouped` também na tela de Credenciais, que hoje sofre a mesma lista plana.
 - Prioridade: Alta.
 
 ### PrometeuInspectableDataGrid

@@ -91,7 +91,7 @@ O detalhe importante é que esses envelopes não são equivalentes. O pai transp
 
 O processo worker oficial sobe por `app/worker_main.py` e delega para `app/runners/worker_runner.py`. Nesse bootstrap, `build_worker_process_runtime` (`src/api/services/worker_process_runtime.py`) exige explicitamente `ASYNC_JOB_CONSUMER_RUNTIME='job_core_polling'` (qualquer outro valor levanta `RuntimeError`) e valida o schema do Job Core em modo somente leitura — sem DDL, sem criar nem alterar tabela no startup — antes de iniciar `WorkerProcessRuntime`. **Não existe mais RabbitMQ nem Dramatiq no transporte de jobs**: `src/api/services/async_job_dramatiq.py` e toda a topologia de actors/filas RabbitMQ foram removidas do produto antes deste manual ser sincronizado (limpeza de 13/07/2026, anterior ao plano de simplificação do Job Core). O único consumidor oficial é `JobCoreWorkerPollingRuntime` (`src/api/services/job_core_worker_runtime.py`), montado por `build_async_job_worker_runtime` (`src/api/services/async_job_worker_runtime_factory.py`).
 
-Não existe fila física separada para pai e filho. Pai e filho são a mesma tabela `job_core.job_runs`: o poller reivindica linhas com `claim_next_run` usando `FOR UPDATE SKIP LOCKED` sobre `(route_kind, dispatch_mode, created_at, job_id)`, e o `route_kind + dispatch_mode` do envelope decide qual handler processa aquela linha — não existe pool de actor nem canal de broker por papel.
+Não existe fila física separada para pai e filho. Pai e filho são a mesma tabela `job_core.job_runs`: o poller reivindica linhas com `claim_next_run` usando `FOR UPDATE SKIP LOCKED` e o `route_kind + dispatch_mode` resolve um `JobProcessDescriptor` no registry único — não existe handler de lifecycle, pool de actor nem canal de broker por papel.
 
 Isso é relevante porque o paralelismo do PDF não acontece por thread mágica dentro do mesmo método nem por fila de mensagens com redelivery. Ele acontece por publicação explícita de envelopes filhos como novas linhas em `job_core.job_runs` (`dispatch_mode=document_fanout_child`), reivindicadas de forma atômica e exclusiva por qualquer worker compatível — cada linha só pode ser reivindicada por um worker, uma única vez, até terminar ou ser reconciliada.
 
@@ -99,11 +99,18 @@ Isso é relevante porque o paralelismo do PDF não acontece por thread mágica d
 
 O job pai não existe para parsear PDF. Ele existe para orquestrar o lote.
 
-No caminho atual, `IngestionParentJobHandler` delega para a execução assíncrona de ingestão. Quando o fan-out documental é elegível, `IngestionService` chama `DocumentFanoutCoordinator.build_plan`, inventaria os documentos e publica filhos até o limite operacional (`max_active_children`) desejado — quem admite de fato é o Job Core (ver 3.4).
+No caminho atual, `IngestionParentProcess` recebe o input tipado e `ProcessContext`. Quando o
+fan-out documental é elegível, a ingestão devolve um `ChildWorkPlan`; o executor do Job Core valida
+todo o plano e materializa os filhos no ledger. O domínio não publica, polla nem terminaliza jobs.
 
-O job filho, por sua vez, entra por `IngestionDocumentJobHandler` e delega para `DocumentFanoutChildExecutorService`. É ele quem executa uma unidade documental real, respeita o cancelamento cooperativo do `JobCoreCancellationToken`, persiste estado terminal e só então reconhece a mensagem como concluída. Não existe mais gate própria da ingestão consultada antes de executar (ver 3.4).
+O filho entra por `DocumentFanoutChildProcess`. Ele cria um `ProcessHostReporter` sobre
+`context.host`, delega uma unidade documental ao `DocumentFanoutChildExecutorService` e devolve
+somente o outcome funcional. Cancelamento, status, heartbeat e terminalização continuam
+encapsulados no host do Job Core.
 
-Essa dupla de papéis é a mesma separação normativa do Job Core (`src/CLAUDE.md` Parte 4, ponto 2, item "especialização de ingestão/PDF"): o pai age como **adaptador de submissão** (monta envelopes, planeja o fan-out, conhece só o contrato público do Job Core) e o filho age como **processo/handler de domínio**, que a meta é ele se tornar host-transparente via o contrato `JobProcess`/`HostPort` (ponto 2.1, NORMATIVO e ainda não materializado — ver README técnico do Job Core).
+Essa dupla já materializa a separação normativa: pai e filho são processos nominais e
+host-transparentes. Nenhum deles recebe `JobEnvelope`, store, token PostgreSQL ou callback de
+lifecycle.
 
 O ponto operacional mais importante é este:
 
@@ -202,11 +209,17 @@ Esta seção descreveu, em versão anterior, uma `DocumentFanoutExecutionGate` p
 
 **Admissão (quem entra em execução):** é decidida pelo próprio Job Core no momento do claim, não por uma consulta prévia da ingestão. O envelope do filho carrega `dispatch_mode=document_fanout_child` e o pai carrega `max_active_children` (`JobEnvelope.max_active_children`, `src/core/job_core/models.py`); o `claim_next_run` do store só libera um filho novo se o número de filhos ativos daquele pai estiver abaixo do limite — no PostgreSQL essa contagem e a reivindicação acontecem na mesma consulta atômica (`src/core/job_core/postgres_store.py`). Não existe fila de mensagens com redelivery neste caminho (ver 2.3): a linha do filho em `job_core.job_runs` só pode ser reivindicada uma vez.
 
-**Cancelamento cooperativo (quem para um filho que já começou):** é o próprio `JobCoreCancellationToken` do Job Core, não uma gate de domínio. `AsyncJobPayloadExecutor._create_callback` (`src/api/services/async_job_worker_payload_executor.py`) instancia `JobCoreCancellationToken.from_runtime_environment(job_id=task_id, correlation_id=...)` e injeta esse token como `callback_factory` em `DocumentFanoutChildExecutorDependencies`; `DocumentFanoutChildExecutorService.execute` (`src/services/document_fanout_child_executor_service.py`) usa esse mesmo token como `cancellation_token` ao chamar `service.execute_single_document(...)`. O token consulta `job_core.job_runs` diretamente — o mesmo ledger que decide se o pai está `cancelled`/`cancel_requested` — e não mantém estado próprio.
+**Cancelamento cooperativo (quem para um filho que já começou):** o processo só consulta
+`ProcessContext.host.is_cancellation_requested()` ou `raise_if_cancelled()`. O executor do Job Core
+encapsula o token concreto e o store; `ProcessHostReporter` adapta essa porta mínima para os
+checkpoints funcionais do `DocumentFanoutChildExecutorService`. A ingestão não consulta
+`job_core.job_runs` diretamente e não recebe callback de lifecycle.
 
 Se o pai não terminar de forma limpa (worker morto, heartbeat expirado), quem encerra a run órfã é o reconciliador cancel-only do Job Core (`OperationalRunReconciliationService.cancel_orphaned_run`, ver o README técnico do Job Core), nunca uma reconciliação local da ingestão. Não existe mais `auto_recovery` nem `auto_promotion` que tentem salvar ou reencaminhar um filho.
 
-Em linguagem simples: antes, a ingestão perguntava "o pai ainda deixa eu trabalhar?" a cada filho. Hoje, se o filho foi reivindicado é porque o Job Core já decidiu que ele pode rodar; e se o pai for cancelado no meio do caminho, o mesmo Job Core (via `JobCoreCancellationToken`) é quem avisa o filho para parar.
+Em linguagem simples: antes, a ingestão perguntava "o pai ainda deixa eu trabalhar?" a cada filho.
+Hoje, se o filho foi reivindicado é porque o Job Core já decidiu que ele pode rodar; se houver
+cancelamento, o processo enxerga apenas o aviso pelo host.
 
 ## 3.1 O que “cancelar” significa de verdade no fan-out PDF
 
@@ -215,8 +228,11 @@ Neste pipeline, cancelamento é cooperativo e durável. Isso quer dizer que o pl
 Na prática:
 
 - um filho ainda `queued` no ledger do Job Core é cancelado diretamente, sem nunca ser reivindicado e sem iniciar OCR, parsing ou republicação;
-- não existe broker nem redelivery neste transporte (ver 2.3): a linha do filho só é reivindicada uma vez, então não há "mensagem atrasada" tentando trabalhar depois do cancelamento — só existe a checagem cooperativa do `JobCoreCancellationToken` durante a execução (ver 3.4);
-- um filho já `running` só para quando o `JobCoreCancellationToken` observa `cancel_requested`/`cancelled` num checkpoint cooperativo, ou quando o worker morre e o reconciliador cancel-only do Job Core (`cancel_orphaned_run`) encerra a run órfã diretamente como `cancelled` — nunca por retry, replay ou reenfileiramento.
+- não existe broker nem redelivery neste transporte (ver 2.3): a linha do filho só é reivindicada uma vez, então não há "mensagem atrasada" tentando trabalhar depois do cancelamento — só existe a checagem cooperativa pelo host durante a execução (ver 3.4);
+- um filho já `running` só para quando `ProcessContext.host` observa
+  `cancel_requested`/`cancelled` num checkpoint cooperativo, ou quando o worker morre e o
+  reconciliador cancel-only do Job Core (`cancel_orphaned_run`) encerra a run órfã diretamente como
+  `cancelled` — nunca por retry, replay ou reenfileiramento.
 
 Essa distinção é importante para operação. Se ainda existe drenagem, isso não quer dizer que o cancelamento falhou. Quer dizer apenas que o sistema já neutralizou o trabalho novo e está encerrando, de forma segura, o que tinha começado antes do pedido de cancelamento.
 
@@ -246,7 +262,6 @@ O detalhe pouco visível, mas importante, é que esse bootstrap conversa com o m
 `PdfParsingRuntimeBuilder.build` monta o bundle principal do parsing PDF.
 
 - `PdfReferenceDetector`
-- `PdfOcrService`
 - `PdfDocumentOcrService`
 - `PdfTableService`
 - `PdfPagesInfoBuilder`
@@ -263,7 +278,8 @@ O OCR document-level é governado por `PdfDocumentOcrService`. Ele não é o OCR
 
 ### 6.2. Como a decisão é tomada
 
-O serviço usa `PdfDocumentOcrAnalyzer`, que abre o PDF com PyMuPDF e mede sinais heurísticos em páginas amostradas.
+O serviço usa `PdfDocumentOcrAnalyzer`, que abre o PDF com PyMuPDF, percorre **todas as páginas** e
+decide cada página de forma independente.
 
 - quantidade de texto por página;
 - densidade de texto;
@@ -272,10 +288,10 @@ O serviço usa `PdfDocumentOcrAnalyzer`, que abre o PDF com PyMuPDF e mede sinai
 - suspeita de texto ruim via alpha ratio;
 - sparsidade geral de páginas com texto.
 
-Com isso, ele constrói uma decisão consolidada.
-
-- `apply=True` se os sinais justificarem o custo.
-- `apply=False` se o texto nativo parecer suficiente.
+Uma página é selecionada quando está vazia e contém sinal visual, ou quando uma imagem cobre pelo
+menos metade da página e há menos de 400 caracteres. Página vazia sem imagem/desenho e página com
+texto nativo suficiente ficam fora. `force_ocr=true` seleciona todas. O resumo documental agrega
+essas decisões, mas não substitui a verdade página a página.
 
 ### 6.3. Engine permitida
 
@@ -326,14 +342,24 @@ processing:
         ocr: true
         skip_scanned_pdf: false
   ocr:
-    # Chave residual: não é o master switch do OCR no runtime atual.
-    enabled: true
+    languages: ["por", "eng"]
     document_preprocessing:
       enabled: true
-      skip_text: true
+      base:
+        options:
+          - engine: ocrmypdf
+            mode: default
+      deskew: true
+      clean: false
+      clean_final: false
       force_ocr: false
-      redo_ocr: false
+      jobs: 1
+      optimize: 0
 ```
+
+`skip_text` e `redo_ocr` foram removidos do contrato e geram erro explícito. O runtime deriva o
+modo do OCRmyPDF da seleção página a página: `force` quando `force_ocr=true`; caso contrário,
+`redo`, preservando texto nativo e recuperando conteúdo visual selecionado.
 
 O ganho de manter as duas camadas executáveis ligadas é tolerância a falha: OCRmyPDF usa os idiomas configurados em `processing.ocr.languages`, enquanto o `pymupdf4llm` pode recuperar páginas que ainda chegarem sem texto. O custo é maior complexidade operacional e duas dependências de OCR.
 
@@ -507,13 +533,11 @@ Fusão multi-engine real, se um dia for desejada, é uma decisão à parte.
 
 ### 8.11. Limitação conhecida — PDF escaneado precisa de OCR
 
-A estrutura textual completa (texto, tabelas, seções) só é extraída de **PDF nativo** (com camada de
-texto). Em **PDF escaneado/imagem** (sem camada de texto), o Docling enxerga o layout e as imagens,
-mas o texto e as tabelas só aparecem com **`do_ocr=true`** — que continua **desligado por default**.
-O OCR é pesado (na ordem de dezenas de segundos por página) e, no preset atual, perde acentuação em
-português. A política de detecção de PDF escaneado e de qualidade de OCR é uma decisão de produto
-(tratada à parte); enquanto não decidida, o comportamento conservador é não rodar OCR
-automaticamente.
+No caminho **interno do Docling**, PDF escaneado precisa de `do_ocr=true` para que essa engine
+recupere texto e tabelas; esse toggle do Docling continua desligado por default. Isso não é uma
+regra global do pipeline: o OCR documental por OCRmyPDF roda antes da engine quando
+`processing.ocr.document_preprocessing.enabled=true`, e outras engines têm seus próprios toggles.
+O custo e a qualidade precisam ser avaliados na combinação efetivamente declarada no YAML.
 
 ## 9. Manifesto e retomada de extração
 
@@ -886,7 +910,9 @@ No caminho feliz, os sinais de sucesso técnico são:
 2. logs do publisher único `JobCoreRuntimeIngestionPublisher.publish` (`src/api/services/ingestion_job_executor.py`) e da reserva de `worker_execution_correlation_id`, para confirmar que o job pai realmente foi publicado no ledger do Job Core;
 3. logs do worker pai (claim/execução em `job_core.job_runs`), para confirmar se o envelope foi reivindicado e se houve decisão de fan-out;
 4. telemetria durável do run pai e de `vector_ingestion_run_documents`, para confirmar quantos filhos foram inventariados, publicados e finalizados — lembrando que essas tabelas guardam só fatos/resultado do PDF, não fila nem claim (ver README técnico do Job Core);
-5. logs do worker filho e do `JobCoreCancellationToken`, para diferenciar execução autorizada, cancelamento cooperativo e cancelamento por orfandade decidido pelo reconciliador do Job Core;
+5. logs do processo filho e dos checkpoints do `ProcessContext.host`, para diferenciar execução
+   autorizada, cancelamento cooperativo e cancelamento por orfandade decidido pelo reconciliador do
+   Job Core;
 6. só depois disso olhar os logs internos de `process_document`, OCR documental, parsing, `execution_manifest`, `multimodal_status_details` e chunking.
 
 ### 20.2. Como diferenciar causas
@@ -1048,10 +1074,18 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
   - Símbolo relevante: `build_async_job_worker_runtime` e `JobCoreWorkerPollingRuntime`.
   - Comportamento confirmado: exige `consumer_runtime='job_core_polling'` (qualquer outro valor levanta `RuntimeError`); não existe RabbitMQ, Dramatiq, fila nem actor separado por papel — pai e filho são linhas de `job_core.job_runs` reivindicadas por `FOR UPDATE SKIP LOCKED` conforme `route_kind + dispatch_mode`.
 
-- `src/api/services/async_job_worker_payload_executor.py`
-  - Motivo da leitura: despacho do envelope assíncrono dentro do worker.
-  - Símbolo relevante: `IngestionParentJobHandler`, `IngestionDocumentJobHandler` e `AsyncJobCommandFactory`.
-  - Comportamento confirmado: pai executa ingestão assíncrona do lote; filho delega ao executor especializado por documento.
+- `src/api/services/ingestion_job_processes.py`
+  - Motivo da leitura: processos nominais de ingestão registrados no Job Core.
+  - Símbolo relevante: `IngestionParentProcess`, `DocumentFanoutChildProcess` e os três
+    `JobProcessDescriptor` do domínio.
+  - Comportamento confirmado: pai devolve `ChildWorkPlan`; filho executa uma unidade documental; os
+    dois recebem somente input tipado e `ProcessContext`.
+
+- `src/api/services/process_host_reporter.py`
+  - Motivo da leitura: ponte entre progresso funcional da ingestão e host mínimo do Job Core.
+  - Símbolo relevante: `ProcessHostReporter`.
+  - Comportamento confirmado: progresso e cancelamento passam por `ProcessContext.host`, sem token,
+    store ou lifecycle exposto ao domínio.
 
 - `src/api/services/worker_process_runtime.py`
   - Motivo da leitura: runtime unificado do processo worker.
@@ -1076,7 +1110,9 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
 - `src/services/document_fanout_child_executor_service.py`
   - Motivo da leitura: execução real do documento filho.
   - Símbolo relevante: `DocumentFanoutChildExecutorService.execute`.
-  - Comportamento confirmado: recebe o filho já admitido pelo Job Core (ver 3.4), usa `JobCoreCancellationToken` como `cancellation_token` cooperativo, executa um documento por vez e persiste estado terminal antes do ACK. Não consulta mais nenhuma gate própria de domínio.
+  - Comportamento confirmado: recebe o filho já admitido pelo Job Core, usa o reporter derivado do
+    host como cancelamento cooperativo e executa um documento por vez. A terminalização pertence ao
+    executor do Job Core.
 
 - `tests/integration/test_03-01-23_job_core_runtime_durable_ledger.py`
   - Motivo da leitura: evidência executável do fluxo assíncrono real via Job Core (substituiu `test_03-01-08_async_job_rabbitmq_real_flow.py`, removido junto com a topologia RabbitMQ/Dramatiq).
@@ -1162,11 +1198,6 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
   - Motivo da leitura: codec compartilhado de serialização pai↔filho.
   - Símbolo relevante: `decode_worker_response`, `WorkerResponse`.
   - Comportamento confirmado: lê stdout do filho, decodifica `{"result": ...}`, devolve `WorkerResponse` tipado.
-
-- `src/api/services/ingestion_async_enqueue_support.py`
-  - Motivo da leitura: autorrecuperação on-submit de run fantasma.
-  - Símbolo relevante: `_reconcile_stale_ghost_run_on_submit`, `JOB_RUNTIME_STALE_AFTER_SECONDS`.
-  - Comportamento confirmado: detecta run ativo com heartbeat estale, reconcilia com `reconciliation_origin=ingestion_enqueue_on_submit`, prossegue com nova submissão; run vivo retorna 409.
 
 - YAML de ingestão de referência (configuração de documentos técnicos em `app/yaml/`)
   - Motivo da leitura: YAML de referência com todas as chaves reais de parsing, OCR, tabelas, multimodal e embedding.
@@ -1496,45 +1527,3 @@ Uma pergunta comum é: "por que mudei a engine de parsing e o embedding continuo
 - O embedding visual controla **como a imagem vira vetor** (busca por similaridade visual).
 
 Cada um desses fluxos pode ser ligado, desligado e trocado de provider de forma independente. Isso é intencional: permite comparar engines de parsing sem alterar a camada de embedding, e vice-versa.
-
----
-
-## 31. Autorrecuperação on-submit de run fantasma
-
-### 31.1. O que é um run fantasma
-
-Um "run fantasma" (ghost run) é um job de ingestão que aparece como `running` ou `processing` no banco de dados, mas cujo processo worker efetivamente morreu — por crash do container, reinicialização da instância ou kill por OOM. Sem recuperação, esse job bloquearia todas as novas submissões para o mesmo `vectorstore_id`, pois o sistema retorna 409 (Conflict) quando detecta um run ativo para o mesmo alvo.
-
-### 31.2. Como o heartbeat detecta o fantasma
-
-Todo run ativo registra um heartbeat periódico no banco. O campo `last_heartbeat_at` é atualizado em intervalos regulares enquanto o worker processa. O campo `stale_after_seconds` define por quantos segundos um run pode ficar sem heartbeat antes de ser considerado estale (morto sem aviso formal).
-
-Se `(agora - last_heartbeat_at) >= stale_after_seconds`, o run está estale. Isso não quer dizer que o processo terminou de forma limpa: quer dizer que parou de se reportar.
-
-### 31.3. A recuperação acontece na submissão, não em job separado
-
-O ponto de recuperação de runs fantasma está dentro do próprio fluxo de submissão de nova ingestão (`ingestion_async_enqueue_support.py`, função `_reconcile_stale_ghost_run_on_submit`). O mecanismo é:
-
-1. A nova requisição de ingestão detecta um run ativo para o mesmo `vectorstore_id`.
-2. Em vez de retornar 409 imediatamente, o sistema verifica se o run ativo tem heartbeat estale.
-3. Se o heartbeat ultrapassou `stale_after_seconds`: o run ativo é reconciliado (marcado como encerrado de forma anormal) com `reconciliation_origin=ingestion_enqueue_on_submit`.
-4. A submissão prossegue normalmente, criando um novo run.
-5. Se o heartbeat ainda está vivo: o sistema retorna 409, pois o run está genuinamente ativo.
-
-A chave de log que confirma a reconciliação é `reconciliation_origin: "ingestion_enqueue_on_submit"` com `reason: "stale_heartbeat_exceeded_stale_after"`.
-
-### 31.4. Onde isso aparece no log
-
-Ao investigar por que uma submissão "ressuscitou" um lote que parecia travado, procurar no log do `correlation_id` da nova submissão:
-
-- evento com `operation: reconcile_stale_ghost_on_submit`;
-- campo `stale_after_seconds` mostrando o limiar usado;
-- campo `active_run_id` com o id do run fantasma reconciliado.
-
-### 31.5. Distinção importante
-
-Existem dois mecanismos de reconciliação no sistema:
-- **Reconciliação on-submit** (seção 31): acontece no momento em que uma nova ingestão é submetida; é síncrona e local ao endpoint.
-- **Job de manutenção de reconciliação** (`job_core_reconciliation_maintenance_job.py`): roda periodicamente no scheduler; varre todos os runs estale em qualquer vectorstore. Tem o mesmo critério de `stale_after_seconds` mas escopo mais amplo.
-
-Os dois coexistem. O on-submit garante que uma nova tentativa de ingestão não trave aguardando o scheduler. O scheduler garante que runs fantasma em vectorstores inativos também sejam limpos.

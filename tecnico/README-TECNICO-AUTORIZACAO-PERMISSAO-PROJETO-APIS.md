@@ -22,9 +22,15 @@ Esse fluxo é o caminho mais comum para APIs técnicas e vários endpoints admin
 
 ### 2.2. Sessão web federada ou local
 
-Quando a request protegida não traz X-API-Key, require_permission tenta construir user_data a partir da sessão federada. Esse caminho usa refresh_federated_session_membership_snapshot para recalcular grants do membership antes do enforcement quando a governança foi invalidada ou quando a sessão está desatualizada.
+A sessão é o caminho das páginas protegidas e dos endpoints web de auth/account/admin. Nas
+dependências de handler que usam `require_permission`, ela pode produzir `user_data` humano e
+acionar `refresh_federated_session_membership_snapshot` quando a governança foi invalidada ou o
+snapshot está desatualizado.
 
-Esse fluxo é o caminho da UI administrativa e dos endpoints web de auth/account/admin.
+Isso não cria fallback universal de sessão para toda rota técnica. No registry global, modos
+`HEADER` e `READ` continuam exigindo `X-API-Key`. Quando uma ação oficial da UI envia
+`X-Prometeu-UI-Session-Required`, a sessão é validada **além** da regra do modo; ela não substitui a
+chave técnica se a rota for `HEADER`/`READ`.
 
 ### 2.3. Principal persistido de canal
 
@@ -66,6 +72,17 @@ Além do registry, muitos endpoints usam Depends(require_permission(...)). Esse 
 4. materializa dados úteis para auditoria, rate limit e contexto do fluxo.
 
 O código mostra convivência intencional entre as duas camadas. Um bom exemplo é o slice de configuração e o slice AG-UI: a rota tem metadata via endpoint_permission e também depende de require_permission para receber user_data já validado.
+
+### 4.3. Matriz prática de autenticação
+
+| Superfície | O que autentica | Regra decisiva |
+|---|---|---|
+| navegação HTML protegida | sessão web | o gateway de UI exige sessão válida |
+| ação oficial da UI marcada | sessão + regra do `AccessMode` | o marker exige sessão; `HEADER`/`READ` ainda exigem chave |
+| API `HEADER` ou `READ` | `X-API-Key` | sessão não substitui o header |
+| API `HEADER_OR_YAML` | chave quando presente ou contrato YAML do handler | ausência de chave não autoriza por si só; o handler fecha a lógica |
+| API `CUSTOM` | contrato próprio do handler | o registry só valida a chave quando ela existe |
+| `/api/auth/admin/*` | sessão humana | diretório aplica membership ativo e policy owner/admin, sem PermissionKey por rota |
 
 ## 5. Validação técnica da permissão
 
@@ -114,6 +131,19 @@ effective\_permissions = (role\_base \cup explicit\_allow) - explicit\_deny
 $$
 
 Isso significa que deny explícito vence o grant herdado ou o allow explícito. Quando o membership está inativo, o sistema não tenta ser permissivo: o retorno é vazio.
+
+### 8.1. Grants base atuais por papel
+
+| Papel | Grants herdados no catálogo atual |
+|---|---|
+| `owner` | famílias administrativas completas, SaaS, portal, canais/provisionamento, logs e schema metadata, inclusive operações de escrita catalogadas |
+| `admin` | administração operacional delegada: usuários, canais, leitura de tenant/YAML/scheduler/Job Core/background, integrações, SaaS, portal, provisionamento e observabilidade; não herda os writes reservados ao owner em tenant/YAML/scheduler/Job Core/background |
+| `billing_manager` | `saas.commercial.read`, `saas.commercial.manage` e `saas.subscribe`; nenhum grant base fora do domínio comercial/financeiro |
+| `member` | somente `saas.subscribe` |
+
+Essa tabela descreve a base, não o resultado final. `explicit_allow` pode ampliar e
+`explicit_deny` sempre remove. Na governança de memberships, owner e admin podem operar o tenant,
+mas somente owner pode alterar ou delegar o papel owner.
 
 ## 9. Governança administrativa de memberships
 
@@ -282,7 +312,9 @@ GET /api/auth/admin/memberships/{tenant_user_id}/governance devolve:
 
 ### 16.1. 401 por falta de chave técnica
 
-Em modos HEADER e READ, se não houver X-API-Key e não existir caminho de sessão web aplicável, a borda devolve 401 com mensagem de cabeçalho obrigatório.
+Em modos HEADER e READ, ausência de `X-API-Key` sempre devolve 401 com mensagem de cabeçalho
+obrigatório. Se a request estiver marcada como ação oficial de UI, ausência de sessão também gera
+401 antes da validação da chave.
 
 ### 16.2. 403 por falta de permissão
 
@@ -364,11 +396,13 @@ Impacto prático: a plataforma evita que a pergunta certa exponha a evidência e
 
 ### Sintoma: endpoint técnico retorna 401 imediatamente
 
-Causa provável: X-API-Key ausente em rota HEADER ou READ.
+Causa provável: `X-API-Key` ausente em rota `HEADER`/`READ`; ou, numa ação oficial da UI, sessão
+federada ausente.
 
 Como confirmar: verificar se a rota usa endpoint_permission com AccessMode.HEADER ou se depende de require_permission sem sessão web válida.
 
-Ação recomendada: enviar a chave técnica correta ou usar endpoint compatível com sessão web.
+Ação recomendada: respeitar o contrato da superfície. Para API técnica, enviar a chave; para ação
+oficial da UI, manter a sessão e, quando o modo exigir, também a chave.
 
 ### Sintoma: sessão web existe, mas endpoint responde 403
 
@@ -397,7 +431,8 @@ Ação recomendada: corrigir metadata ACL na origem ou alinhar groups do context
 ## 21. Checklist de entendimento
 
 - Entendi como a borda resolve permission e mode por rota.
-- Entendi como require_permission aceita chave técnica e sessão web.
+- Entendi que sessão não substitui `X-API-Key` em `HEADER`/`READ`.
+- Entendi que ação oficial de UI pode exigir sessão e chave ao mesmo tempo.
 - Entendi a composição de effective_permissions para membership humano.
 - Entendi a diferença entre governança administrativa e enforcement HTTP.
 - Entendi como o principal persistido de canal entra no desenho.
@@ -410,10 +445,12 @@ Ação recomendada: corrigir metadata ACL na origem ou alinhar groups do context
   - Comportamento confirmado: catálogo fechado, grants base por papel e inferência de manage/write para view.
 - src/api/security/permission_registry.py
   - Motivo da leitura: registro central de permissão por rota.
-  - Comportamento confirmado: modos PUBLIC, HEADER, HEADER_OR_YAML, CUSTOM e READ.
+  - Comportamento confirmado: modos PUBLIC, HEADER, HEADER_OR_YAML, CUSTOM e READ; marker oficial
+    da UI exige sessão adicional, sem substituir access key.
 - src/api/security/user_auth.py
   - Motivo da leitura: enforcement por chave e sessão web.
-  - Comportamento confirmado: require_permission faz fallback controlado para sessão federada e guarda cache por request.
+  - Comportamento confirmado: `require_permission` pode materializar principal humano no handler e
+    guarda cache por request; esse caminho não altera a semântica do registry global.
 - src/api/service_api.py
   - Motivo da leitura: integração do middleware de enforcement no app.
   - Comportamento confirmado: middleware chama enforce_endpoint_permission antes do handler e há validator configurado em app.state.

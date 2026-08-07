@@ -67,11 +67,16 @@ AST, neste contexto, é a representação tipada e estruturada do pedaço agenti
 
 ### Escopo agentic governado
 
-É o subconjunto do documento YAML em que a AST vira a fonte de verdade de edição, parse, validação e compilação. No código lido, esse envelope inclui seleção de workflow, seleção histórica via selected_entrypoint para DeepAgent, workflows, multi_agents, tools_library e alguns blocos auxiliares do documento.
+É o subconjunto do documento YAML em que a AST vira a fonte de verdade de edição, parse,
+validação e compilação. No código lido, esse envelope inclui a seleção explícita obrigatória por
+`selected_entrypoint`, `workflows`, `multi_agents`, `tools_library`, `skills_library` e alguns
+blocos auxiliares do documento.
 
 ### Target
 
-Target é o alvo da montagem. Nesta documentação, os alvos oficiais são auto, workflow e deepagent. Isso existe para que a plataforma não trate todos os casos de uso como se fossem o mesmo tipo de documento.
+Target é o alvo da montagem. Os alvos oficiais são `auto`, `workflow` e
+`deepagent_supervisor`. O literal antigo `deepagent` não é contrato atual do assembly. Isso existe
+para que a plataforma não trate todos os casos de uso como se fossem o mesmo tipo de documento.
 
 ### Draft
 
@@ -144,7 +149,9 @@ O que é: a lógica que identifica qual slice do documento está ativo ou deve s
 
 Por que existe: porque workflow e deepagent não podem compartilhar o mesmo fluxo de compilação sem contexto. Compatibilidades históricas ficam isoladas e fora da trilha oficial.
 
-Como funciona: TargetScopeResolver usa seleção explícita quando existe e, se necessário, encontra workflow habilitado ou o DeepAgent compatível com o tipo de execução esperado.
+Como funciona: `TargetScopeResolver` exige `selected_entrypoint` não vazio e resolve exatamente o
+workflow ou DeepAgent habilitado e compatível com o target. Ausência, seletor legado, id inexistente
+ou item desabilitado falha fechado; a ordem do YAML não é fallback.
 
 O que entrega: o alvo operacional que vai guiar validação, compilação e merge.
 
@@ -216,11 +223,12 @@ O efeito prático é o mesmo do DeepAgent: YAML, AST, schema, validator e runtim
 
 ### 8.5.4. Contrato skills_library no AST (skills YAML-First por release)
 
-As *skills* de DeepAgent são declaradas em uma biblioteca central no nível raiz do documento,
+As *skills* de WorkflowAgent e DeepAgent são declaradas em uma biblioteca central no nível raiz do documento,
 `skills_library`, espelhando o precedente `tools_library` (mesmo padrão snake_case de biblioteca
-compartilhada). Cada agente/supervisor continua **selecionando** skills por nome (`skills: [...]` +
-`middlewares.skills.enabled=true`); a novidade é que a fonte do conteúdo passou a ser o YAML da
-release, não mais uma tabela de banco por tenant.
+compartilhada). No DeepAgent, cada supervisor/subagente seleciona por nome (`skills: [...]` +
+`middlewares.skills.enabled=true`); no WorkflowAgent, cada node `mode: agent` seleciona em
+`workflows[].nodes[].skills`. A fonte do conteúdo é o YAML da release, não uma tabela de banco por
+tenant.
 
 Na prática, quatro pontos importam.
 
@@ -237,14 +245,18 @@ Na prática, quatro pontos importam.
    assembly reprova com `DEEPAGENT_SKILL_NAO_DECLARADA_NA_LIBRARY` (ERROR). A coerência bidirecional
    toggle↔lista (`DEEPAGENT_SKILLS_MIDDLEWARE_SEM_FONTES` / `DEEPAGENT_SKILLS_SEM_MIDDLEWARE`) segue
    preservada.
-4. O runtime materializa **só a união das skills selecionadas** em `/skills/<name>/SKILL.md` no store
-   (SKILL.md composto de `name`+`description`+`content`); os `files` viram
-   `/skills/<name>/<rel-path>` como **material de apoio legível** — não há tool de execução nem
-   sandbox para skills (execução fora de escopo). Detalhe de materialização, idempotência por hash e
-   reconciliação em `docs/tecnico/README-TECNICO-DEEPAGENT-SUPERVISOR-COMPLETO.md` §7.10.1.
+4. O runtime materializa somente a seleção de cada consumidor. No DeepAgent, cada proprietário tem
+   catálogo próprio em `/skills/supervisor-<id>/main/<skill>/SKILL.md` ou
+   `/skills/supervisor-<id>/subagent-<id>/<skill>/SKILL.md`; os `files` ficam sob o mesmo diretório da
+   skill. Essas `sources` delimitam o catálogo anunciado pelo middleware e a reconciliação
+   anti-fantasma daquele proprietário: **não são ACL nem isolamento de filesystem**. O backend, o
+   namespace e a rota virtual `/skills/` continuam compartilhados. No WorkflowAgent, a source
+   default permanece `/skills/`, com `/skills/<skill>/SKILL.md`, mas dentro do namespace exclusivo
+   de cada node. Não há tool de execução nem sandbox para skills; `files` são apoio legível.
 
-O efeito para tooling é o mesmo dos outros contratos governados: YAML, AST, validator e runtime usam
-uma única fonte de verdade por release, sem divergência banco↔YAML.
+O parser, a AST, o validator, o compilador e o runtime usam a mesma fonte de conteúdo por release.
+O `DocumentCompiler` publica a raiz `skills_library` tanto no target Workflow quanto no target
+DeepAgent; os testes de `confirm` cobrem a criação dessa biblioteca pelo AST e a seleção por nome.
 
 #### 8.5.4.1. Seleção de skills no Workflow: `workflows[].nodes[].skills`
 
@@ -330,9 +342,17 @@ O que é: a etapa que transforma AST validada em YAML final sem destruir o resto
 
 Por que existe: para evitar reescrita integral e acoplamento entre slices independentes.
 
-Como funciona: DocumentCompiler atualiza apenas chaves do target governado. Para workflow, mexe em selected_entrypoint, workflows_defaults, workflows e tools_library. Para DeepAgent, trata selected_entrypoint, faz merge seletivo de multi_agents e atualiza tools_library por id, preservando slices clássicos residuais apenas quando eles já existem fora do alvo governado.
+Como funciona: DocumentCompiler atualiza apenas chaves do target governado. Para workflow, mexe em
+agent-instructions-md, selected_entrypoint, workflows_defaults, workflows, tools_library e
+skills_library. Para DeepAgent, trata agent-instructions-md e selected_entrypoint, faz merge seletivo
+de multi_agents, atualiza tools_library por id e publica skills_library, preservando slices clássicos
+residuais apenas quando eles já existem fora do alvo governado.
 
-O que entrega: documento final coerente com o slice governado e preservação do restante do YAML.
+O que entrega: documento final coerente com o slice governado e preservação do restante do YAML. A
+`skills_library` candidata **não vazia** substitui a raiz anterior nos dois targets; AST sem
+biblioteca, inclusive com lista vazia, preserva a raiz da base e não remove conteúdo. A biblioteca
+não é mesclada por proprietário, porque os proprietários guardam apenas referências nominais à raiz
+compartilhada.
 
 ### 8.7. Persistência canônica
 
@@ -633,7 +653,9 @@ Isso prepara o produto para:
 
 Cenário: o operador já tem um documento com workflows e quer editar apenas o fluxo ativo.
 
-O que acontece: o target workflow é resolvido, o documento vira AST, a validação foca no slice de workflow e o merge final atualiza apenas selected_entrypoint, workflows_defaults, workflows e tools_library do recorte.
+O que acontece: o target workflow é resolvido, o documento vira AST, a validação foca no slice de
+workflow e o merge final atualiza agent-instructions-md, selected_entrypoint, workflows_defaults,
+workflows, tools_library e skills_library do recorte quando essas chaves estão no fragmento.
 
 Impacto prático: o restante do YAML não é reescrito desnecessariamente.
 
@@ -686,6 +708,8 @@ O AST Designer é o conjunto de mecanismos que usa essa representação organiza
 - Base YAML existente pode estar semanticamente inválida mesmo sendo sintaticamente válida.
 - Ferramenta recomendada ou escolhida não garante sucesso de negócio se o catálogo base estiver incorreto.
 - Edição governada não significa que todo o YAML virou AST-first; o foco confirmado é o escopo agentic.
+- `skills_library` é uma raiz compartilhada publicada pelo confirm. Não a duplique dentro de
+  supervisor, subagente ou node; esses consumidores declaram somente os nomes selecionados.
 
 ## 24. Troubleshooting
 

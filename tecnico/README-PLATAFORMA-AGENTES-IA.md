@@ -190,7 +190,8 @@ Esses produtos permitem fazer perguntas sobre documentos. São úteis, mas geral
 A plataforma vai além porque combina:
 
 - ingestão especializada por tipo de conteúdo;
-- RAG híbrido com BM25, vetor, FTS, rerank e ACL;
+- RAG híbrido provider-native com busca vetorial e lexical/BM25 quando o provider oferece,
+  além de rerank e ACL;
 - tools governadas;
 - workflows;
 - HIL;
@@ -324,7 +325,10 @@ A resposta é: ela não precisa decidir sozinha. Ela trabalha até o ponto segur
 
 ### 7. RAG avançado, não busca vetorial ingênua
 
-A documentação de RAG mostra um pipeline moderno: reescrita de pergunta, análise semântica, roteamento adaptativo, busca híbrida, BM25, FTS, cache semântico, fusão, deduplicação, rerank, ACL pós-retrieval e diagnóstico.
+A documentação de RAG mostra um pipeline moderno: reescrita de pergunta, análise semântica,
+roteamento adaptativo, busca híbrida provider-native em Qdrant/Azure, componente lexical/BM25
+quando suportado, cache semântico, fusão, deduplicação, rerank, ACL pós-retrieval e diagnóstico.
+O runtime atual não deve ser vendido como uma trilha PostgreSQL FTS paralela.
 
 Isso é muito superior ao padrão comum de “pegar embeddings e mandar para o LLM”.
 
@@ -448,7 +452,7 @@ Esta seção deve ser usada em apresentações competitivas. Ela mostra que o pr
 - Query rewrite.
 - Query analysis.
 - Adaptive routing.
-- BM25 e FTS.
+- vetor e lexical/BM25 provider-native, conforme o vector store.
 - Embeddings.
 - Busca híbrida.
 - Deduplicação.
@@ -481,12 +485,19 @@ Esta seção deve ser usada em apresentações competitivas. Ela mostra que o pr
 
 ### Omnichannel
 
-- WhatsApp.
-- Instagram.
-- Webchat.
-- HIL por canal.
-- Resolução de contexto multi-tenant.
-- Execução ask, agent e workflow por canal.
+O contrato aceita cinco tipos, mas a profundidade não é igual:
+
+| Canal | Formatação/responder | Principal persistido e policy | Entrega externa implementada |
+|---|---|---|---|
+| WhatsApp | sim | sim | sim, Meta WhatsApp |
+| Instagram | sim | sim | sim, Meta Instagram |
+| Teams | sim | não; anonymous/observe-only | não; resultado `skipped` |
+| Slack | sim | não; anonymous/observe-only | não; resultado `skipped` |
+| Webchat da camada de canais | sim | não; anonymous/observe-only | não; resultado `skipped` |
+
+Todos podem representar `ask`, `agent` ou `workflow` no modelo, mas somente WhatsApp e Instagram
+têm provider outbound real neste slice. O WebChat do produto é outro runtime/UI, com transporte
+próprio; ele não é prova de delivery do `ChannelType.WEBCHAT`.
 
 ### Observabilidade e auditoria
 
@@ -715,7 +726,9 @@ Um pitch sério não deve prometer magia. A plataforma é forte justamente porqu
 
 ### 1. Ela exige infraestrutura real
 
-PostgreSQL, Redis, RabbitMQ, workers, scheduler, vector store, OCR e serviços externos não são acessórios. Isso torna a plataforma mais robusta, mas também exige operação madura.
+PostgreSQL, Redis, workers, scheduler, vector stores, OCR e os providers externos das capacidades
+selecionadas não são acessórios. O Job Core usa ledger PostgreSQL; RabbitMQ aparece como modo
+declarado da fila de canais, não como backbone atual dos jobs da plataforma.
 
 Mensagem correta: não é uma demo leve. É uma plataforma corporativa.
 
@@ -737,11 +750,14 @@ O slice AG-UI documentado já possui registry, adapters, discovery e replay no b
 
 Mensagem correta: já existe base de UI agentic governada; o roadmap natural é expandi-la para todos os runtimes.
 
-### 5. HIL em background tem nuances por runtime
+### 5. HIL em background usa dois jobs
 
-DeepAgent e agent têm base forte para continuidade. Workflow com HIL assíncrono em background aparece como frente que exige cuidado operacional.
+DeepAgent e WorkflowAgent não mantêm um job parado em `waiting_hil`. A execução inicial termina
+com o pedido factual; a decisão humana publica uma continuação distinta, com nova correlação e o
+mesmo contexto durável de thread/checkpoint.
 
-Mensagem correta: a plataforma tem HIL robusto, mas cada runtime precisa ser validado no cenário de continuidade desejado.
+Mensagem correta: a continuidade é durável e auditável, mas aprovação e continuação são execuções
+separadas, não uma thread de worker bloqueada.
 
 ### 6. RAG depende de acervo bem preparado
 
@@ -839,7 +855,11 @@ dyn_api, dyn_sql, MCP e catálogo de tools criam uma ponte prática entre agente
 
 Avaliação: promissora e acima da média, mas ainda com espaço de evolução.
 
-AG-UI, sidecar, visualização generativa condicional no chat (A2UI) e eventos SSE são diferenciais reais. O boundary atual já entrega discovery, replay sanitizado e resume encapsulado para parte dos runtimes. A evolução necessária agora é tornar isso mais universal e durável, cobrindo melhor runtimes como workflow e persistência além da memória de processo.
+AG-UI, sidecar, visualização generativa condicional no chat (A2UI) e eventos SSE são diferenciais
+reais. O boundary atual entrega discovery, replay sanitizado e adapters por runtime. A comparação
+correta deve ser feita por capacidade concreta de cada adapter e pelo contrato de persistência do
+slice, sem rotular Workflow como não suportado quando o caminho atual já possui adapter e HIL
+durável.
 
 ### Critério 7: Produto comercial pronto para software house de varejo
 

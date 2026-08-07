@@ -229,6 +229,24 @@ somente jobs terminais no mesmo escopo. Projeções de domínio combinam os snap
 seus fatos de negócio na leitura; não fazem dual-write, overlay SQL ou predicado próprio de
 liveness.
 
+## Boundary administrativo HTTP
+
+O router genérico fica em `/admin/job-core` e autentica por `X-API-Key`. O escopo aplicado pelo
+service/store é sempre `ENVIRONMENT + tenant_id + usuário solicitante`; conhecer um `job_id` de
+outro escopo não concede acesso.
+
+| Método e rota | Permissão | Efeito |
+|---|---|---|
+| `POST /admin/job-core/runs/query` | `admin.job_core.read` | lista paginada com filtros e cursor opaco |
+| `POST /admin/job-core/runs/detail` | `admin.job_core.read` | abre run por `job_id` ou correlação alvo e devolve eventos |
+| `POST /admin/job-core/runs/cancel` | `admin.job_core.write` | solicita cancelamento cooperativo de um job ativo |
+| `DELETE /admin/job-core/runs/{job_id}` | `admin.job_core.write` | exclui um job terminal do próprio escopo |
+| `DELETE /admin/job-core/runs` | `admin.job_core.write` | exclui atomicamente todos os jobs terminais do próprio escopo |
+
+Cancelamento não promete kill físico: um job ativo passa pelo lifecycle cooperativo e o processo
+observa o host. Detalhe/exclusão retornam 404 quando o alvo não existe no escopo; cancelamento não
+aplicável e tentativa de excluir job ativo retornam 409. O bulk delete não remove jobs ativos.
+
 ## Schema e operação
 
 As tabelas canônicas são `job_core.job_runs` e `job_core.job_run_events`. O DDL é aplicado

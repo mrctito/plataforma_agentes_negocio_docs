@@ -25,12 +25,16 @@ Este manual complementa o documento conceitual e nao substitui o manual antigo d
 
 - `POST /channels/register`
 - `POST /channels/list`
+- `DELETE /channels/{channel_id}`
 - `GET /admin/channels`
 - `PUT /admin/channels/{channel_id}`
 - `GET /channels/{channel_id}/messages`
 - `POST /channels/{channel_id}/messages`
 - `POST /channels/{channel_id}/end-users/list`
 - `POST /channels/{channel_id}/end-users/upsert`
+- `POST /channels/{channel_id}/worker/start`
+- `POST /channels/{channel_id}/worker/stop`
+- `GET /channels/worker/status`
 
 ### 2.2. Onboarding do numero WhatsApp
 
@@ -40,11 +44,15 @@ Este manual complementa o documento conceitual e nao substitui o manual antigo d
 - `POST /api/whatsapp/provision/import-existing`
 - `POST /api/whatsapp/provision/remove-webhook`
 - `POST /api/whatsapp/provision/takeover`
+- `POST /api/whatsapp/provision/test-callback`
 
 ### 2.3. Permissoes relevantes
 
 - `channels.register`
+- `channels.delete`
 - `channels.message`
+- `channels.worker.control`
+- `channels.worker.status`
 - `provision.whatsapp`
 
 ## 3. Fluxo tecnico de ponta a ponta
@@ -318,6 +326,27 @@ POST /api/whatsapp/provision/takeover
 ```
 
 Use takeover depois da importacao quando o numero ja existe e voce precisa mover o trafego para este app.
+
+### 6.6. Testar o callback assinado
+
+```http
+POST /api/whatsapp/provision/test-callback
+Content-Type: application/json
+
+{
+  "client_code": "cliente_demo",
+  "channel_id": "whatsapp_cliente_demo",
+  "phone_e164": "+5511988888777",
+  "message_text": "Teste controlado do callback"
+}
+```
+
+Esse endpoint exige `provision.whatsapp`, resolve o `yaml_path` residual e o canal do tenant,
+assina o corpo com o segredo vigente e o entrega ao `ChannelMessageProcessor` real. A resposta
+traz `webhook_signature`, `signed_body`, payload, modo de fila e, quando houver, resultado e
+delivery. Portanto, ele nao e apenas uma validacao sintatica: pode executar o agente/workflow e
+produzir entrega externa. Use numero e mensagem de teste controlados. Canal/YAML inexistente
+recebe 404; segredo ainda nao configurado recebe 409 e pede conclusao do takeover.
 
 ## 7. Como a Meta valida o webhook
 
@@ -760,6 +789,7 @@ Resposta esperada: `access_token` e `phone_number_id` aparecem no envio, nao na 
 - Entendi os endpoints reais de canal e onboarding.
 - Entendi que o canal deve ser cadastrado antes da conversa.
 - Entendi que o numero pode ser provisionado do zero ou importado.
+- Entendi que `test-callback` usa o processador real e pode produzir entrega externa.
 - Entendi como a Meta valida o webhook.
 - Entendi como o webhook bruto e normalizado.
 - Entendi como `execution_mode` escolhe o comportamento do agente.

@@ -51,7 +51,12 @@ Apesar das variacoes de negocio, os YAMLs reais lidos repetem o mesmo desenho ma
 ```yaml
 tools_library: []
 
-selected_entrypoint: "algum_supervisor"  # quando o YAML quer evitar ambiguidade
+skills_library:
+  - name: "operacao-erp"
+    description: "Procedimento governado para a operação ERP."
+    content: "Valide os dados, execute a operação aprovada e registre o resultado."
+
+selected_entrypoint: "algum_supervisor"  # obrigatório; deve apontar para item habilitado
 
 multi_agents:
   - id: "supervisor_x"
@@ -78,7 +83,9 @@ multi_agents:
       todo_list:
         enabled: true
       skills:
-        enabled: false
+        enabled: true
+    skills:
+      - "operacao-erp"
     permissions:
       - operations: ["read"]
         paths: ["/memories/**"]
@@ -106,6 +113,11 @@ multi_agents:
 ```
 
 O ponto tecnico central e este: o dominio muda, mas o esqueleto agentic continua quase igual.
+
+O fragmento acima reflete o contrato executável atual. `selected_entrypoint` não é uma ajuda
+opcional: sua ausência, vazio ou referência a supervisor desabilitado falha fechado. A
+`skills_library` só é necessária quando algum supervisor ou agente seleciona uma skill; toda
+seleção precisa existir nessa biblioteca.
 
 ## 4. Exemplo 1: template canonico para ERP generalista
 
@@ -316,7 +328,7 @@ Nao deixe o agente inventar payload visual aberto quando a UI espera contrato fi
 | Aspecto                       | Template e Food/Retail          | Cockpit PRD                     | AG-UI PDV                |
 | ----------------------------- | ------------------------------- | ------------------------------- | ------------------------ |
 | Tipo de ferramenta dominante  | dyn_sql e dyn_api mistos        | dyn_api                         | dyn_sql                  |
-| selected_entrypoint explicito | nao observado nesses trechos    | nao observado nesses trechos    | sim                      |
+| selected_entrypoint explícito | ausente nos trechos antigos; precisa ser incluído | ausente no trecho antigo; precisa ser incluído | sim |
 | response_format estruturado   | nao relevante                   | nao observado                   | sim, fortemente restrito |
 | filesystem                    | habilitado com leitura restrita | habilitado com leitura restrita | desabilitado             |
 | foco de negocio               | ERP ampliado                    | operacao e fiscal               | analytics e dashboard    |
@@ -340,6 +352,14 @@ Acao recomendada: seguir o padrao do subdominio_dashboard_dinamico.
 Causa provavel: backend persistente desabilitado, escopo inadequado ou key_prefix mal segmentado.
 
 Acao recomendada: revisar memory, backend e escolher escopo compativel com o processo.
+
+### Sintoma: o runtime não encontra o supervisor
+
+Causa provável: exemplo antigo sem `selected_entrypoint`, id inexistente ou supervisor
+desabilitado.
+
+Ação recomendada: declarar o id exato do supervisor habilitado. Não dependa da ordem de
+`multi_agents`, porque o resolver atual não escolhe o primeiro item.
 
 ## 13. O que estes exemplos nao devem ser usados para provar
 
@@ -396,7 +416,8 @@ Em ERP, isso faz toda a diferenca. O sistema deixa de ser um chat genérico e pa
 ## 16. Checklist tecnico de leitura
 
 - Entendi como identificar um supervisor DeepAgent no YAML.
-- Entendi quando selected_entrypoint aparece e por que ele ajuda.
+- Entendi que selected_entrypoint é obrigatório e deve resolver exatamente um supervisor habilitado.
+- Entendi a diferença entre declarar conteúdo em skills_library e selecionar uma skill em skills.
 - Entendi o papel de memory e backend persistente.
 - Entendi como dyn_sql e dyn_api entram nos exemplos.
 - Entendi por que o exemplo de AG-UI usa response_format fechado.

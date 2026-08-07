@@ -64,9 +64,15 @@ tokenizado pode ser cobrado?”. Nenhum dos dois concede acesso a um projeto Saa
 
 Invariantes aplicados hoje:
 
-- API key/canal chegam a `tenant_yaml.yaml_content` por binding explícito;
+- a API técnica pode chegar a `tenant_yaml.yaml_content` por binding direto ou, nas operações
+  SaaS, por projeto + operação + release ativa;
+- a sessão web resolve por `projectKey`, autorização/entitlement e release ativa; membership não
+  escolhe YAML;
+- o canal usa projeto/operação/release no resolvedor governado downstream, mas o webhook ainda
+  exige `yaml_path` como precondição residual;
 - FKs compostas com `environment + tenant_id + tenant_yaml_id` impedem cruzar tenant/ambiente;
-- `yaml_path` é proveniência, não fonte de runtime;
+- `yaml_path` é proveniência da release e não sua autoridade de execução, embora ainda seja lido
+  nessa borda residual de canal;
 - `tenant_user_yaml.agent_instructions_md` já foi removida fisicamente; a introspecção read-only de
   2026-07-28 confirmou sua ausência. A única fonte da instrução compartilhada é
   `agent-instructions-md` no YAML imutável da release, injetada pelo prompt composto.
@@ -348,7 +354,7 @@ unique parcial de default ativo. O guard `trg_released_tenant_yaml_immutable` re
 |---|---|---|---|---|
 | `tenant_yaml_id` | `uuid`; N/`gen_random_uuid()` | PK do artefato. | publicação/T7/T9 | `00000000-...-0301` |
 | `tenant_id` | `text`; N/— | FK para tenant owner. | publicação/T9 | `pdv-vendas` |
-| `yaml_path` | `text`; N/— | Proveniência; não é fonte de runtime. | publicação/admin | `app/yaml/exemplo.yaml` |
+| `yaml_path` | `text`; N/— | Proveniência da release; não é sua autoridade de execução, mas ainda é precondição residual do webhook de canal. | publicação/admin/webhook residual | `app/yaml/exemplo.yaml` |
 | `yaml_content` | `text`; S/— | Bundle materializado; obrigatório na prática para release. | publicação/T9 | `<yaml omitido>` |
 | `warmup_on_boot` | `boolean`; N/`true` | Elegibilidade de warmup legado. | administração/diretório | `false` |
 | `is_default` | `boolean`; N/`false` | Default legado por tenant/ambiente; T9 usa ponteiro SaaS. | administração/runtime legado | `false` |
@@ -1613,9 +1619,12 @@ rollback recusa remoção quando qualquer uma das tabelas contém dados.
 - `client_code`: código do cliente.
 - `source`: origem da chamada.
 - `user_email`: e-mail do usuário, quando houver.
-- `channel`: nome do canal.
-- `channel_id`: identificador do canal.
-- `customer_identifier`: identificador do cliente final.
+- `channel`: `ChannelType.value` (`whatsapp`, `instagram`, `teams`, `slack` ou `webchat`) nas
+  interações da camada de canais; pode ser nulo em interações sem canal.
+- `channel_id`: id interno de runtime de `ChannelDefinition.channel_id`; não é o
+  `tenant_channels.external_id` do provider e pode ser nulo fora da camada de canais.
+- `customer_identifier`: `sender_id`/identidade externa do remetente final no canal; pode ser nulo
+  em interações sem usuário externo de canal.
 - `workflow_id`: identificador do workflow.
 - `workflow_name`: nome do workflow.
 - `agent_id`: identificador do agente.
@@ -1908,6 +1917,37 @@ Hoje o webchat consome esta trilha por:
    `continuation_correlation_id`.
 6. Use `background_execution_outbox` apenas para confirmar entrega/materialização ao canal.
 
+## Domínio CRM do Clube (schema `aidan`) — APLICADO
+
+O schema `aidan` materializa o núcleo de CRM dos clubes. Cada `tenant_id` representa um clube e
+usa o mesmo tipo `text` da chave primária `public.tenants.tenant_id`. As 16 tabelas possuem FK
+direta para essa autoridade, além das FKs compostas internas que impedem relacionar registros de
+clubes diferentes. O modelo não possui coluna que exija ligação com `public.user_accounts`, por
+isso nenhuma referência artificial a contas pessoais foi criada.
+
+O DDL manual e transacional aplicado é
+[`scripts/sql/20260807_create_aidan_crm_schema.sql`](../../scripts/sql/20260807_create_aidan_crm_schema.sql).
+Ele cria as seguintes tabelas, sem inserir dados:
+
+- cadastro e vínculos pessoais: `person`, `person_civil_status`, `person_relationship`, `address`,
+  `person_address` e `person_contact`;
+- associação e perfil: `membership_plan`, `membership`, `supporter_profile` e
+  `person_preference_note`;
+- comunicação: `communication_preference`, `news_relevant` e `news_delivery`;
+- espelho Shopify para relacionamento e segmentação: `shopify_customer`, `shopify_order` e
+  `shopify_order_item`.
+
+Invariantes físicos comprovados no PostgreSQL real em 2026-08-07:
+
+- 16 tabelas, 16 PKs, 13 uniques, 25 checks e 33 FKs, das quais 16 apontam diretamente para
+  `public.tenants` e 17 preservam o escopo composto dentro de `aidan`;
+- 43 índices no total: PKs/uniques automáticos e os 14 índices explícitos do contrato;
+- função `aidan.set_updated_at()` e um trigger `BEFORE UPDATE` em cada tabela;
+- descrição no schema, nas 16 tabelas e em 24 colunas relevantes, incluindo a proteção de CPF,
+  contatos cifrados/HMAC, histórico de preferências e o significado de `tenant_id` como clube;
+- zero linhas nas 16 tabelas após a criação. CPF e contatos sensíveis não são armazenados em texto
+  puro: o contrato separa conteúdo cifrado, HMAC de busca e valor mascarado.
+
 ## Domínio Tenants e Segurança
 
 ### tenants
@@ -1938,28 +1978,30 @@ Hoje o webchat consome esta trilha por:
 ### YAML governado e bindings externos: leitura 101
 
 O YAML continua sendo o contrato de montagem do runtime, mas o cliente não precisa enviar esse
-contrato inteiro em toda chamada. Um YAML publicado pode ficar em `tenant_yaml.yaml_content`, e
-uma identidade externa aponta explicitamente para ele:
+contrato inteiro em toda chamada. Um YAML publicado pode ficar em `tenant_yaml.yaml_content`; o
+boundary escolhe o caminho autorizado até a release:
 
-- na API direta, uma chave `key_kind='tenant_yaml'` aponta por
-  `tenant_access_keys.tenant_yaml_id`;
-- em canais, `(channel_type, external_id)` aponta por
-  `tenant_channels.tenant_yaml_id`;
-- os dois caminhos usam o mesmo resolvedor de binding e carregam o mesmo `yaml_content`.
+- na API técnica, uma chave `key_kind='tenant_yaml'` pode apontar diretamente por
+  `tenant_access_keys.tenant_yaml_id`; nas operações SaaS, a resolução usa projeto + operação +
+  release ativa;
+- na sessão web, membership autentica a pessoa, enquanto `projectKey`, autorização/entitlement e
+  release ativa escolhem a configuração;
+- em canais, o webhook ainda lê ou tenta resolver `yaml_path` como precondição residual; depois
+  disso, `ChannelRuntimeConfigResolver` exige ambiente, tenant, `external_id`, projeto e operação
+  para materializar a release ativa.
 
-Em linguagem simples: chave e canal são duas portas de entrada para a mesma configuração
-governada. O banco impede que uma porta de um tenant ou ambiente abra o YAML de outro.
-
-O `environment` é coluna obrigatória nas quatro tabelas deste recorte. Ele participa das
-unicidades e das FKs compostas; portanto, uma linha de `development` nunca pode resolver por
-engano uma linha de `prod`.
+Essas portas convergem para conteúdo governado, mas não usam todas o mesmo binding nem o mesmo
+resolvedor. Em linguagem simples: identidade autentica; projeto, operação e release determinam o
+artefato executável. As FKs e unicidades que incluem `environment` impedem que um vínculo de um
+ambiente ou tenant abra o YAML de outro.
 
 ### tenant_yaml
 
 - Finalidade prática: guardar os YAMLs governados e publicados de um tenant. A relação é 1:N:
   ter vários YAMLs por tenant é o caso normal.
-- Fonte de runtime: `yaml_content`. O runtime governado não lê o arquivo indicado por
-  `yaml_path`.
+- Fonte autoritativa da release executada: `yaml_content`. O `yaml_path` não substitui esse
+  conteúdo, embora o webhook de canal ainda o leia como precondição residual antes do resolvedor
+  governado downstream.
 - Chave primária: `tenant_yaml_id` (UUID).
 - Colunas:
 - `tenant_yaml_id`: identificador do YAML governado.
@@ -2030,6 +2072,43 @@ engano uma linha de `prod`.
 - Unique parcial `uq_tenant_access_keys_environment_hash` em `(environment, access_key_hash)`.
 - Unique parcial `uq_tak_env_access_key` em `(environment, access_key)` para o legado.
 
+### tenant_security_keys
+
+- Finalidade prática: guardar o mapa lógico de credenciais de um tenant, opcionalmente
+  especializado por `channel_reference`.
+- Chave primária: `tenant_security_id`.
+- Colunas:
+- `tenant_security_id`: identificador do conjunto.
+- `tenant_id`: tenant dono; FK para `tenants` com `ON DELETE CASCADE`.
+- `channel_reference`: recorte opcional do canal; vazio representa o mapa base do tenant.
+- `keys_json`: objeto de configuração/aliases e referências; não deve ser tratado como cofre de
+  valores secretos.
+- `metadata_json`, `updated_by`, `created_at` e `updated_at`: metadados e auditoria.
+- Unique em `(tenant_id, channel_reference)`.
+
+O loader agrega o mapa base e o mapa do canal e resolve referências
+`$security_credential[:chave]` contra `tenant_secrets`. Referência ausente falha fechado. Depois,
+o preparo canônico do YAML pode expandir `${VAR}` a partir das `security_keys` materializadas e da
+fonte de ambiente permitida pelo boundary.
+
+### tenant_secrets
+
+- Finalidade prática: guardar o valor sensível referenciado pelas `tenant_security_keys`.
+- Chave primária: `tenant_secret_id`.
+- Colunas:
+- `tenant_secret_id`: identificador do segredo.
+- `tenant_id`: tenant dono; FK para `tenants` com `ON DELETE CASCADE`.
+- `secret_key`: nome lógico usado pela referência.
+- `secret_value`: valor sensível; nunca deve aparecer em log, documentação operacional ou resposta
+  de listagem não autorizada.
+- `metadata_json`, `updated_by`, `created_at` e `updated_at`: metadados e auditoria.
+- Unique em `(tenant_id, secret_key)`.
+
+Limite físico atual: essas duas tabelas são consultadas por `tenant_id` e não possuem coluna
+`environment`; a segregação do cache usa o namespace canônico de ambiente. Portanto, não presuma
+isolamento físico por ambiente nessas linhas nem copie esse desenho para tabela nova. Essa
+limitação precisa ser considerada em qualquer evolução de store.
+
 ### tenant_channels
 
 - Finalidade prática: ligar a identidade externa de um canal a projeto/operação SaaS do mesmo tenant e ambiente.
@@ -2043,7 +2122,9 @@ engano uma linha de `prod`.
 - `saas_project_id`: projeto SaaS resolvido pela FK composta anti cross-tenant.
 - `operation`: `rag` quando `execution_mode='ask'`; `agent` quando `workflow`. O modo legado
   `agent` do canal continua bloqueado no código executável.
-- `yaml_path`: referência de migração e diagnóstico; nunca fonte de runtime.
+- `yaml_path`: referência histórica. O webhook atual ainda a exige numa etapa residual de
+  resolução antes de o `ChannelRuntimeConfigResolver` materializar projeto/release; não é a
+  autoridade do conteúdo SaaS downstream.
 - `descricao`, `label`, `execution_mode`, `status` e `metadata_json`: contrato operacional do canal.
 - `environment`: ambiente normalizado e segregador obrigatório.
 - `created_at` e `updated_at`: trilha temporal.
@@ -2091,8 +2172,10 @@ engano uma linha de `prod`.
   como `403`. Tenant inativo ou tentativa de binding cross-tenant recebe `403`; binding ausente,
   YAML inativo/não publicado ou conteúdo ausente recebe `409`. Indisponibilidade do diretório
   recebe `503`.
-- O canal usa `(channel_type, external_id)` para chegar ao mesmo resolvedor. Canal sem binding
-  governado falha fechado; não há fallback para `yaml_path`.
+- O runtime governado do canal usa tenant, ambiente, `external_id`, projeto e operação para chegar
+  à release ativa. Canal sem binding governado falha fechado. Entretanto, o webhook ainda exige
+  `yaml_path` ou tenta `resolve_channel_yaml_path` antes dessa etapa; essa dependência residual não
+  deve ser confundida com a autoridade do YAML publicado.
 - `last_used_at` é atualizado no uso de uma chave `tenant_yaml`, com throttle de cinco minutos
   no processo e no predicado do PostgreSQL.
 - Os eventos canônicos registram `correlation_id`, ids de tenant/chave/canal/YAML, `yaml_hash`,
@@ -2566,7 +2649,11 @@ não resolve configuração por e-mail, caminho, data de atualização ou fallba
   YAML-First e o store apenas materializa o bundle selecionado para o middleware.
 - **Onde skills vivem hoje.** Contrato e materialização em
   `docs/tecnico/README-TECNICO-DEEPAGENT-SUPERVISOR-COMPLETO.md` (`skills_library`, seleção por agente,
-  materialização em `/skills/<name>/SKILL.md`) e no AST em `docs/tecnico/README-AST-AGENTIC-DESIGNER.md`.
+  catálogos DeepAgent por proprietário em `/skills/supervisor-<id>/main/` e
+  `/skills/supervisor-<id>/subagent-<id>/`) e no AST em
+  `docs/tecnico/README-AST-AGENTIC-DESIGNER.md`. Essas sources delimitam catálogo e reconciliação;
+  não são ACL nem isolamento de filesystem. Workflow mantém `/skills/` no namespace próprio de
+  cada node.
 
 #### Contração física concluída do legado DeepAgent
 
@@ -2786,7 +2873,10 @@ o runtime T14 resolve `saas_project_id + operation`, pinando a release ativa e s
 - Para validar configuração organizacional, comece por `tenants`, `tenant_yaml`, `tenant_access_keys`, `tenant_channels`, `tenant_security_keys` e `tenant_secrets`.
 - Para investigar qual configuração uma identidade externa executou, siga o binding composto
   por `environment + tenant_id + tenant_yaml_id`; nunca deduza pelo `yaml_path`.
-- Para entender o membership, sua associação explícita ao YAML governado e a classificação funcional dos projetos, use `tenant_users`, `tenant_user_yaml`, `tenant_yaml`, `system_domains`, `tenant_user_projects` e `tenant_user_project_details`.
+- Para entender membership humano e classificação funcional, use `tenant_users`,
+  `system_domains`, `tenant_user_projects` e `tenant_user_project_details`. A configuração
+  executável da sessão é resolvida por `projectKey`, autorização/entitlement e release ativa;
+  `tenant_user_yaml` não participa mais do runtime.
 - Para cobrança, separe sempre pagamento pessoal em `user_account_payment_cards` e pagamento organizacional em `tenant_payment_cards`.
 - Para recuperar memória conversacional consolidada, use `user_memory_interactions` e `user_memory_session_summaries`.
 

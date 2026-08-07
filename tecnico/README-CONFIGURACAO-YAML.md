@@ -162,19 +162,24 @@ Não existe fallback silencioso. Uma chave de tenant sem binding não procura co
 canal, usuário, `default_user_email`, `updated_at` ou arquivo. Ela autentica chamadas que já
 trouxeram configuração, mas uma chamada `api_key`-only falha de forma clara.
 
-### 10.2. A mesma fonte para API, canais e memberships
+### 10.2. Como API, sessão e canal chegam ao YAML governado
 
-A API direta e os canais usam o mesmo resolvedor de YAML governado:
+Os boundaries convergem para `tenant_yaml.yaml_content`, mas não chegam até ele pelo mesmo vínculo.
 
-- API: `X-API-Key` → `tenant_access_keys.tenant_yaml_id`;
-- canal: `(channel_type, external_id)` → `tenant_channels.tenant_yaml_id`;
-- sessão organizacional: membership → `tenant_user_yaml.tenant_yaml_id`;
-- destino comum: `tenant_yaml.yaml_content`, desde que tenant, binding e publicação estejam ativos.
+- API técnica: YAML explícito segue a precedência da §10.1; sem YAML, a `X-API-Key` pode resolver
+  binding direto ou, nas operações SaaS, projeto + operação + release ativa.
+- Sessão web: membership autentica a pessoa, mas não escolhe configuração. O request informa
+  `projectKey`; o boundary valida usuário/projeto ativos, operação autorizada, entitlement e
+  release ativa, e só então materializa o `tenant_yaml` congelado pela release.
+- Canal: o webhook ainda possui uma etapa residual que exige `ChannelDefinition.yaml_path` ou
+  tenta `resolve_channel_yaml_path`. Depois dessa borda, `ChannelRuntimeConfigResolver` falha
+  fechado sem `environment`, tenant, `external_id`, `saas_project_id` e operação `rag`/`agent`, e
+  resolve o conteúdo por projeto/release.
 
-O `tenant_user_yaml` não persiste caminho nem conteúdo: guarda somente a associação e a
-preferência explícita. `tenant_yaml.yaml_path` é apenas uma dica de origem/diagnóstico e nunca
-uma fonte alternativa do runtime governado. Isso é especialmente importante nos containers
-da plataforma, que não possuem filesystem persistente.
+`tenant_user_yaml` foi removida e não participa mais do runtime. Também não é correto afirmar que
+`yaml_path` nunca é lido: ele ainda é requisito residual no webhook de canal. A autoridade do
+runtime governado downstream continua sendo o conteúdo publicado da release; o path não deve ser
+apresentado como binding SaaS nem como persistência confiável em container.
 
 ### 10.3. Segurança, falhas esperadas e rastreabilidade
 
@@ -292,6 +297,7 @@ Observação importante: deepagent_multi_agents existe no envelope AST interno, 
 | ---------------------- | ----------------------------------------------------------- |
 | user_session           | obrigatória sempre na normalização estrutural               |
 | tools_library          | obrigatória na raiz no fluxo agentic carregado pela fábrica |
+| selected_entrypoint    | obrigatória e não vazia nos targets Workflow e DeepAgent    |
 | vector_store.if_exists | obrigatória quando o contrato de vector_store é avaliado    |
 | workflows              | obrigatória na prática para target workflow válido          |
 | multi_agents           | obrigatória na prática para target deepagent válido         |
@@ -300,8 +306,6 @@ Observação importante: deepagent_multi_agents existe no envelope AST interno, 
 
 | Chave ou caminho                 | Quando se torna obrigatória                                         |
 | -------------------------------- | ------------------------------------------------------------------- |
-| selected_entrypoint                | quando existe mais de um workflow habilitado                        |
-| selected_entrypoint              | quando existe mais de um DeepAgent habilitado compatível com o alvo |
 | schema_metadata.enabled          | quando alguma tool schema_rag_sql é habilitada                      |
 | schema_metadata.vectorstore_id   | quando alguma tool schema_rag_sql é habilitada                      |
 | schema_metadata.sql_dialect      | quando alguma tool schema_rag_sql é habilitada                      |
@@ -320,7 +324,6 @@ Observação importante: deepagent_multi_agents existe no envelope AST interno, 
 
 | Chave ou caminho    | Observação                                                                                      |
 | ------------------- | ----------------------------------------------------------------------------------------------- |
-| selected_entrypoint | obrigatório para execução agentic; resolve exatamente um Workflow ou DeepAgent habilitado |
 | security_keys       | pode ficar vazia apenas em fluxos que chamam a fábrica com allow_empty_security_keys verdadeiro |
 | content_sources     | aceita como fallback de compatibilidade                                                         |
 
@@ -643,8 +646,10 @@ O que observar: metadata.tenant_id e caminhos derivados não são aceitos como c
 - Entendi que sintaxe YAML válida não basta para garantir validade de runtime.
 - Entendi que YAML explícito sempre vence a chave como fonte de configuração.
 - Entendi que `api_key`-only exige uma chave `tenant_yaml` com binding publicado.
-- Entendi que API e canal carregam `tenant_yaml.yaml_content` pelo mesmo resolvedor e nunca usam
-  `yaml_path` como fallback de runtime.
+- Entendi que sessão resolve configuração por `projectKey` e release ativa, sem
+  `tenant_user_yaml`.
+- Entendi que o webhook de canal ainda exige `yaml_path` numa etapa residual, embora o resolver
+  governado downstream materialize projeto/release.
 
 ## 34. Evidências no código
 
@@ -656,7 +661,12 @@ O que observar: metadata.tenant_id e caminhos derivados não são aceitos como c
 
 - src/security/tenant_yaml_binding_resolver.py e src/security/access_key_repository.py: lidos para confirmar o resolvedor único, carga por `tenant_yaml.yaml_content`, falhas fechadas, `source_hint`, hash/hints seguros e auditoria de `last_used_at`.
 
-- src/channel_layer/config_resolver.py: lido para confirmar que o canal usa o mesmo resolvedor por `tenant_yaml_id` e não carrega `yaml_path` em runtime.
+- src/api/routers/channel_router.py e src/channel_layer/config_resolver.py: lidos para distinguir a
+  exigência residual de `yaml_path` no webhook da resolução governada downstream por projeto,
+  operação e release ativa.
+
+- src/saas_project/resolver.py: lido para confirmar resolução de projeto/release e operação sem
+  associação por `tenant_user_yaml`.
 
 - src/config/vector_store_contract.py: lido para confirmar que vector_store.if_exists é obrigatório quando o contrato é avaliado e que os valores aceitos são overwrite, skip e update.
 

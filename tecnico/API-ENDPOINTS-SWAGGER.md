@@ -160,6 +160,9 @@ contrato próprio. Alguns exemplos confirmados no código:
 - /admin/background-executions para consultar agendas do Scheduler,
   resultados factuais, pedidos HIL e comunicações, além de confirmar
   consumo do outbox e cancelar agenda;
+- /admin/job-core para consultar o ledger genérico, abrir eventos, pedir
+  cancelamento cooperativo e excluir somente jobs terminais do próprio
+  escopo autenticado;
 - /admin/tenant-yaml para publicar versões imutáveis do YAML de tenant e
   emitir, religar ou revogar chaves ligadas a uma versão;
 - /client-portal para perfil, credenciais, segredos e importação remota
@@ -167,8 +170,10 @@ contrato próprio. Alguns exemplos confirmados no código:
 - /api/auth para login federado, sessão web e reset local de senha com
   envio transacional interno via provider oficial configurado, hoje
   Brevo ou Resend;
-- /admin, /channels, /api/whatsapp, /api/instagram,
-  /api/dnit e outras famílias de apoio operacional.
+- /channels para cadastro, remoção, mensagens, governança de remetentes e
+  controle/status do runtime local de workers de canal;
+- /api/whatsapp/provision para onboarding e teste assinado do callback;
+- /admin, /api/instagram, /api/dnit e outras famílias de apoio operacional.
 
 ## 8. Divisão em submódulos lógicos
 
@@ -360,6 +365,45 @@ Os contratos mais importantes confirmados no código são:
 - POST /admin/background-executions/communications/{communication_id}/ack:
   confirma consumo idempotente de um item de comunicação assíncrona do
   webchat para o tenant autenticado.
+- POST /admin/job-core/runs/query: lista o ledger paginado e filtrável no
+  escopo `environment + tenant + usuário` resolvido pela `X-API-Key`. Exige
+  `admin.job_core.read`.
+- POST /admin/job-core/runs/detail: abre um job por `job_id` ou
+  `target_correlation_id` e devolve seus eventos cronológicos no mesmo
+  escopo. Ausência dos dois identificadores recebe 400; job fora do escopo
+  ou inexistente recebe 404.
+- POST /admin/job-core/runs/cancel: solicita cancelamento cooperativo de um
+  job ativo. Exige `admin.job_core.write`; devolve 404 quando o job não é
+  localizado e 409 quando o estado atual não aceita a solicitação.
+- DELETE /admin/job-core/runs/{job_id}: exclui um job individual somente
+  quando terminal; job ativo recebe 409. DELETE /admin/job-core/runs remove
+  os jobs terminais do mesmo escopo sem transformar o histórico ativo em
+  alvo de limpeza.
+- POST /channels/register: cadastra ou atualiza uma definição no registry
+  resolvido pelo YAML e exige `channels.register`.
+- POST /channels/list: lista as definições do mesmo registry e exige
+  `channels.list`.
+- GET /admin/channels: lista o catálogo administrativo com
+  `admin.channels.view`; o filtro opcional de `environment` existe somente
+  para leitura autorizada.
+- PUT /admin/channels/{channel_id}: atualiza `description`,
+  `default_user_email`, `metadata` e `yaml_path` com
+  `admin.channels.manage`.
+- DELETE /channels/{channel_id}: remove o canal do registry usando o mesmo
+  corpo de resolução YAML de `/channels/list`; exige `channels.delete`.
+- POST /channels/{channel_id}/worker/start e
+  POST /channels/{channel_id}/worker/stop: iniciam ou sinalizam parada do
+  worker daquele canal e devolvem `WorkerStatusResponse`; exigem
+  `channels.worker.control`. Esse controle pertence ao manager local em
+  memória e não é uma projeção durável do Job Core.
+- GET /channels/worker/status: lista snapshots dos workers locais e suas
+  filas; exige `channels.worker.status` e não substitui consulta ao ledger
+  de jobs.
+- POST /api/whatsapp/provision/test-callback: recebe `client_code` e
+  `channel_id` obrigatórios, com remetente/mensagem/overrides opcionais,
+  resolve a configuração do canal e executa um callback de teste assinado
+  com o segredo vigente. Exige `provision.whatsapp` e devolve assinatura,
+  corpo assinado, payload e resultado/delivery quando disponíveis.
 - GET e POST /admin/tenant-yaml/{tenant_id}/versions: listam e publicam
   versões imutáveis de `tenant_yaml` no ambiente corrente.
 - GET e POST /admin/tenant-yaml/{tenant_id}/keys: listam metadados ou
@@ -368,6 +412,47 @@ Os contratos mais importantes confirmados no código são:
 - PATCH /admin/tenant-yaml/{tenant_id}/keys/{access_key_id}/binding e
   POST /admin/tenant-yaml/{tenant_id}/keys/{access_key_id}/revoke:
   religam uma chave ativa ou a revogam sem editar a versão publicada.
+- PATCH /admin/tenant-yaml/{tenant_id}/keys/{access_key_id}/permissions:
+  substitui as permissões de uma chave **ativa** pelo estado completo
+  informado. É o único caminho de produto para conceder ou tirar um
+  privilégio de chave já emitida — antes dele, só havia `UPDATE` manual em
+  produção seguido de restart. Permissão exigida:
+  `admin.tenant_yaml.write`.
+  - Corpo: `{"permissions": {"<chave do catálogo>": true|false, ...}}`. É
+    **estado completo, não remendo parcial**: o que não vier marcado como
+    concedido é removido. Reenviar o mesmo corpo produz o mesmo estado
+    final (idempotente).
+  - Chave que não existe no catálogo central é recusada com **422** antes
+    de qualquer escrita, e conjunto vazio também é **422** — chave sem
+    nenhuma permissão é revogação disfarçada, e revogação tem rota própria.
+  - **O que já está gravado fora do catálogo é preservado**, não apagado:
+    tanto concessões por prefixo (`rag`, `agent`) quanto chaves órfãs
+    (família `mcp.*` existente em produção). Elas voltam na resposta em
+    `preserved_unknown`. A tela que consome esta rota não as envia no corpo.
+  - `permissions_json` e `scope` são as duas representações da mesma
+    verdade e são escritos na **mesma sentença** `UPDATE`, derivados do
+    mesmo conjunto ordenado — nunca divergem.
+  - Chave inexistente ou de outro tenant → **404**; chave revogada →
+    **409** (existe, mas não serve). Nos dois casos nada é escrito.
+  - Resposta: estado final em `permissions` e `scope`, o diff aplicado em
+    `added` / `removed`, `preserved_unknown`, `correlation_id` e
+    `propagation_seconds` (**30**). Esse número é honesto e vem do TTL do
+    cache canônico de credenciais: a mudança passa a valer em todos os
+    processos e containers em até 30 segundos, **sem reiniciar nada** — não
+    é efeito instantâneo.
+  - A mutação registra log canônico
+    `admin_tenant_yaml.key.permissions_updated` com o `correlation_id`, o
+    tenant, o `access_key_id` e as listas de permissões adicionadas e
+    removidas. Chave de permissão não é segredo e entra por extenso; o
+    segredo da API key nunca aparece.
+- A leitura GET /admin/tenant-yaml/{tenant_id}/keys passou a devolver, por
+  chave, dois campos derivados que a UI consome sem recalcular nada:
+  `effective_permissions` (uma entrada por permissão de máquina do
+  catálogo, com `granted` e `granted_by` = `direta`, `prefixo:<chave>`,
+  `coringa` ou `admin`) e `unknown_permissions` (o que está gravado e o
+  catálogo não descreve). Quem decide "esta permissão está concedida?" é o
+  predicado canônico único `is_permission_granted`
+  (`src/api/security/permissions.py`), o mesmo usado pela autorização HTTP.
 - GET /chat/conversations (200): lista, mais recentes primeiro e paginadas,
   as conversas NÃO deletadas do dono do chat embutível. Escopo obrigatório
   por `tenant_code` + `user_email` (nunca vaza conversa de outro dono).
@@ -885,6 +970,10 @@ O que fica confirmado:
 - Entendi que /agent e /workflow podem responder de forma híbrida.
 - Entendi que /rag/ingest e /rag/etl aceitam trabalho assíncrono.
 - Entendi que /status e /stream acompanham o processamento posterior.
+- Entendi que `/admin/job-core` é a superfície genérica do ledger e que
+  cancelamento é cooperativo.
+- Entendi que o status de worker em `/channels` é um snapshot do runtime
+  local, não o histórico durável do Job Core.
 - Entendi que correlation_id e task_id são partes do contrato
   operacional.
 - Entendi que nem toda rota usa o mesmo modo de autenticação.
@@ -960,6 +1049,26 @@ O que fica confirmado:
     schedules, runs factuais, HIL, comunicações, ack do outbox e
     cancelamento de agenda por permission key administrativa; não publica
     requests, runs ativos ou eventos próprios.
+- src/api/routers/admin/job_core_router.py
+  - Motivo da leitura: confirmar a superfície administrativa genérica do
+    ledger.
+  - Comportamento confirmado: query, detalhe com eventos, cancelamento
+    cooperativo e exclusão de jobs terminais são escopados pela
+    `X-API-Key` em ambiente, tenant e usuário.
+- src/api/routers/channel_router.py
+  - Motivo da leitura: confirmar cadastro, lista, remoção de canal e
+    controle/status de worker.
+  - Comportamento confirmado: register/list/delete operam sobre o registry;
+    start/stop e status expõem o manager local e têm permissões nominais
+    próprias.
+- src/api/routers/admin/users_router.py
+  - Motivo da leitura: confirmar a administração do catálogo de canais.
+  - Comportamento confirmado: GET lista com escopo de ambiente somente para
+    leitura; PUT atualiza os quatro campos administrativos autorizados.
+- src/api/routers/whatsapp_provision_router.py
+  - Motivo da leitura: confirmar o teste do callback de provisionamento.
+  - Comportamento confirmado: `/api/whatsapp/provision/test-callback`
+    resolve o canal, assina o payload e exige `provision.whatsapp`.
 - src/api/routers/admin/tenant_yaml_router.py
   - Motivo da leitura: confirmar governança HTTP das versões e chaves de
     YAML por tenant.

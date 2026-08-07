@@ -25,8 +25,30 @@ Os componentes abaixo são os pontos mais importantes para entender o comportame
 - `IngestionRuntimePreparationService`: preparador compartilhado que organiza o runtime comum antes do processamento pesado. Ele reduz duplicação e evita que cada processor monte seu próprio mundo operacional.
 - `ContentIngestionOrchestrator`: orquestrador que coordena a esteira quando o lote segue pelo caminho direto.
 - `DocumentFanoutCoordinator`: coordenador responsável pelo fan-out documental quando o lote precisa ser quebrado em filhos por documento.
+- `IngestionParentProcess` e `DocumentFanoutChildProcess`: processos nominais registrados no Job
+  Core. Eles recebem somente input de domínio e `ProcessContext`, sem acesso ao ledger.
 
 Em linguagem simples: a fachada organiza, o preparador monta o contexto, o orquestrador conduz o fluxo direto e o `DocumentFanoutCoordinator` cuida da versão paralela por documento.
+
+### 3.1. Fontes aceitas pelo pedido executável
+
+O request interno consolidado cobre conteúdo em markdown, texto, JSON, Excel, PDF, DOCX, PPT,
+imagens e URLs web, além de referências de Confluence, YouTube, Google Drive, Azure Blob e S3. A
+presença no request não garante fan-out: cada família ainda precisa provar inventário e replay
+seguros (§5.1).
+
+No Google Drive, `ingestion.google_drive.sources` aceita três modos distintos:
+
+| `type` | Campos decisivos | Efeito |
+|---|---|---|
+| `folder` | `folder_id`, `recursive`, `file_types`, `max_results` | lista a pasta e, quando solicitado, seus descendentes |
+| `documents` | `document_ids` | usa IDs explícitos; `recursive` é falso |
+| `search` | `query`, `file_types`, `max_results` | lista por consulta do Drive |
+
+`ingestion.google_drive.max_files` aplica o limite global depois da resolução das fontes. A
+enumeração percorre a paginação usando `nextPageToken`; receber menos itens que `pageSize` não é
+prova de que a listagem terminou. Recursão é escolha explícita do modo `folder`, não comportamento
+que deve ser presumido para toda fonte.
 
 ## 4. Contrato operacional mínimo do run
 
@@ -52,7 +74,12 @@ Essa regra ignora `vector_store.if_exists`. O campo ainda decide como o dataset 
 Quem decide hoje, em dois pontos diferentes, nenhum deles vivendo na ingestão:
 
 - **Admissão de um filho novo:** o próprio Job Core, no momento do `claim_next_run`. O envelope do filho carrega `dispatch_mode=document_fanout_child` e o pai carrega `max_active_children` (`JobEnvelope.max_active_children`); o `claim_next_run` só libera um filho novo se o número de filhos ativos daquele pai estiver abaixo do limite, na mesma consulta atômica que reivindica a linha.
-- **Cancelamento de um filho já em execução:** o `JobCoreCancellationToken` do Job Core, consultado cooperativamente pelo `DocumentFanoutChildExecutorService` durante o processamento do documento. Se o pai não terminar de forma limpa (worker morto, heartbeat expirado), quem encerra a run órfã é o reconciliador cancel-only do Job Core (`cancel_orphaned_run`), nunca uma reconciliação local da ingestão.
+- **Cancelamento de um filho já em execução:** o processo consulta cooperativamente apenas
+  `ProcessContext.host.is_cancellation_requested()`/`raise_if_cancelled()`. O token e o store
+  concretos ficam encapsulados no Job Core; `ProcessHostReporter` adapta o progresso funcional da
+  ingestão ao port sem entregar lifecycle ao domínio. Se o pai não terminar de forma limpa (worker
+  morto, heartbeat expirado), quem encerra a run órfã é o reconciliador cancel-only do Job Core
+  (`cancel_orphaned_run`), nunca uma reconciliação local da ingestão.
 
 Em linguagem simples: antes, a ingestão perguntava "o pai ainda deixa eu trabalhar?" a cada filho, consultando uma gate própria. Hoje, se o filho foi reivindicado é porque o Job Core já decidiu que ele pode rodar; e se o pai for cancelado no meio do caminho, o mesmo Job Core avisa o filho para parar. Detalhe completo, com símbolos e eventos de log: `README-TECNICO-INGESTAO-PDF-PIPELINE-COMPLETO.md`, seções 2.3, 2.4 e 3.4.
 
@@ -75,7 +102,10 @@ Quando o operador cancela um lote com fan-out por documento, o efeito correto n�
 Em termos práticos, o contrato operacional é este:
 
 - filho ainda `queued` no ledger do Job Core é cancelado diretamente, sem nunca ser reivindicado e sem iniciar OCR, parsing ou republicação (não existe broker nem redelivery neste transporte — a linha do filho só é reivindicada uma vez);
-- filho já dentro de OCR, download ou parsing pesado só para quando o `JobCoreCancellationToken` observa `cancel_requested`/`cancelled` num checkpoint cooperativo, ou quando o worker morre e o reconciliador cancel-only do Job Core (`cancel_orphaned_run`) encerra a run órfã diretamente como `cancelled`;
+- filho já dentro de OCR, download ou parsing pesado só para quando o host do `ProcessContext`
+  observa `cancel_requested`/`cancelled` num checkpoint cooperativo, ou quando o worker morre e o
+  reconciliador cancel-only do Job Core (`cancel_orphaned_run`) encerra a run órfã diretamente como
+  `cancelled`;
 - não existe mais `auto_recovery` nem `auto_promotion` tentando salvar ou reencaminhar um filho — o cancelamento nunca vira retry, replay ou reenfileiramento.
 
 Isso importa porque evita duas leituras erradas ao mesmo tempo: achar que o botão falhou quando o lote ainda está drenando, ou achar que o sistema promete kill físico imediato quando o modelo real é cooperativo.
@@ -123,3 +153,16 @@ Pense na ingestão como um centro de triagem.
 - Outra acompanha se o lote ainda está autorizado a seguir.
 
 Cada caixa (documento) só é retirada da prateleira uma única vez — não existe fila com reentrega. Antes de retirar, o sistema confere no banco (Job Core) se aquele lote continua válido e se ainda há vaga para mais uma caixa em processamento. Esse é o papel do contrato operacional da ingestão.
+
+## 9. Evidências no código
+
+- `src/api/services/ingestion_job_processes.py`: processos nominais pai e filho da ingestão.
+- `src/core/job_core/job_process.py`: `ProcessContext.host` e o port mínimo exposto ao domínio.
+- `src/api/services/process_host_reporter.py`: adaptação de progresso funcional sem lifecycle
+  paralelo.
+- `src/services/ingestion_request_builder.py` e
+  `src/services/ingestion_request_source_resolvers.py`: request consolidado e contratos das fontes.
+- `src/ingestion_layer/clients/google_drive_client.py`: paginação por `nextPageToken` e limite
+  explícito da listagem.
+- `src/services/document_fanout_coordinator.py`: inventário, replay e limites globais antes da
+  publicação dos filhos.

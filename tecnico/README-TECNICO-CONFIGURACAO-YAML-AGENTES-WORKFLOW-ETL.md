@@ -76,10 +76,10 @@ Estas são as chaves top-level mais decisivas para o tema pedido, confirmadas no
 1. user_session.
 2. security_keys.
 3. tools_library.
-4. selected_entrypoint.
-5. workflows_defaults.
-6. workflows.
-7. selected_entrypoint.
+4. skills_library.
+5. selected_entrypoint.
+6. workflows_defaults.
+7. workflows.
 8. multi_agents.
 9. extract_transform_load.
 
@@ -98,11 +98,9 @@ No escopo de workflow, os campos mais importantes são.
 
 ### 7.2. Como a escolha ativa funciona
 
-O TargetScopeResolver resolve o workflow efetivo nesta ordem.
-
-1. Se selected_entrypoint estiver preenchido e corresponder a um workflow real, ele é escolhido.
-2. Se não houver seleção explícita, o resolver usa o primeiro workflow habilitado.
-3. Se não houver workflow utilizável, o resultado é nulo e o fluxo de validação posterior deve tratar isso como documento inválido ou incompleto.
+`selected_entrypoint` é obrigatório, precisa ser uma string não vazia e deve resolver exatamente um
+workflow habilitado. Ausência, id inexistente, item desabilitado ou seleção ambígua falha fechado;
+o runtime não escolhe o primeiro workflow como fallback.
 
 ### 7.3. O que isso permite sem código
 
@@ -129,13 +127,10 @@ No escopo de agentes, os campos mais importantes são.
 
 ### 8.2. Como a escolha ativa funciona
 
-O TargetScopeResolver olha multi_agents e identifica o DeepAgent ativo pelo campo execution.type.
-
-O fluxo observado no código é este.
-
-1. Se selected_entrypoint existir, ele tenta localizar o id compatível com o target.
-2. Se não encontrar, procura o primeiro supervisor habilitado com execution.type compatível.
-3. Se ainda assim não encontrar um item compatível, o resultado é nulo.
+O `TargetScopeResolver` olha `multi_agents`, exige `selected_entrypoint` e resolve o item habilitado
+cujo `execution.type` é `deepagent`. O alvo público do assembly é `deepagent_supervisor`.
+Ausência, id incompatível, item desabilitado, seletor legado ou mais de um candidato não produzem
+fallback: o documento é reprovado.
 
 ### 8.3. O que isso permite sem código
 
@@ -162,6 +157,17 @@ Permite montar agentes e workflows sobre um catálogo builtin já existente sem 
 ### 9.3. Limite real
 
 Se a organização precisa de uma tool nova, ela precisa nascer em Python com o fluxo oficial do catálogo. YAML só monta o que já existe.
+
+### 9.4. skills_library e seleção por consumidor
+
+`skills_library` é a biblioteca YAML-First compartilhada da release. DeepAgents selecionam nomes
+em `skills` com `middlewares.skills.enabled=true`; WorkflowAgents selecionam nomes por node em
+`workflows[].nodes[].skills`, somente quando `mode: agent`.
+
+A seleção falha fechado quando o nome não existe na biblioteca. No WorkflowAgent, abrir o store
+PostgreSQL compartilhado, materializar a skill, ligar `SkillsMiddleware` e injetar a tool canônica
+`read_file` só acontece para nodes que realmente declaram skills. Nodes sem skills preservam o
+caminho normal e não pagam esse custo.
 
 ## 10. Configuração total de ETL
 
@@ -206,15 +212,16 @@ O comportamento real observado no código pode ser resumido assim.
 
 ### 11.1. Workflow
 
-1. selected_entrypoint preenchido e válido prioriza o item correspondente.
-2. Sem seleção explícita, o primeiro workflow habilitado pode ser escolhido pelo resolvedor local.
-3. A validação semântica decide se esse cenário é aceitável ou se há ambiguidade para o alvo.
+1. `selected_entrypoint` é obrigatório e identifica o workflow ativo.
+2. O item precisa existir, estar habilitado e ser único.
+3. Qualquer quebra desse contrato é erro; não existe escolha implícita do primeiro item.
 
 ### 11.2. DeepAgent
 
-1. selected_entrypoint preenchido e compatível prioriza o item correspondente.
-2. Sem seleção explícita, o resolver tenta o primeiro item habilitado e compatível.
-3. A validação semântica continua sendo a proteção principal contra documento ambíguo ou incoerente.
+1. `selected_entrypoint` é obrigatório e identifica o supervisor ativo.
+2. O item precisa existir, estar habilitado e ter `execution.type: deepagent`.
+3. O target do assembly é `deepagent_supervisor`; aliases legados e fallback implícito são
+   rejeitados.
 
 ## 12. Fluxo técnico ponta a ponta
 
@@ -263,9 +270,10 @@ Os principais cenários confirmados no código são estes.
 1. YAML que não é objeto top-level.
 2. tools_library ausente ou em formato incompatível com o fluxo esperado.
 3. selected_entrypoint apontando para item inexistente ou inválido.
-4. selected_entrypoint sem supervisor compatível.
+4. selected_entrypoint ausente, vazio, desabilitado ou sem supervisor compatível.
 5. FEATURE_AGENTIC_AST_ENABLED desligada nos endpoints de assembly.
 6. extract_transform_load ausente, disabled ou sem subsistemas habilitados.
+7. skill selecionada sem entrada correspondente em `skills_library`.
 
 ## 17. Observabilidade e diagnóstico
 
@@ -285,7 +293,7 @@ O caminho mínimo confirmado é.
 
 1. YAML base carregável.
 2. workflows presente.
-3. selected_entrypoint coerente quando necessário.
+3. selected_entrypoint obrigatório e coerente.
 4. tools_library disponível para o runtime agentic.
 
 ### 18.2. Configuração declarativa de DeepAgent
@@ -294,7 +302,7 @@ O caminho mínimo confirmado é.
 
 1. multi_agents presente.
 2. execution.type coerente com o alvo.
-3. selected_entrypoint coerente quando necessário.
+3. selected_entrypoint obrigatório e coerente.
 4. fluxo de assembly habilitado quando houver validação governada.
 
 ### 18.3. Configuração declarativa de ETL
@@ -332,11 +340,12 @@ O YAML funciona como painel de comando do produto. Ele consegue ligar recursos e
 
 ## 21. Limites e pegadinhas
 
-1. O resolvedor local escolhe alvos ativos, mas a validação semântica continua sendo a proteção principal do contrato.
+1. O resolvedor exige alvo explícito; não use a ordem dos itens como mecanismo de seleção.
 2. Tools builtin são montadas automaticamente; não trate tools_library como catálogo manual do cliente.
 3. ETL declarativo não significa ETL ilimitado.
 4. Objective-to-yaml depende de feature flag e prontidão do ambiente.
 5. Nem toda mudança operacional precisa de código, mas toda nova capacidade estrutural ainda precisa.
+6. `skills_library` é fonte de conteúdo; `skills` é seleção. Uma não substitui a outra.
 
 ## 22. Troubleshooting
 
@@ -350,7 +359,8 @@ Causa provável: problema no catálogo builtin ou no formato esperado de tools_l
 
 ### 22.3. Sintoma: o backbone agentic certo não entra em execução
 
-Causa provável: seletor ativo ausente, incompatível ou documento ambíguo.
+Causa provável: `selected_entrypoint` ausente, vazio, desabilitado, incompatível com o target ou
+apontando para id inexistente. Não há fallback para o primeiro item.
 
 ### 22.4. Sintoma: o ETL recusa a execução antes mesmo do provider externo
 

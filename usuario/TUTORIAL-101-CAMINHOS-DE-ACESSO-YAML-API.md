@@ -37,8 +37,15 @@ carregado na tela).
 
 **Como funciona por baixo:** o boundary único de resolução
 (`resolve_yaml_configuration`) decifra/aceita o YAML recebido, injeta contexto de
-tenant e `security_keys` do diretório e expande placeholders. O cliente nunca envia
-segredos: as credenciais são resolvidas pelo servidor.
+tenant e, quando o YAML não trouxe `security_keys`, tenta materializá-las no servidor antes de
+expandir placeholders. O caminho canônico para browser e integrações é enviar somente a
+configuração e manter credenciais no backend.
+
+Limite atual importante: o boundary ainda aceita um YAML explícito que já contenha
+`security_keys`; nesse caso ele preserva o bloco e não promete rejeição nem reinjeção pelo
+diretório. Portanto, “o cliente nunca envia segredos” é uma regra de integração segura, não um
+guardrail garantido pelo parser atual. Não coloque chaves reais em JavaScript, log, exemplo ou
+payload de navegador.
 
 **Erro a evitar:** enviar YAML explícito **junto** com uma chave que tem binding esperando
 que o binding valha — YAML explícito sempre tem precedência; e em operação ligada a projeto

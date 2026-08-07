@@ -17,6 +17,10 @@ O DeepAgent Supervisor entra na arquitetura em seis pontos conectados.
 5. O resolver de configuração produz um ActiveSupervisorContext com o supervisor selecionado.
 6. O runtime DeepAgentSupervisor monta a factory governada, middlewares, store, backend, checkpointer, tools e subagentes, e então executa o agente.
 
+O seletor `selected_entrypoint` é obrigatório, precisa ser não vazio e deve apontar para exatamente
+um supervisor DeepAgent habilitado. O alvo do assembly é `deepagent_supervisor`; seletores legados
+ou a tentativa de escolher implicitamente o primeiro item falham fechado.
+
 Em paralelo, o mesmo supervisor também pode ser chamado pelo runtime canônico de background execution, pelo node `deepagent_call` do Workflowagent, e a continuação HIL pode ocorrer por /agent/continue, por /agent/hil/decisions ou pelo próprio fluxo do workflow quando a delegação partiu de `deepagent_call`.
 
 ## 3. Ciclo YAML para runtime
@@ -96,7 +100,12 @@ Na prática, isso significa o seguinte.
 2. Cada item precisa ter `id` estável e `spec` em formato `UISpec` válido.
 3. O validator semântico falha fechado quando a spec estiver insegura, malformada ou quando alguém tentar usar o caminho legado `multi_agents[].ui_specs` fora do bloco `ag_ui`.
 
-Importante: nesta etapa do plano, o assembly já conhece e valida `ag_ui.ui_specs`, mas a publicação em discovery e a execução AG-UI dessa spec ainda dependem das próximas tarefas do plano. Isso evita documentar como pronto um runtime que ainda não foi ligado de ponta a ponta.
+O caminho está ligado de ponta a ponta. O assembly parseia e valida a declaração;
+`AgUiYamlUiSpecRegistry` publica a descoberta governada; services e adapters resolvem a spec pelo
+contexto ativo; e o runtime AG-UI materializa o resultado no evento canônico `STATE_SNAPSHOT`.
+Esse catálogo não se confunde com `ag_ui.generative`: `ui_specs` seleciona uma `UISpec` fixa e
+governada, enquanto `generative` governa a superfície A2UI. Id inexistente, spec insegura ou YAML
+ambíguo falha fechado.
 
 ## 4.3. Campos removidos ou não suportados
 
@@ -160,7 +169,11 @@ O DeepAgentSupervisor.initialize segue um fluxo rígido.
 2. Inicializa ToolsFactory e MemoryFactory compartilhadas.
 3. Resolve a factory governada do runtime DeepAgent.
 4. Compõe a pilha extra de middlewares do produto.
-5. Constrói backend e store persistente do DeepAgent quando backend top-level está habilitado; havendo skills selecionadas, materializa no store as skills da `skills_library` do YAML em `/skills/<name>/SKILL.md` (§7.10.1). A instrução compartilhada da release entra pelo prompt composto, não por `/memories/agents.md`.
+5. Constrói backend e store persistente do DeepAgent quando backend top-level está habilitado;
+   havendo skills selecionadas, materializa o catálogo de cada proprietário a partir da
+   `skills_library` do YAML: supervisor em `/skills/supervisor-<id>/main/` e subagente em
+   `/skills/supervisor-<id>/subagent-<id>/` (§7.10.1). A instrução compartilhada da release entra
+   pelo prompt composto, não por `/memories/agents.md`.
 6. Resolve o checkpointer.
 7. Cria o agente final.
 
@@ -199,7 +212,11 @@ Estratégias aceitas:
 
 ## 7.5. Middleware de skills
 
-Se middlewares.skills.enabled=true, o runtime exige a lista `skills` top-level e injeta SkillsMiddleware com backend e sources. O mesmo padrão vale para subagentes que definem skills próprias. O **conteúdo** de cada skill vem da `skills_library` do YAML da release (não mais de banco) — ver §7.10.1 para a fonte e a materialização.
+Se middlewares.skills.enabled=true, o runtime exige a lista `skills` top-level e injeta
+SkillsMiddleware com backend e a source própria do catálogo funcional do supervisor. O mesmo
+padrão vale para subagentes que definem skills próprias. O **conteúdo** de cada skill vem da
+`skills_library` do YAML da release (não mais de banco). Source própria não significa ACL nem
+filesystem separado; ver §7.10.1.
 
 ## 7.6. Filesystem governado
 
@@ -327,19 +344,24 @@ Detalhes relevantes do store:
 O backend durável (Redis ou Postgres) decide **onde** ficam os arquivos virtuais `/skills/` e
 `/memories/`. A **fonte do conteúdo** das skills é o YAML da release — não mais o banco.
 
-- **skills** → declaradas na `skills_library` (nível raiz do YAML da release; ver contrato em
+- **skills** → declaradas na `skills_library` no nível raiz do YAML da release e publicadas pelo
+  `DocumentCompiler` tanto para Workflow quanto para DeepAgent (ver contrato em
   `docs/tecnico/README-AST-AGENTIC-DESIGNER.md` §8.5.4). Cada agente/supervisor seleciona skills por
-  nome (`skills: [...]` + `middlewares.skills.enabled=true`). O runtime materializa **só a união das
-  skills selecionadas** (supervisor + agentes) em `/skills/<name>/SKILL.md` no store, e o
-  `SkillsMiddleware` nativo carrega sob demanda. O `SKILL.md` é composto a partir dos campos
-  estruturados da skill (frontmatter `name`/`description` + corpo `content`); os `files` opcionais
-  da skill viram `/skills/<name>/<rel-path>` no mesmo namespace, como **material de apoio legível**
-  (o agente lê pelas tools de filesystem nativas — **execução de scripts está fora de escopo**, não
-  há tool de execução nem sandbox para skills).
+  nome (`skills: [...]` + `middlewares.skills.enabled=true`). O runtime materializa somente a
+  seleção daquele proprietário: `/skills/supervisor-<id>/main/<skill>/SKILL.md` para o supervisor e
+  `/skills/supervisor-<id>/subagent-<id>/<skill>/SKILL.md` para cada subagente. O `SKILL.md` é
+  composto com frontmatter `name`/`description` e corpo `content`; `files` opcionais ficam sob o
+  mesmo diretório da skill como **material de apoio legível**. Execução de scripts está fora de
+  escopo; não há tool de execução nem sandbox para skills.
+- **Sources e compartilhamento:** cada `SkillsMiddleware` recebe somente a source do próprio
+  catálogo. A source delimita descoberta e reconciliação funcional; **não é ACL nem isolamento de
+  filesystem**. Todos os catálogos da família continuam no mesmo backend, namespace e rota virtual
+  `/skills/`. A rota remove apenas o prefixo global `/skills/`; os segmentos de família e
+  proprietário permanecem nas keys internas do store.
 - **Materialização idempotente + reconciliação:** a versão de cada skill é o `sha256` do bundle
   (`name`+`description`+`content`+`files`); o store só é reescrito quando o conteúdo muda. Skills que
-  saíram da seleção corrente do YAML são **removidas do store** (reconciliação anti-fantasma), sem
-  tocar as memórias genéricas (`/memories/user.md`) do mesmo namespace.
+  saíram da seleção daquele proprietário são **removidas somente da source correspondente**. Sources
+  irmãs e memórias genéricas (`/memories/user.md`) do mesmo namespace são preservadas.
 - **Instrução compartilhada da release:** vive na chave `agent-instructions-md` do YAML e é injetada
   por **um único canal — o prompt composto** (`compose_agent_system_prompt`). **Não há mais**
   materialização de `/memories/agents.md`: o modelo antigo de dupla injeção (prompt composto + memória
@@ -402,9 +424,10 @@ multi_agents:
 
 Notas do exemplo:
 
-- as skills selecionadas são materializadas em `/skills/analise-de-vendas/SKILL.md` e
-  `/skills/relatorio-financeiro/SKILL.md`; os `files` da segunda viram
-  `/skills/relatorio-financeiro/modelo.md` (material de apoio legível, sem execução).
+- considerando o `id` do supervisor como `<id>`, as skills selecionadas são materializadas em
+  `/skills/supervisor-<id>/main/analise-de-vendas/SKILL.md` e
+  `/skills/supervisor-<id>/main/relatorio-financeiro/SKILL.md`; o `modelo.md` da segunda fica sob o
+  mesmo diretório (material de apoio legível, sem execução).
 - um nome em `skills:` que não exista na `skills_library` **reprova na validação de assembly**
   (fail-closed, código `DEEPAGENT_SKILL_NAO_DECLARADA_NA_LIBRARY`) — nunca vira no-op silencioso.
 - `agent-instructions-md` no raiz é injetada **uma única vez** pelo prompt composto — não existe mais
@@ -594,7 +617,7 @@ Além do lifecycle geral, os componentes durável (backend Postgres/Redis), a ma
 | event_name | Quando dispara | Campos-chave (shape, nunca conteúdo) |
 | --- | --- | --- |
 | `deepagent_supervisor.backend_store.configured` | Ao montar o backend do supervisor (Redis ou Postgres) | `store_type`, `store_scope`, `store_policy`, `store_key_prefix` (Redis) ou `store_namespace_prefix`/`store_dsn_source` (Postgres) |
-| `deepagent_supervisor.skills.materialized` | Ao final da materialização das skills selecionadas em `/skills/` (só quando há backend e skills configuradas) | `skills_source` (`yaml.skills-library`), `skills_total`, `skills_materialized`, `skills_unchanged`, `skills_failed`, `skills_removed`, `skill_names`, `skill_names_removed` |
+| `deepagent_supervisor.skills.materialized` | Ao final da materialização dos catálogos por proprietário sob `/skills/` (só quando há backend e skills configuradas) | `skills_source` (`yaml.skills-library`), `skills_total`, `skills_materialized`, `skills_unchanged`, `skills_failed`, `skills_removed`, `skill_names`, `skill_names_removed`, `skill_sources` (source virtual → nomes selecionados) |
 | `deepagent_supervisor.skills.load_failed` | Por skill malformada (frontmatter inválido, `name` != diretório, ou caminho de `files` inseguro) — a skill/arquivo é pulado, não derruba o agente | `skill_name`, `skill_failure_reason` (`invalid_skill_md`, `name_directory_mismatch`, `not_in_skills_library`, `unsafe_file_path`) |
 | `deepagent_supervisor.interpreter.executed` | Execução do `eval` (QuickJS) terminou sem erro/timeout/OOM | `interpreter_outcome=success`, `interpreter_code_chars`, `interpreter_result_chars`, `duration_ms` |
 | `deepagent_supervisor.interpreter.timeout` | Execução estourou `interpreter.timeout` | `interpreter_outcome=timeout`, `interpreter_error_type=Timeout` |
@@ -644,8 +667,13 @@ Fluxo confirmado:
 Detalhes críticos:
 
 - yaml_snapshot ausente é erro; não há fallback implícito;
-- se workflow entrar em waiting_hil, o runtime barra porque a retomada de workflow background ainda não está suportada da mesma forma;
-- para deepagent, waiting_hil pode seguir pelo caminho durável de approval dispatcher.
+- HIL em background, tanto para DeepAgent quanto para WorkflowAgent, é representado por dois jobs:
+  a execução inicial termina com o pedido de aprovação e a decisão humana publica uma continuação
+  distinta, com nova correlação;
+- o Job Core não cria um estado intermediário `waiting_hil`: o pedido e a decisão ficam no contrato
+  de aprovação, e cada job preserva seu próprio ciclo terminal auditável;
+- no DeepAgent, o approval dispatcher retoma o mesmo `thread_id`; no WorkflowAgent, a continuação
+  retoma a thread do workflow e preserva a ponte tipada para `deepagent_call` quando aplicável.
 
 ## 12. Por que isso é muito forte para processos background de ERP
 
@@ -775,7 +803,8 @@ Causa provável: skill não declarada na `skills_library` do YAML (a seleção r
 
 Onde investigar:
 
-- eventos `deepagent_supervisor.skills.materialized` (campos `skills_source`, contadores, nomes) / `.skills.load_failed` (§9.4.1)
+- eventos `deepagent_supervisor.skills.materialized` (campos `skills_source`, `skill_sources`,
+  contadores e nomes) / `.skills.load_failed` (§9.4.1)
 - diagnóstico de assembly `DEEPAGENT_SKILL_NAO_DECLARADA_NA_LIBRARY` (nome selecionado sem entrada na `skills_library`)
 - `backend.postgres.dsn_env` e a variável de ambiente correspondente (store onde as skills são materializadas)
 
@@ -866,8 +895,9 @@ O que o torna forte não é “ter muita feature”. O que o torna forte é que 
   `src/agentic_layer/skills/skills_store_materializer.py::SkillsStoreMaterializer`. Ela compõe e
   revalida `SKILL.md`, sanitiza `files`, calcula `skill_version` por SHA-256, evita regravação
   idêntica e remove artefatos fantasmas. O DeepAgent resolve a seleção em
-  `deep_agent_supervisor.py::_collect_selected_skill_names` e delega a materialização a esse
-  componente; o WorkflowAgent usa a mesma implementação por node. O índice canônico da
+  `deep_agent_supervisor.py::_collect_selected_skills_by_source` e delega a materialização a esse
+  componente; o WorkflowAgent usa a mesma implementação por node, com a source default `/skills/`
+  dentro do namespace exclusivo do node. O índice canônico da
   `skills_library` fica em `src/agentic_layer/skills/skills_library_index.py`. O modelo antigo
   `agent_skills` foi removido do código e, conforme introspecção read-only de 2026-07-28, também
   não existe mais fisicamente no banco principal.
@@ -974,7 +1004,11 @@ Pelo bloco `middlewares.<nome>.enabled` no supervisor (ex.: `middlewares.skills.
 Faltou a lista `skills` top-level (ex.: `skills: ["minha-skill"]`) **e** um `backend` que resolva `/skills/` (Redis ou Postgres). O toggle sozinho não basta — o validador semântico exige os dois juntos (§5.2) e, sem backend, não há de onde ler o conteúdo.
 
 **4. Onde ficam declaradas as skills?**
-Na `skills_library` do nível raiz do YAML da release (cada skill = `name` + `description` + `content` + `files?`), não mais em banco. O supervisor materializa as skills **selecionadas** (`skills: [...]` do supervisor + agentes) em `/skills/<name>/SKILL.md` no store durável (Redis ou Postgres), que é onde o `SkillsMiddleware` nativo lê (§7.10.1).
+Na `skills_library` do nível raiz do YAML da release (cada skill = `name` + `description` +
+`content` + `files?`), não mais em banco. O runtime materializa separadamente a seleção do
+supervisor em `/skills/supervisor-<id>/main/<skill>/SKILL.md` e a de cada subagente em
+`/skills/supervisor-<id>/subagent-<id>/<skill>/SKILL.md`. Cada `SkillsMiddleware` recebe a source do
+seu proprietário (§7.10.1).
 
 **5. E se eu não configurar nenhum `backend`?**
 Skills e memory continuam declaráveis no YAML, mas sem backend não há `/skills/` nem `/memories/` para rotear — o runtime levanta erro explícito em vez de degradar silenciosamente (§14).
@@ -1023,3 +1057,26 @@ O runtime falha explícito na inicialização (`ValueError`) — filesystem habi
 
 **20. Dá para trocar `backend.type: postgres` por `backend.type: store` (Redis) sem mexer em código?**
 Sim. É só troca de bloco YAML — o restante do contrato (`scope`, `policy`, roteamento `/memories/`/`/skills/`) é o mesmo `CompositeBackend`; só muda o `BaseStore` por baixo. É inclusive o caminho de rollback recomendado se o backend Postgres precisar ser desligado rapidamente (§7.10).
+
+## 20. Alinhamento com as fontes oficiais em 2026-08-07
+
+As fontes oficiais consultadas foram [Deep Agents overview](https://docs.langchain.com/oss/python/deepagents/overview),
+[subagents](https://docs.langchain.com/oss/python/deepagents/subagents),
+[skills](https://docs.langchain.com/oss/python/deepagents/skills),
+[memory](https://docs.langchain.com/oss/python/deepagents/memory),
+[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts),
+[LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence), o
+[repositório oficial Deep Agents](https://github.com/langchain-ai/deepagents) e a distribuição
+[ag-ui-langgraph](https://pypi.org/project/ag-ui-langgraph/).
+
+Essas referências orientam o desenho; não substituem a prova do runtime local descrita nas seções
+anteriores. A comparação confirma quatro escolhas:
+
+1. Deep Agents é um harness sobre LangGraph, com subagentes para isolar contexto em vez de acumular
+   toda a investigação no agente principal.
+2. Skills usam divulgação progressiva: nome e descrição chegam primeiro, e o corpo é aberto pelo
+   agente somente quando necessário.
+3. HIL durável exige checkpointer, o mesmo `thread_id` e retomada explícita; como o node reinicia do
+   começo após um `interrupt()`, efeitos anteriores à pausa precisam ser idempotentes.
+4. Memória de longo prazo é apoiada por filesystem/store durável. Neste produto, YAML/AST,
+   isolamento multi-tenant, Job Core e permissões adicionam governança local sobre esse padrão.
