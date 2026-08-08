@@ -19,7 +19,7 @@ As paginas operacionais administrativas usam `data-admin-shell-family` para decl
 As familias atuais protegidas por teste sao:
 
 - `plataforma`: telas administrativas e operacionais da plataforma.
-- `governanca`: telas de tenants, usuarios, permissoes e provisionamento governado.
+- `governanca`: chave tecnica da area **Gestao** (o rotulo visivel mudou em 2026-08; a chave e as URLs nao). Reune cliente/tenant, configuracao publicada, chaves de API, pessoas, segredos e canais de atendimento.
 - `dnit`: telas do dominio DNIT, com identidade propria mas alinhadas aos tokens business.
 
 Quando uma pagina nao usa `data-admin-shell-family`, ela precisa estar classificada no contrato de inventario. Isso evita uma situacao ruim: ninguem sabe se a tela ficou fora do padrao por decisao consciente ou por esquecimento.
@@ -33,6 +33,55 @@ As excecoes conhecidas ficam em categorias explicitas:
 - `template`: arquivos usados como base ou exemplo tecnico.
 - `demo`: demonstracoes controladas.
 - `legacyCompatibility`: legado mantido por compatibilidade, sem promocao automatica para produto ativo.
+
+## Padrao das telas da area de Gestao (a partir de 2026-08)
+
+A reorganizacao de 2026-08 fechou tres regras que valem para **toda** tela nova de Gestao. Elas nao
+sao estilo: cada uma existe porque o desvio correspondente ja aconteceu e custou caro.
+
+**1. O texto de operador tem dono unico: o catalogo de navegacao.** Cada entrada de
+`app/ui/static/js/shared/admin-area-navigation-catalog.js` declara `cardTitle`, `cardSummary`,
+`cardWhen` ("Use quando <situacao concreta>"), `cardRole`, `cardGroup` e `cardOrder`. O card do
+indice e o cabecalho da tela leem **desse mesmo lugar** — a tela declara
+`data-admin-page-description-source="catalog"` e nao escreve titulo nem subtitulo proprios. Antes, a
+mesma tela tinha tres descricoes divergentes em tres arquivos.
+
+**2. O indice de Gestao (`governanca_index.html`) agrupa por fluxo, nao por ordem alfabetica.** Os
+grupos seguem a ordem do trabalho real: `apoio` ("Comece por aqui", onde vive o Guia da Plataforma),
+`configuracao-do-cliente`, `identidade-e-acesso`, `canais-de-atendimento`. Tela nova entra num grupo
+existente; grupo novo e decisao, nao efeito colateral.
+
+**3. Telas de Gestao usam o perfil de contexto `gestao` do layout mestre**, e nunca os 3 cards das
+telas operacionais:
+
+```html
+x-data="prometeuLayoutMestre({ perfilContexto: 'gestao', exigeChaveApi: true, usarAreaPadraoCentralizada: true })"
+```
+
+O perfil renderiza e-mail da sessao, o campo de X-API-Key **somente quando o router exige** (com o
+motivo do 401 escrito na tela) e a superficie de `correlation_id` da ultima operacao. Card de YAML e
+de payload **nao existem** nesse perfil — nao sao escondidos. `exigeChaveApi` segue o contrato real
+do router: rota decorada com `Depends(require_permission(...))` ⇒ `true`; rota cookie-only ⇒ `false`,
+e a tela mostra o selo "Somente login".
+
+Consequencia pratica das tres regras: **nenhuma tela de Gestao monta cliente HTTP proprio.** Toda
+chamada passa por `window.PrometeuAdminApiClient`, que e quem captura o `correlation_id` e o publica
+na superficie do bloco. Tela com `fetch` cru nao e investigavel quando falha, e por isso e recusada
+por contrato de teste.
+
+### O que a reorganizacao mudou no inventario
+
+- **Tela nova:** `ui-admin-gov-guia-plataforma.html` (Guia da Plataforma) — mapa interativo com os
+  fluxos de trabalho passo a passo. E a unica tela da area que nao chama backend nenhum e, por isso,
+  **nao monta o layout mestre**: sem chamada nao ha correlacao nem credencial para exibir, e o bloco
+  ficaria com campos sem consumidor.
+- **Tela removida:** `ui-admin-gov-human-grants.html` foi absorvida por
+  `ui-admin-gov-memberships.html` ("Pessoas e Permissoes"). Convidar alguem e dizer o que essa pessoa
+  pode fazer eram duas metades da mesma decisao em duas telas, e nada na primeira dizia que a segunda
+  existia.
+- **Fim das entradas duplicadas:** sete telas apareciam em duas familias do catalogo, uma delas com
+  dois nomes diferentes. Cada tela agora e declarada uma unica vez; a area SaaS aponta para a de
+  Gestao em vez de repetir as entradas.
 
 ## Tokens e CSS compartilhados
 

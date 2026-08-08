@@ -252,13 +252,21 @@ com `operation='rag'`. Como o endpoint de pergunta (`ask`) declara a operação 
 `dnit-producao` que decide o que essa chave serve — sempre, independente do que o vínculo direto
 aponte.
 
-**Achado honesto, para não inventar tela que não existe:** não há hoje nenhuma tela administrativa
-que grave o vínculo de projeto (`saas_project_id`/`operation`) numa chave — nem em 1.2, nem em 1.3.
-O vínculo de projeto de uma chave existente, como o do exemplo acima, é dado herdado de uma migração
-de dados anterior à criação do modelo de projeto SaaS, não algo que se configura clicando em algum
-lugar hoje. Se você precisar entender ou alterar esse vínculo específico, ele só é visível consultando
-o banco diretamente — não é lacuna deste tutorial, é lacuna real de UI, registrada aqui para não
-prometer um botão que não existe.
+**Onde se configura esse vínculo (corrigido em 2026-08-08):** o vínculo de projeto
+(`saas_project_id` + `operation`) **é** configurável pela tela do Catálogo tenant_yaml
+(`ui-admin-gov-tenant-yaml.html`), tanto ao **emitir** uma chave nova quanto ao **religar** uma chave
+existente. Versões anteriores deste tutorial afirmavam que nenhuma tela gravava esses campos — era
+falso, e a correção seguiu o código, não a memória.
+
+Duas regras que a tela aplica e que vale conhecer antes de mexer:
+
+- **Projeto e operação andam juntos.** A tela recusa localmente "um sem o outro", espelhando o
+  contrato do servidor: ou os dois preenchidos, ou os dois em branco.
+- **Religar declara o vínculo inteiro, não um remendo.** Por isso a janela de religação já abre
+  **pré-preenchida** com o projeto e a operação atuais da chave. Se você limpar esses campos e
+  confirmar, o vínculo com o projeto é apagado — e a próxima chamada do cliente a um endpoint com
+  operação declarada recebe o `409` descrito abaixo. É a causa mais comum de um 409 que aparece
+  "do nada" logo depois de um ajuste de YAML.
 
 **As duas regras de negócio que sustentam o diagrama, confirmadas no código:**
 - FK composta `environment + tenant_id + tenant_yaml_id` em `tenant_access_keys` — uma chave nunca

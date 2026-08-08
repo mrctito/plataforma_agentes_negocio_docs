@@ -1948,6 +1948,39 @@ Invariantes físicos comprovados no PostgreSQL real em 2026-08-07:
 - zero linhas nas 16 tabelas após a criação. CPF e contatos sensíveis não são armazenados em texto
   puro: o contrato separa conteúdo cifrado, HMAC de busca e valor mascarado.
 
+### Comunicação T13 — MIGRAÇÃO PREPARADA, NÃO APLICADA
+
+Em 2026-08-08 foi autorizada e versionada uma evolução restrita ao schema `aidan`. Os arquivos
+`20260808_*_aidan_t13_communication_contracts.sql` ainda não foram executados; portanto, os
+objetos abaixo não fazem parte do estado físico aplicado até o postcheck manual terminar verde.
+
+- `aidan.news_relevant.version`: versão positiva incrementada quando conteúdo, vigência ou regra
+  de audiência muda.
+- `aidan.news_relevant.audience_rule_schema_version`: versão positiva do contrato que interpreta
+  `audience_rule`.
+- `aidan.news_audience_approval`: snapshot append-only da regra de audiência por notícia/versão.
+  O insert confere o JSONB e seu SHA-256 contra o draft corrente e exige uma decisão `approved`
+  em `public.tenant_approval_requests`/`tenant_approval_decisions` para o recurso e a versão
+  exatos. O snapshot não materializa pessoas nem guarda CPF, contato ou segredo.
+- `aidan.news_delivery_dispatch`: fato único de elegibilidade e claim por `news_delivery`. FKs
+  compostas preservam tenant, notícia, pessoa, aprovação e preferência; o insert exige notícia
+  `active` e vigente, audiência aprovada e a preferência mais recente ainda `granted` para o
+  canal/finalidade. `claim_job_id` e `claim_correlation_id` são referências opacas ao ledger; não
+  copiam status, retry, staleness, heartbeat, lease ou finalização do Job Core.
+- Idempotência externa: uniques tenant-scoped protegem uma dispatch por delivery, um claim por
+  job e uma `idempotency_key`. Identificador de mensagem e referência sanitizada de recibo também
+  recebem unicidade por tenant/provider quando presentes.
+- Recibo seguro: somente `provider_message_id`, `provider_receipt_reference` opaca e
+  `provider_accepted_at` podem ser materializados. Payload bruto, conteúdo, contato, token e
+  credencial não entram no contrato.
+- Histórico existente: notícias e deliveries atuais não recebem aprovação ou recibo inventado e
+  não são alterados pela migration. Um futuro dispatcher só poderá consumir uma delivery que
+  possua as novas autoridades válidas.
+
+A ordem manual preparada é precheck → migration → postcheck. O rollback remove a evolução apenas
+se não existir snapshot, dispatch nem notícia com versão nova; depois do primeiro uso ele falha
+fechado para não apagar história.
+
 ## Domínio Tenants e Segurança
 
 ### tenants

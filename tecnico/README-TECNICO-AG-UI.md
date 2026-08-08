@@ -46,6 +46,12 @@ Para embutir chat textual em streaming, incluindo Q&A, DeepAgent/HIL, `projectKe
 fallback classico, use o
 [Tutorial 101 de chat com streaming](../usuario/TUTORIAL-CHAT-PLATAFORMA.md).
 
+Nota importante para quem so quer embutir o chat: o componente embutivel **nao chama**
+`GET /ag-ui/capabilities` em momento nenhum — a unica rota AG-UI que ele consome e
+`POST /ag-ui/runs` (alem dos endpoints classicos de chat). O discovery e opcional para esse
+caso de uso; se voce optar por chama-lo, o header e a permissao da secao 2.0 valem igualmente.
+O checklist completo do cliente externo esta na secao 18.1.
+
 Detalhamento técnico por etapa:
 
 1. [Fronteira de protocolo](README-TECNICO-AG-UI-FRONTEIRA-DE-PROTOCOLO.md)
@@ -125,6 +131,32 @@ Esse mecanismo nao inventa contrato de backend — apenas detecta padroes conhec
 
 ## 2. Endpoints publicos
 
+### 2.0. Autenticacao e permissao — leia antes da primeira chamada
+
+Todos os endpoints `/ag-ui/*` exigem a permissao `agent.execute` na chave de API. Nao ha excecao por endpoint: o discovery (`GET /ag-ui/capabilities`) exige a mesma permissao do run.
+
+Como a credencial entra, por tipo de endpoint:
+
+1. `GET` (`/ag-ui/capabilities` e os replays de eventos): somente pelo header `X-API-Key`. Sessao de navegador NAO autentica esses endpoints, e colar a URL na barra do navegador falha sempre com 401 — o navegador nao envia o header. Teste com curl, Postman ou `fetch` com o header explicito.
+2. `POST /ag-ui/runs` e `POST /ag-ui/copilotkit/runs`: header `X-API-Key`; ou `authentication.access_key` dentro do YAML enviado no corpo; ou o fluxo `projectKey` (a credencial fica no servidor e o browser nao carrega chave).
+
+Teste de sanidade da credencial — execute antes de escrever qualquer codigo de integracao ou de embutir o chat:
+
+```bash
+curl -sS -H "X-API-Key: pk_prod_SUA_CHAVE" \
+  "https://<host-da-api>/ag-ui/capabilities"
+```
+
+Erros de autenticacao/permissao e o que cada um significa de verdade:
+
+| HTTP | Mensagem (inicio) | Causa real | Correcao |
+|---|---|---|---|
+| 401 | `Cabeçalho X-API-Key é obrigatório.` | O header nao chegou ao servidor: URL aberta direto no navegador, header esquecido no `fetch`, ou proxy/CORS removendo o header. **Nao e problema de permissao** — conceder permissao nao muda nada aqui. | Enviar `X-API-Key` em toda chamada, inclusive nos GET. |
+| 403 | `Permissão requerida: agent.execute.` | A chave foi encontrada e e valida, mas o mapa de permissoes dela nao concede `agent.execute`. | Pedir ao operador da plataforma para conceder `agent.execute` a chave (wizard **Permissoes de Chave**, area Gestao → Identidade e acesso). A concessao vale em ate 30 segundos, sem trocar a chave nem reiniciar a integracao. |
+| 403 | `Chave de API inválida ou inativa.` | Valor da chave errado/incompleto, chave revogada, expirada ou emitida para outro ambiente. | Conferir com o operador o valor completo e o ambiente da chave. |
+
+Sempre guarde o `correlationId` devolvido no corpo e no header `X-Correlation-Id` do erro: e com ele que o operador localiza o log exato da sua chamada, sem adivinhacao.
+
 ### 2.1. GET /ag-ui/capabilities
 
 Objetivo: discovery das capabilities expostas por executionKind.
@@ -161,7 +193,7 @@ Caracteristicas confirmadas.
 
 1. Responde com text/event-stream.
 2. Devolve X-Correlation-Id no header.
-3. Exige autenticacao por X-API-Key ou sessao.
+3. Exige autenticacao conforme a secao 2.0: header X-API-Key, `authentication.access_key` no YAML do corpo, ou fluxo `projectKey`.
 4. Exige `user_email` e exatamente uma origem autorizada: `projectKey`, ou uma fonte
    explicita por `yaml_config`, `yaml_inline_content` ou `encrypted_data`.
 5. Com `projectKey`, resolve a configuracao autorizada no servidor; com fonte explicita,
@@ -855,13 +887,13 @@ O passo de renderização em si (`render_a2ui`) não é um evento do stream — 
 
 ## 16. Erros reais e como diagnosticar
 
-### 16.1. 401 sem autenticacao
+### 16.1. 401 ou 403 de autenticacao/permissao
 
-Sintoma: chamada para /ag-ui/runs ou /ag-ui/capabilities retorna 401.
+Sintoma: qualquer chamada `/ag-ui/*` retorna 401 `Cabeçalho X-API-Key é obrigatório` ou 403 `Permissão requerida: agent.execute` / `Chave de API inválida ou inativa`.
 
-Causa provavel: ausencia de X-API-Key ou sessao autenticada.
+Causa e correcao: sao tres erros distintos, com causas independentes — a tabela da secao 2.0 diferencia cada um. Os dois enganos mais comuns na pratica: (1) testar `GET /ag-ui/capabilities` colando a URL no navegador e concluir que a chave nao funciona — o navegador nao envia o header, o 401 e inevitavel e nao prova nada sobre a chave; (2) receber 403 de permissao e trocar/regerar a chave — a correcao e conceder `agent.execute` a chave existente, nao emitir outra.
 
-Confirmacao: resposta com detalhe de cabecalho obrigatorio.
+Confirmacao: repetir a chamada por curl com o header explicito (comando de sanidade da secao 2.0) e comparar a mensagem com a tabela. Em caso de 403 persistente apos a concessao da permissao, informar o `correlationId` ao operador da plataforma.
 
 ### 16.2. 404 ao chamar URL publica antiga removida
 
@@ -947,6 +979,17 @@ O caminho recomendado para um integrador e este.
 Para acelerar a primeira integracao, use `templates/ag-ui-official-third-party`. O template separa a credencial no backend do integrador, deixa o browser sem API key, demonstra uma frontend tool permitida apenas por allowlist e mostra como trocar a camada visual sem alterar o protocolo.
 
 O erro mais comum a evitar e tratar o AG-UI como se fosse apenas streaming de texto. Quem faz isso perde o principal valor do protocolo, que e estado observavel e reconstituivel.
+
+### 18.1. Checklist do cliente externo que so quer embutir o chat
+
+Ordem minima que evita todos os erros de integracao vistos em suporte real:
+
+1. Receber do operador da plataforma uma chave `pk_<ambiente>_...` emitida com a permissao `agent.execute` (secao 2.0). Sem essa permissao, nenhum endpoint `/ag-ui/*` responde.
+2. Validar a credencial com o curl de sanidade da secao 2.0 — antes de escrever qualquer linha de codigo. Se o curl falhar, a tabela da secao 2.0 diz exatamente o que corrigir e quem aciona o que.
+3. Implementar seguindo o [Tutorial 101 de chat com streaming](../usuario/TUTORIAL-CHAT-PLATAFORMA.md), que e o passo a passo executavel do componente embutivel, usando o [guia do componente](../usuario/GUIA-COMPONENTE-WEBCHAT-EMBUTIVEL.md) como referencia de contrato (configuracao, API publica, estados).
+4. Diagnosticar erros pelo `correlationId` da resposta: 401/403 → tabela da secao 2.0; demais falhas → secao 16.
+
+O que NAO fazer: testar endpoints AG-UI colando URL no navegador (401 garantido, secao 16.1); regerar a chave ao receber 403 de permissao; e enviar `yaml_config`/`yaml_inline_content` do browser publico (secao 3.1 — YAML cru so sai de boundary confiavel).
 
 ## 19. Limites e lacunas reais
 

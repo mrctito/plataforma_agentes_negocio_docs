@@ -1,0 +1,33 @@
+flowchart TD
+    A["Central do dia"] --> B["Atendimento 360"]
+    B --> C{"Identidade autorizada?"}
+    C -->|"Sim"| D["Torcedor 360"]
+    C -->|"Não"| E["Contexto restrito ao canal"]
+    D --> F["Responder no canal"]
+    D --> G["Preparar carrinho Shopify"]
+    D --> H["Transferir para atendente"]
+    E --> F
+    F --> I["Histórico e auditoria"]
+    G --> I
+    H --> I
+
+    A --> J["Nova comunicação"]
+    J --> K["Conteúdo"]
+    K --> L["Vigência"]
+    L --> M["Público elegível"]
+    M --> N["Canais permitidos"]
+    N --> O["Revisão e aprovação"]
+    O --> P["Entrega única por pessoa"]
+    P --> Q["Resultados agregados"]
+
+    A --> R["Conteúdo e Instagram"]
+    R --> S["Preparar e revisar"]
+    S --> T["Agendar ou publicar"]
+    T --> U["Monitorar comentários"]
+    U --> B
+
+    A --> V["Conhecimento do clube"]
+    V --> W["Coletar"]
+    W --> X["Validar"]
+    X --> Y["Revisar qualidade"]
+    Y --> Z["Publicar para o mascote"]
