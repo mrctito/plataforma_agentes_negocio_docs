@@ -1,0 +1,13 @@
+flowchart LR
+    U["Administrador do clube"] --> W["Wizard AIDAN"]
+    W --> B["Boundary autenticado da plataforma"]
+    B --> O["Owner único do cofre"]
+    O --> K["Key ring injetado pelo deployment"]
+    O --> E["Envelope AES-256-GCM"]
+    E --> P["PostgreSQL"]
+    Y["YAML / agente"] --> R["Referência opaca"]
+    R --> B
+    B --> X["API externa autorizada"]
+
+    K -. "nunca vai para UI, YAML ou modelo" .-> O
+    P -. "guarda envelope, não plaintext AIDAN" .-> B

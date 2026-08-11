@@ -57,6 +57,10 @@ O pipeline de PDF é o mais rico em decisões documentais. Ele trata PDF digital
 
 Nesta atualização, os manuais de PDF também passaram a cobrir a fronteira assíncrona completa do produto: `POST /rag/ingest`, job pai, worker pai, fan-out documental, worker filho e o momento em que o slice PDF especializado realmente entra em ação.
 
+Antes de ingerir um acervo novo, também é possível **medir** volume e custo sem gravar nada — a mesma esteira de ingestão, com a flag `ingestion.analysis_only`:
+
+- [README-TECNICO-MODO-DRY-RUN-ANALISE-ACERVO.md](README-TECNICO-MODO-DRY-RUN-ANALISE-ACERVO.md)
+
 ### Excel
 
 - [README-CONCEITUAL-INGESTAO-EXCEL-PIPELINE-COMPLETO.md](../conceitual/README-CONCEITUAL-INGESTAO-EXCEL-PIPELINE-COMPLETO.md)

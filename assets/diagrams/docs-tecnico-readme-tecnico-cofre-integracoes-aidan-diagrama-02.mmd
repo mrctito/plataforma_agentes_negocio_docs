@@ -1,0 +1,10 @@
+flowchart TD
+    A["Usuário instala PostgreSQL 16"] --> B["Retomar T6 em laboratório isolado"]
+    B --> C["Provar migration, postcheck, rollback e restore"]
+    C --> D["Executar T2b e T7–T10 até GREEN"]
+    D --> E["Criar backup off-device + snapshot compatível"]
+    E --> F["Provar restore coordenado"]
+    F --> G["Liberar T4_CUTOVER_PRODUCAO"]
+    G --> H["Executar T11/T12 em janela controlada"]
+    H --> I["Conectar credenciais reais pelos wizards"]
+    I --> J["Validar Shopify e Meta ponta a ponta"]
