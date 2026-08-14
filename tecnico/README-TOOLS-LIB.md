@@ -1279,10 +1279,10 @@ Convenções deste catálogo:
 
 ### Retrievers, HybridFusion e reranker
 
-- Descrição: implementations para vector, cache, hybrid e multi-query retrieval, com fusão configurável, reescrita e reranking neural.
-- Tags: `retrieval`, `hybrid-search`, `reranker`
+- Descrição: implementations para vector, cache, hybrid e multi-query retrieval, com fusão configurável e reescrita. O rerank NÃO mora mais aqui: desde 2026-08-14 é capacidade nativa do vector store (ColBERT late interaction server-side no Qdrant, dentro de `search_hybrid`), e o `reranker.py` com cross-encoder HuggingFace foi removido.
+- Tags: `retrieval`, `hybrid-search`
 - Tipo: service e strategy
-- Arquivos: `src/qa_layer/rag_engine/retrievers.py`, `src/qa_layer/rag_engine/caching_retriever.py`, `src/qa_layer/rag_engine/hybrid_retriever.py`, `src/qa_layer/rag_engine/multi_query_retriever.py`, `src/qa_layer/rag_engine/fusion_algorithms.py`, `src/qa_layer/rag_engine/query_rewriter.py`, `src/qa_layer/rag_engine/reranker.py`.
+- Arquivos: `src/qa_layer/rag_engine/retrievers.py`, `src/qa_layer/rag_engine/caching_retriever.py`, `src/qa_layer/rag_engine/hybrid_retriever.py`, `src/qa_layer/rag_engine/multi_query_retriever.py`, `src/qa_layer/rag_engine/fusion_algorithms.py`, `src/qa_layer/rag_engine/query_rewriter.py`.
 - Linguagem: Python
 - Responsabilidade principal: oferecer strategies intercambiáveis sobre contratos de retrieval.
 - Dependências principais: vector store/retriever contract, embeddings/LLM, RAG config e metrics.

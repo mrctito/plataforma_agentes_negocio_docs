@@ -484,13 +484,16 @@ Esse fluxo mostra a separacao central da implementacao. O router monta contexto.
 
 ## 6. Registry e orchestrator
 
-O registry fica em src/api/services/ag_ui_adapter_registry.py. Ele existe para evitar fallback implicito ou wiring hardcoded espalhado. O default registra tres executionKinds.
+O registry fica em src/api/services/ag_ui_adapter_registry.py. Ele existe para evitar fallback implicito ou wiring hardcoded espalhado. O default registra quatro executionKinds.
 
 1. deepagent.
 2. workflow.
-3. capability_pack.
+3. rag_qa.
+4. capability_pack.
 
 `retail_demo` e `erp_backoffice_demo` nao aparecem nessa lista como executionKind proprio: sao `capability_pack_id` de um segundo registry interno (`AgUiCapabilityPackRegistry`, em src/api/services/ag_ui_capability_pack.py), plugado como o unico adapter registrado para o executionKind `capability_pack` (`AgUiCapabilityPackRegistryAdapter`). Esse adapter le `capabilityPackId` de `context.metadata` para escolher o pack.
+
+`rag_qa` (Q&A/RAG) entrou no registry em 2026-07-26, quando essa espinha tambem passou a executar pelo `LangGraphAgent` oficial do pacote `ag-ui-langgraph` — o mesmo caminho que `deepagent` e `workflow` ja usavam (detalhe do adapter na secao 7.3). Desde 2026-08-14, `rag_qa` **tambem aparece no discovery publico** de `GET /ag-ui/capabilities` (`AgUiCapabilitiesService.default()` monta capability para `deepagent`, `workflow`, `rag_qa` e os capability packs) — ate essa data o adapter era executavel via `POST /ag-ui/runs` com `executionKind: "rag_qa"` mas invisivel ao discovery; um integrador que dependesse so do discovery nao enxergava essa opcao. O caminho comprovado que chega a `rag_qa` continua sendo tambem o mapeamento `mode: "qa"` do chat embutivel (secao 11.3), agora somado ao discovery.
 
 Se um executionKind nao estiver registrado, o orchestrator termina com erro estruturado. O core nao inventa adapter.
 
@@ -513,11 +516,21 @@ O adapter deepagent usa DeepAgentSupervisor, expoe `CompiledStateGraph` e delega
 
 O adapter workflow usa `Workflowagent`, obtem o `CompiledStateGraph` do runtime inicializado e delega a execucao padrao para `LangGraphAgent`. Falhas viram RUN_ERROR pelo orquestrador AG-UI. O resume AG-UI continua suportado por um executor de continuidade dedicado, que valida `interruptId`, traduz `decisions` estruturadas para o contrato oficial de workflow e chama o service canonico de continuacao antes de reemitir eventos AG-UI normalizados. Esse contrato agora preserva `approve`, `reject`, `cancel` e `edit` com `edited_payload`, em vez de achatar tudo para string.
 
-### 7.3. retail_demo
+### 7.3. rag_qa
+
+O adapter `AgUiRagQaAdapter` (`src/api/services/ag_ui_rag_qa_adapter.py`) executa Q&A/RAG pelo mesmo `LangGraphAgent` oficial que `deepagent` e `workflow` usam — terceira espinha agentic a convergir para esse runtime comum (2026-07-26). Ele monta o runtime `RagQaLangGraphRuntime` a partir do YAML resolvido e delega ao adapter LangGraph genérico; não implementa streaming, protocolo nem lifecycle próprios.
+
+Diferenças deliberadas em relação a `deepagent`/`workflow`:
+
+1. Não tem resume/HIL nem materialização de `ui_spec` — uma pergunta é uma execução única e fechada.
+2. A resolução de `executionKind` para `rag_qa` **não** passa pela derivação por `selected_entrypoint` que vale para os execution kinds agentic (`AgUiYamlFirstRunPreparationService._resolve_execution_kind`, `src/api/services/ag_ui_yaml_first_run_preparation_service.py`): quando o payload pede `executionKind: "rag_qa"` explicitamente, o serviço aceita direto, porque Q&A é ortogonal ao entrypoint agentic (lê `qa_system`/`rag_system`, não `multi_agents`/`workflows`). Pedir `workflow` num YAML que define `deepagent` continua sendo `400` — esse gate de divergência só se aplica aos kinds agentic.
+3. Aparece no discovery público `GET /ag-ui/capabilities` desde 2026-08-14 (nota da seção 6) — com `supportsInterrupt`/`supportsHil`/`supportsResume` todos `false`, coerente com o item 1 acima.
+
+### 7.4. retail_demo
 
 Esse adapter e entregue como capability pack governado, consumido pelo registry AG-UI comum. Hoje ele suporta apenas query governada (catálogo fechado de capabilities PDV) — o mecanismo de dashboard dinâmico que existia aqui foi removido; visualização condicional no chat é responsabilidade do bloco `ag_ui.generative` (seção 1A), não deste adapter.
 
-### 7.4. erp_backoffice_demo
+### 7.5. erp_backoffice_demo
 
 Esse dominio foi adicionado como segundo capability pack governado. Ele publica as capabilities `fechar_caixa` e `conferir_turno_caixa`, ambas baseadas no contrato de procedimento `prc_fechar_caixa` ja documentado no repositório, mas executadas como fixtures seguras de preview para nao depender de DSN nem inventar schema de banco fora do contrato lido.
 
@@ -650,7 +663,7 @@ O hub AG-UI de varejo (`ui-admin-plataforma-ag-ui-varejo-demo.html`) lista tres 
 2. Checkout radar.
 3. Catalogo central.
 
-Nao ha mais um quarto card de dashboard dinamico no hub: o card foi removido junto com a materializacao visual do capability pack (secao 7.3). Os testes tambem confirmam que essas paginas usam o endpoint `/ag-ui/runs`, o bundle browser oficial versionado, o layout mestre da plataforma e o shell administrativo, sem acoplamento ao webchat legado.
+Nao ha mais um quarto card de dashboard dinamico no hub: o card foi removido junto com a materializacao visual do capability pack (secao 7.4). Os testes tambem confirmam que essas paginas usam o endpoint `/ag-ui/runs`, o bundle browser oficial versionado, o layout mestre da plataforma e o shell administrativo, sem acoplamento ao webchat legado.
 
 ### 11.2. Controller compartilhado das paginas
 
@@ -793,27 +806,26 @@ O repositório agora possui um fixture canônico do protocolo em `tests/fixtures
 
 Na prática, isso significa o seguinte:
 
-1. Backend e frontend validam o mesmo conjunto de eventos públicos, replay sanitizado, interrupção HIL e payload de resume.
+1. O backend valida contra esse fixture o mesmo conjunto de eventos públicos, replay sanitizado, interrupção HIL e payload de resume.
 2. O fixture serve como contrato executável para integradores, sem depender de infraestrutura externa.
 3. O exemplo de falha esperada para `resume` inválido também fica centralizado nesse mesmo arquivo.
 
-Comandos mínimos para rodar a conformidade:
+Comando mínimo para rodar a conformidade de backend:
 
 ```bash
 source .venv/bin/activate && python suite_de_testes_padrao.py --focus-tests tests/unit/test_02-01-46_ag_ui_protocol_contract.py tests/unit/test_02-01-48_ag_ui_router.py --run-id ag-ui-contratos-local
-npm test -- tests/js/ag_ui_runtime.test.js tests/js/ag_ui_sidecar_chat.test.js
 ```
 
 Importante: nesse comando da suíte oficial, os caminhos acima entram apenas como
 seletores explícitos de pytest no `--focus-tests`. Eles não definem família,
 domínio, prioridade nem pertencimento por pasta.
 
-Esses comandos validam quatro pontos que importam para terceiros:
+Esse comando valida dois pontos que importam para terceiros:
 
 1. Os eventos públicos continuam em camelCase oficial.
 2. O replay segue sanitizado sem expor segredo persistido.
-3. O runtime JS continua aplicando o mesmo fixture no store e no renderer.
-4. O sidecar continua montando `resume` a partir da interrupção oficial.
+
+**Lacuna encontrada nesta rodada de sincronização:** os testes JS que antes rodavam o mesmo fixture no lado do runtime (`tests/js/ag_ui_runtime.test.js`, `tests/js/ag_ui_sidecar_chat.test.js`, e outros da mesma geração — `ag_ui_dashboard_*`, `ag_ui_ui_spec_*`) foram removidos no commit `970a0d32f` (2026-05-11), sem substituto que reexercite `createAgUiSseClient`, `createAgUiStateStore` ou `createAgUiSidecarChat` contra `tests/fixtures/ag_ui_conformance_events.json`. **Não encontrado no código.** Onde deveria estar: `tests/frontend/*.test.js` (convenção atual das suítes JS do slice AG-UI, executada por `npm run test:js:smoke`) ou `tests/js/*.test.js` (coberto por `npm test`, via `vitest.config.ts`) — qualquer um dos dois é compatível com a infraestrutura de testes já existente. Hoje a conformidade AG-UI é comprovada só no backend.
 
 ### 14.3. Demos backoffice nao-PDV
 
@@ -1018,11 +1030,11 @@ O slice AG-UI nao esta documentado no vazio. Ele tem protecao automatizada relev
 
 ### 20.2. Frontend e pacote runtime
 
-1. tests/js/ag_ui_runtime.test.js.
-2. tests/js/ag_ui_sidecar_chat.test.js.
-3. tests/frontend/ag_ui_varejo_demo_hub_contract.test.js.
-4. tests/frontend/ag_ui_a2ui_surface_renderer_contract.test.js (renderer fail-closed, catálogo de 8 componentes).
-5. tests/frontend/embeddable_chat_ag_ui_sse_transport_contract.test.js (transporte SSE opt-in, extração do envelope A2UI do `TOOL_CALL_RESULT`).
+1. tests/frontend/ag_ui_varejo_demo_hub_contract.test.js.
+2. tests/frontend/ag_ui_a2ui_surface_renderer_contract.test.js (renderer fail-closed, catálogo de 8 componentes).
+3. tests/frontend/embeddable_chat_ag_ui_sse_transport_contract.test.js (transporte SSE opt-in, extração do envelope A2UI do `TOOL_CALL_RESULT`).
+
+**Lacuna real:** `packages/ag-ui-runtime` (cliente SSE `createAgUiSseClient`, store `createAgUiStateStore`, sidecar `createAgUiSidecarChat`, `getHilContract`) não tem hoje nenhum teste automatizado no repositório — confirmado por busca sem ocorrência desses símbolos em nenhum arquivo `*.test.js`/`*.test.ts`. Os testes que cobriam esse pacote (`tests/js/ag_ui_runtime.test.js`, `tests/js/ag_ui_sidecar_chat.test.js`) foram removidos no commit `970a0d32f` (2026-05-11) e não têm substituto. **Não encontrado no código.** Onde deveria estar: `tests/frontend/*.test.js` ou `tests/js/*.test.js` (seção 14.2 detalha os dois runners disponíveis).
 
 ### 20.3. Playwright
 
@@ -1052,6 +1064,11 @@ Ele e um jeito padronizado de a tela conversar com o runtime de IA sem ficar ceg
   - Motivo da leitura: entender resume e ponte com runtimes agentic.
   - Simbolo relevante: execute_agentic_resume, emit_runtime_result_events.
   - Comportamento confirmado: reutilizacao do fluxo agentic canônico para agent e deepagent.
+
+- src/api/services/ag_ui_rag_qa_adapter.py + ag_ui_yaml_first_run_preparation_service.py
+  - Motivo da leitura: confirmar o quarto executionKind do registry e sua resolução.
+  - Simbolo relevante: AgUiRagQaAdapter, AG_UI_RAG_QA_EXECUTION_KIND, AgUiYamlFirstRunPreparationService._resolve_execution_kind.
+  - Comportamento confirmado: adapter executa Q&A/RAG pelo LangGraphAgent oficial (sem resume/HIL); resolução de `executionKind: "rag_qa"` é aceita direto, sem passar pela derivação por `selected_entrypoint` que vale para deepagent/workflow; com entrada no discovery público desde 2026-08-14 (`AgUiCapabilitiesService.default`, `supportsInterrupt`/`supportsHil`/`supportsResume` todos `false`).
 
 - src/api/services/ag_ui_retail_demo_adapter.py
   - Motivo da leitura: confirmar capabilities e guardrails do pack PDV.

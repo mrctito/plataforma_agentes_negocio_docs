@@ -51,7 +51,7 @@ RetrievalEngine.execute_multi_query_processor usa o retriever multi_query config
 
 ### 3.5. Busca tradicional
 
-RetrievalEngine.execute_traditional_processor percorre a ordem de preferencia vector_search, semantic_search e default. Depois disso, ainda pode enriquecer a resposta com FTS.
+RetrievalEngine.execute_traditional_processor percorre a ordem de preferencia vector_search, semantic_search e default, usando o primeiro retriever disponivel. Nao existe mais enriquecimento por FTS PostgreSQL: esse retriever foi removido do produto (o esparso/BM25 hoje e capacidade nativa do vector store — Qdrant ou Azure Search — nao um mecanismo manual paralelo).
 
 ## 4. Decisoes tecnicas importantes
 

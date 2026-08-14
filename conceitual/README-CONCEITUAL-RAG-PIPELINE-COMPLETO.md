@@ -135,7 +135,13 @@ Cache semântico reaproveita resultados de consultas parecidas, não apenas idê
 
 ### 7.11. Rerank
 
-Rerank é reordenação pós-recuperação. Em vez de confiar apenas na ordem original dos retrievers, um modelo especializado pode reclassificar os documentos para aumentar a relevância dos itens que vão para o prompt final.
+Rerank é reordenação pós-recuperação. Em vez de confiar apenas na ordem original dos retrievers, um modelo especializado pode reclassificar os documentos para aumentar a relevância dos itens que vão para o prompt final. Desde 2026-08-14 esse rerank roda de forma nativa dentro do próprio vector store (Qdrant, modelo late interaction ColBERT), sem modelo próprio rodando nos containers da plataforma.
+
+Depois do rerank (ou da fusão pura, quando não há rerank), existe um **gate de evidência**: uma
+verificação que decide se o conjunto recuperado é bom o suficiente para o modelo responder, ou se é
+melhor devolver "não encontrei no acervo material suficiente" em vez de arriscar resposta plausível
+e errada. Detalhe do comportamento atual (inclusive a diferença de critério quando o rerank
+reordenou o conjunto) em `README-CONCEITUAL-RAG-PIPELINE-COMPLETO-POS-RETRIEVAL.md` §4.
 
 ### 7.12. ACL pós-retrieval
 

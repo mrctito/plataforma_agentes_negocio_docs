@@ -226,6 +226,36 @@ novo binding deve declarar `environment + tenant_id + tenant_yaml_id` e apontar 
 publicado do mesmo tenant. As quatro chaves anteriores continuam `key_kind='tenant'`, sem
 binding; autenticam chamadas com YAML explícito, mas não executam apenas com `X-API-Key`.
 
+### 10.5. Matriz por endpoint: quem resolve YAML só com `X-API-Key`
+
+A precedência da §10.1 é do resolvedor (`resolve_yaml_configuration`), mas cada boundary decide, no
+próprio call site, **se** repassa o `X-API-Key` do header para o parâmetro `api_key` desse
+resolvedor. Só quando o parâmetro chega preenchido a etapa de binding roda; se o boundary não
+repassar, a chave apenas autentica (§10.2) e a configuração fica vazia, mesmo que a chave seja
+válida e tenha binding publicado. Por leitura direta do código, o desenho atual dos quatro
+boundaries públicos de execução é este:
+
+| Boundary | `X-API-Key` sem YAML/`projectKey` | Exige binding de projeto SaaS? | `encrypted_data`/YAML inline | `projectKey` |
+| --- | --- | --- | --- | --- |
+| `POST /agent/execute` | Resolve por binding direto de `tenant_yaml` (mesma trilha da §10.1-10.2). | Não. | Aceita `encrypted_data`. | Aceita (`operation="agent"`). |
+| `POST /rag/execute` (`ask`/`etl`/`data_sources`) | Resolve, mas só se a chave tiver binding de **projeto SaaS** com a operação certa (`rag`/`etl`); chave só com binding direto de `tenant_yaml` recebe `409` "API key sem binding SaaS para a operação solicitada". | Sim. | Aceita `encrypted_data`. | Aceita. |
+| `POST /ag-ui/runs` | Resolve por binding direto de `tenant_yaml`, igual a `/agent/execute`. | Não. | Aceita `encrypted_data`, `yaml_config` (dict) ou `yaml_inline_content`. | Aceita (`operation="agent"`). |
+| `POST /workflow/execute` | **Não resolve.** O router nunca repassa o header para o parâmetro `api_key` do resolvedor; sem `encrypted_data` nem `projectKey`, a chamada falha com `400` "É necessário informar yaml_config, encrypted_data ou X-API-Key com binding de YAML." — mensagem genérica do resolvedor que, nesse boundary específico, é enganosa: a chave nunca chega a ser tentada. | Não se aplica (o parâmetro nunca é passado). | Exige `encrypted_data` quando não há `projectKey`. | Aceita (`operation="agent"`). |
+
+Consequência prática: `/agent/execute` e `/ag-ui/runs` ainda aceitam o binding direto legado (o
+"Caminho 2" do tutorial de acesso), enquanto os sub-fluxos de `/rag/execute` já migraram para exigir
+projeto SaaS ("Caminho 3"). `/workflow/execute` é o único boundary de execução sem caminho de
+API-key-only: sempre exige YAML explícito ou `projectKey`, mesmo com uma chave governada válida.
+
+Evidência: `src/api/routers/agent_router.py:1954-1961` (`resolve_agent_execution_context`, passa
+`api_key=`); `src/api/routers/rag_runtime_operations_compat.py:690-698,763-771` (sub-operações
+`ask`/`data_sources`, passam `api_key=` e `project_operation="rag"`);
+`src/api/services/ag_ui_yaml_first_run_preparation_service.py:142-151` (`_resolve_config`, passa
+`api_key=` sem `project_operation`); `src/api/routers/workflow_router.py:524-530`
+(`execute_workflow`, chama `resolve_yaml_configuration` sem `api_key=`);
+`src/api/routers/config_resolution.py:1177-1191,1300-1306,1458-1468` (gate do binding só quando
+`api_key` chega preenchido; texto exato do `400` final quando nada resolve).
+
 ## 11. Sintaxe realmente aceita pelo runtime
 
 Quando o tema é sintaxe, o código confirma algumas regras bem objetivas.
@@ -667,6 +697,12 @@ O que observar: metadata.tenant_id e caminhos derivados não são aceitos como c
 
 - src/saas_project/resolver.py: lido para confirmar resolução de projeto/release e operação sem
   associação por `tenant_user_yaml`.
+
+- src/api/routers/agent_router.py, src/api/routers/workflow_router.py,
+  src/api/services/ag_ui_yaml_first_run_preparation_service.py e
+  src/api/routers/rag_runtime_operations_compat.py: lidos para confirmar, boundary por boundary, se
+  o `X-API-Key` do header chega ao parâmetro `api_key` de `resolve_yaml_configuration` — e por isso
+  se a chave sozinha resolve YAML (§10.5) ou apenas autentica.
 
 - src/config/vector_store_contract.py: lido para confirmar que vector_store.if_exists é obrigatório quando o contrato é avaliado e que os valores aceitos são overwrite, skip e update.
 

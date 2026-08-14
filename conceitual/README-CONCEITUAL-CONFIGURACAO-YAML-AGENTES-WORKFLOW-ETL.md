@@ -9,8 +9,9 @@ O ponto central não é apenas “usar YAML”. O ponto central é que o mesmo d
 1. Qual workflow deve ser o fluxo ativo.
 2. Qual DeepAgent deve ser o orquestrador ativo quando o caso nao for WorkflowAgent.
 3. Quais tools builtin entram no runtime.
-4. Quais pipelines ETL ficam ligados ou desligados.
-5. Quais credenciais, tenant, índices, caches e políticas operacionais entram na execução.
+4. Quais Skills (procedimentos especializados que o agente abre sob demanda) cada supervisor, subagente ou node de workflow pode selecionar.
+5. Quais pipelines ETL ficam ligados ou desligados.
+6. Quais credenciais, tenant, índices, caches e políticas operacionais entram na execução.
 
 Em linguagem simples, a plataforma foi desenhada para que grande parte da personalização aconteça por montagem declarativa do YAML e não por bifurcação contínua do código.
 
@@ -94,11 +95,15 @@ E a espinha dorsal declarativa usada pelo DeepAgent no caminho oficial. Se um do
 
 É a biblioteca de tools visível para o runtime agentic. O detalhe crítico é que ela não deve ser preenchida manualmente com builtin tools no YAML recebido. O sistema injeta esse catálogo automaticamente.
 
-### 6.8. extract_transform_load
+### 6.8. skills_library
+
+É a biblioteca central de Skills da release: procedimentos e conhecimento especializado (nome, descrição e conteúdo) que o DeepAgent e o WorkflowAgent selecionam **por nome**, não por injeção automática. O comportamento é o oposto de `tools_library` — aqui é o operador quem declara cada skill e quem escolhe, em `multi_agents` ou em `workflows[].nodes[].skills`, quais nomes cada agente ou node pode abrir. Nome selecionado sem entrada correspondente em `skills_library` reprova a configuração antes de o runtime executar (fail-closed).
+
+### 6.9. extract_transform_load
 
 É o bloco declarativo que governa o domínio de ETL. Ele define se o ETL está ligado, quais famílias entram em execução e quais pipelines concretos já implementados ficam ativos.
 
-### 6.9. AST governada
+### 6.10. AST governada
 
 No escopo agentic, o produto não trata o YAML apenas como texto. Ele o converte para AST tipada, valida semanticamente e só depois confirma a versão publicável. Isso protege a plataforma contra YAML sintaticamente bonito, mas semanticamente errado.
 
@@ -171,13 +176,19 @@ Ganho: evita duplicidade, drift e declaração manual do catálogo.
 
 Custo: exige disciplina para enviar tools_library vazia e deixar o runtime completar o catálogo.
 
-### 11.3. Governar o escopo agentic por AST
+### 11.3. Não injetar skills automaticamente
+
+Ganho: cada release carrega seu próprio conjunto de procedimentos especializados, versionado e hash-bound junto com o YAML — sem cadastro em banco por cliente e sem risco de uma skill "aparecer" sem ter sido escrita por alguém.
+
+Custo: ao contrário de tools_library, não há atalho de biblioteca automática — o operador precisa escrever cada skill (nome, descrição e conteúdo) à mão em `skills_library` antes de qualquer agente ou node poder selecioná-la.
+
+### 11.4. Governar o escopo agentic por AST
 
 Ganho: reduz erro semântico e protege a execução.
 
 Custo: a configuração agentic fica mais rígida e menos tolerante a atalhos textuais.
 
-### 11.4. Falhar cedo no ETL
+### 11.5. Falhar cedo no ETL
 
 Ganho: evita pipeline opaco rodando com bloco vazio ou mal configurado.
 
@@ -197,6 +208,7 @@ Os erros mais relevantes confirmados no código lido são estes.
 4. tools_library ausente ou preenchida indevidamente quando o contrato agentic espera auto-injeção.
 5. extract_transform_load ausente, disabled ou sem subsistemas ativos.
 6. Target agentic inválido ou feature de AST desabilitada no endpoint administrativo.
+7. Skill selecionada sem entrada correspondente em skills_library.
 
 O ponto conceitual importante é este: a plataforma prefere erro explícito a adivinhação silenciosa.
 
@@ -260,6 +272,7 @@ Pense na plataforma como uma fábrica com máquinas já instaladas. O YAML é o 
 4. selected_entrypoint evitam ambiguidade, não são enfeite opcional em todo cenário.
 5. ETL declarativo só cobre pipelines que já existem no código.
 6. AST governada é proteção, não burocracia extra.
+7. Skills, ao contrário de tools builtin, precisam ser escritas à mão na `skills_library`; e, no DeepAgent, selecionar skills exige também ligar `middlewares.skills.enabled` — um sem o outro reprova a configuração.
 
 ## 22. Troubleshooting
 
@@ -279,12 +292,17 @@ Causa provável: selected_entrypoint ausente, incompatível ou ambíguo diante d
 
 Causa provável: tools_library não chegou vazia para auto-injeção ou o catálogo builtin ativo não contém as tools desejadas.
 
+### 22.5. Sintoma: a skill não aparece na resposta do agente
+
+Causa provável: o nome não existe na `skills_library`, o node (Workflow) não está em `mode: agent`, ou o middleware de skills (DeepAgent: `middlewares.skills.enabled`) não está ligado — qualquer um desses três motivos impede o conteúdo de ser materializado e oferecido ao modelo.
+
 ## 23. Checklist de entendimento
 
 - Entendi o que a plataforma realmente configura por YAML.
 - Entendi o que ainda exige programação.
 - Entendi a diferenca entre WorkflowAgent, DeepAgent e ETL.
 - Entendi por que tools_library é injetada e não preenchida manualmente.
+- Entendi por que skills_library é o oposto: exige declaração manual e seleção por nome em cada agente/node.
 - Entendi como selected_entrypoint controla a escolha ativa.
 - Entendi por que extract_transform_load governa o ETL.
 - Entendi por que AST e validadores existem.

@@ -29,6 +29,10 @@ configurável por YAML. Qualquer acervo de PDFs — não só engenharia rodoviá
 mecanismo para se perguntar "quanto vai custar processar isto com IA?" antes de gastar um
 centavo.
 
+> **Depois de medir, quando você decidir gastar:** a etapa que de fato transcreve as figuras na
+> ingestão REAL, com teto duro de orçamento, está na **seção 31** deste mesmo manual (mesmo funil,
+> terceiro degrau ligado). As seções 1-30 tratam do modo que mede sem gravar nada.
+
 ## 2. Que problema ela resolve
 
 Antes deste recurso, a única forma de saber quantas figuras técnicas um acervo continha e quanto
@@ -1127,3 +1131,152 @@ aquisição na origem, paralelismo configurado). O acervo real testado tinha 563
 - Diário da campanha com a execução real no acervo DNIT (números, custos, incidentes):
   `docs/.interno/.planos/abacos-dnit-yaml-600/campanha--2026-08-05--solucao-ingestao-abacos.md`
   (RODADA 5).
+
+## 31. Ingestão REAL com transcrição de figuras + teto de orçamento
+
+Esta seção fecha o ciclo do manual: as seções 1-30 descrevem o modo que **mede sem gastar**
+(`ingestion.analysis_only: true`); esta descreve o modo que **gasta de verdade** para transformar
+cada ábaco em texto pesquisável, com um teto de dólares que o run não ultrapassa. É o mesmo funil,
+a mesma triagem e o mesmo classificador — muda só o terceiro degrau e o fato de que agora tudo é
+gravado no acervo.
+
+### 31.1. O que muda em relação ao dry-run (nível 101)
+
+| | Dry-run (`analysis_only: true`) | Ingestão real com transcrição |
+|---|---|---|
+| Grava no acervo? | Não (nem chunk, nem embedding, nem registro) | Sim: texto, tabelas **e** as transcrições das figuras |
+| Etapa 3 (transcrição) | Nunca roda | Roda em cada página confirmada |
+| Custo | Só o classificador (centavos) | Classificador + transcrição (dólares), **limitado por `budget_usd`** |
+| Para que serve | Decidir se vale a pena gastar | Executar a decisão já tomada |
+
+Os dois modos **não se misturam**: `analysis_only: true` tem precedência e desliga a transcrição,
+por desenho. É o que impede um dry-run de virar cobrança por engano.
+
+### 31.2. Como o teto funciona, em uma frase
+
+Antes de transcrever cada página, o run consulta quanto já gastou (um contador compartilhado por
+todos os workers, guardado no lote do run) e compara com `budget_usd`. Bateu o teto, as páginas
+restantes ficam **sem transcrição**, marcadas com `budget_exhausted` no log e no relatório — e a
+ingestão de texto e tabelas **continua normal**, com o job fechando `succeeded` e o parcial
+explícito. O teto nunca derruba o acervo; ele só para de comprar figura.
+
+**Margem de corrida (documentada, não é bug):** a conferência acontece **antes** da chamada e o
+gasto real entra **depois** dela (só o provider sabe quantos tokens foram). Entre os dois momentos
+cada documento em voo pode ter uma página já paga. Com `max_concurrent_files: 3` e ~US$ 0,08 por
+figura, a ultrapassagem máxima é de centavos. Medido em rodada real: teto US$ 0,15, gasto final
+US$ 0,1683 — uma figura de excesso, exatamente como previsto. **Declare o teto um pouco acima do
+que pretende gastar.**
+
+### 31.3. As três chaves que precisam andar JUNTAS
+
+Ligar a transcrição sem as três faz o YAML **falhar explicitamente** no resolve — de propósito,
+para não existir teto decorativo:
+
+1. `ingestion.analysis_classifier.enabled: true` — a transcrição só roda em página **confirmada**;
+   sem classificador não há página nenhuma para transcrever;
+2. `ingestion.figure_transcription.budget_usd` — o teto, em dólares, maior que zero;
+3. o `model` da transcrição **com preço declarado** em `ingestion.analysis_cost_table.models` — é o
+   preço que converte token em dólar; sem ele o teto não teria como ser calculado.
+
+Exemplo pronto e comentado: `app/yaml/system/rag-config-modelo.yaml`, bloco `ingestion:`.
+YAML real de produção desta campanha:
+`app/yaml/rag-config-mrctito-dnit-ingest-producao-600-abacos.yaml`.
+
+### 31.4. Armadilha nº 1: acervo já ingerido não recebe transcrição
+
+**Ligar a transcrição num acervo que já foi ingerido não transcreve nada.** A razão é a
+deduplicação incremental do `if_exists: update`: um PDF cujos bytes não mudaram é **pulado antes
+do processador** (`file_pipeline_services.py`, ramo `telemetry_deduplicated`), e a transcrição vive
+**dentro** do processador. Documento pulado nunca chega nela.
+
+O fingerprint que decide o reprocessamento é `(bytes do PDF, política de extração do perfil PDF)` —
+e o bloco `ingestion.figure_transcription` **não** faz parte da política de extração. Ou seja: nem
+mesmo ligar a chave muda o fingerprint.
+
+**Por isso o YAML de produção desta campanha aponta para um `vector_store.id` NOVO**
+(`dnit_producao_abacos`), que nasce vazio e ingere tudo com a transcrição. O acervo antigo
+(`dnit_producao_ocr`) continua intacto e servindo as consultas até você decidir trocar. A
+alternativa seria `if_exists: overwrite` no acervo atual — que apaga o acervo vivo antes de
+reconstruí-lo, e por isso não é o default recomendado.
+
+### 31.5. Roteiro de disparo (3 comandos)
+
+```bash
+# 1) DISPARAR — devolve o correlation_id oficial e o task_id (job) da rodada.
+source .venv/bin/activate && python .claude/scripts/dnit/dispatch_ingest_endpoint.py \
+  --base-url http://localhost:5555 \
+  --yaml-path app/yaml/rag-config-mrctito-dnit-ingest-producao-600-abacos.yaml \
+  --user-email mrctito@gmail.com \
+  --document-parallelism 3
+
+# 2) ACOMPANHAR o job (lifecycle: claimed -> running -> succeeded/failed).
+source .venv/bin/activate && python .claude/scripts/job-core/list_job_processing_jobs.py \
+  --correlation-id <CORRELATION_ID_DO_PASSO_1>
+
+# 3) VER O QUE O DINHEIRO COMPROU (gasto, transcritas, cortadas pelo teto).
+source .venv/bin/activate && python .claude/scripts/dnit/inspect_transcription_events.py \
+  --correlation-id <CORRELATION_ID_DO_PASSO_1>
+```
+
+O passo 3 pode ser repetido a qualquer momento durante a rodada — ele lê o log da correlação, não
+espera o fim. Para o número consolidado do run direto do banco (a mesma fonte que a tela usa):
+
+```bash
+source .venv/bin/activate && python .claude/scripts/postgresql/run_postgresql_query.py --sql \
+ "SELECT metadata->>'figure_transcription_spent_usd'            AS gasto_usd,
+         metadata->>'figure_transcription_budget_usd'           AS teto_usd,
+         metadata->>'figure_transcription_pages_screened'       AS triadas,
+         metadata->>'figure_transcription_pages_confirmed'      AS confirmadas,
+         metadata->>'figure_transcription_pages_transcribed'    AS transcritas,
+         metadata->>'figure_transcription_pages_budget_exhausted' AS cortadas
+    FROM vector_ingestion_runs
+   WHERE correlation_id = '<CORRELATION_ID_DO_PASSO_1>'
+   ORDER BY created_at ASC LIMIT 1"
+```
+
+### 31.6. Onde ver na interface
+
+Tela **Painel de Ingestões** (`/ui/static/ui-admin-plataforma-ingestion-runs.html`): selecione a
+execução e o bloco **"Figuras e ábacos"** mostra o funil inteiro — páginas triadas, confirmadas
+pelo classificador, transcritas, cortadas por orçamento, erros de transcrição, custo gasto, teto do
+run com o percentual consumido e o custo estimado do que ficou de fora (custo médio real do próprio
+run × páginas cortadas). Execução sem a etapa ligada aparece explicitamente como
+"Transcrição de figuras desligada nesta execução" — "não rodou" e "rodou e deu zero" são fatos
+diferentes e a tela não os confunde.
+
+### 31.7. O que esperar da rodada
+
+- **Duração:** a transcrição é sequencial por documento e cada figura é uma chamada de visão de
+  página inteira (1800px, 150 dpi). Medição real: ~1 a 2 minutos por figura. Um acervo com ~3.100
+  figuras confirmadas leva, portanto, dezenas de horas de relógio — a rodada é longa por natureza,
+  não por travamento. Use o passo 3 para ver progresso.
+- **Custo:** limitado por `budget_usd` mais a margem de centavos da seção 31.2. Medição real do
+  acervo DNIT (563 documentos, 3.144 figuras confirmadas): **US$ 249,63** com `gpt-5.6-terra`.
+- **Resultado no chunk:** a transcrição entra no texto da **própria página**, ancorada no marcador
+  `--- Página N ---`, com a proveniência (documento e página) no bloco. Engine de parsing que não
+  emite marcador de página (Docling) faz os blocos caírem no fim do documento, ainda com
+  proveniência — o YAML 600 usa `pymupdf4llm`, que emite o marcador.
+- **Falha de transcrição numa página não derruba o documento:** a página fica sem transcrição, com
+  motivo classificado no log, e o texto/tabelas seguem normalmente.
+
+### 31.8. Evidências no código (esta seção)
+
+- Contrato YAML e precedência: `src/ingestion_layer/analysis/acervo_analysis_settings.py`
+  (`AcervoFigureTranscriptionSettings`, `figure_transcription_active`, `_resolve_figure_transcription`).
+- Perfil de visão e prompt validado: `src/ingestion_layer/analysis/acervo_figure_transcriber.py`.
+- Ponto único de anexação ao texto: `src/ingestion_layer/analysis/acervo_figure_transcription_stage.py`
+  (`compose_text_with_transcriptions`) chamado por
+  `src/ingestion_layer/processors/pdf_processor.py::apply_figure_transcription`.
+- Teto compartilhado e contadores do run: `src/ingestion_layer/analysis/acervo_transcription_budget.py`
+  + adapter `src/ingestion_layer/telemetry/acervo_transcription_budget_ledger.py` sobre
+  `src/telemetry/ingestion/vector_active_archive_repository.py`
+  (`read_run_metadata_counters`, `increment_run_metadata_counters`, `set_run_metadata_values`).
+- Métricas derivadas na leitura (nunca gravadas):
+  `src/telemetry/ingestion/operational_insights.py::build_figure_transcription_statistics`.
+- Deduplicação que pula documento inalterado: `src/ingestion_layer/file_pipeline_services.py`
+  (ramo `ingestion.document.telemetry_deduplicated`) e
+  `src/utils/pdf_extraction_policy_fingerprint.py`.
+- Testes: `tests/unit/ingestion_layer/analysis/test_02-28-61_acervo_figure_transcriber.py`,
+  `test_02-28-62_acervo_figure_transcription_stage.py`,
+  `test_02-28-63_acervo_transcription_budget_gate.py`,
+  `tests/unit/telemetry/ingestion/test_02-66-05_operational_insights.py`.

@@ -95,6 +95,7 @@ No escopo de workflow, os campos mais importantes são.
 2. workflows_defaults.
 3. workflows.
 4. tools_library.
+5. skills_library (raiz compartilhada; cada node `agent` seleciona por nome em `nodes[].skills`, §9.4).
 
 ### 7.2. Como a escolha ativa funciona
 
@@ -124,6 +125,7 @@ No escopo de agentes, os campos mais importantes são.
 1. selected_entrypoint.
 2. multi_agents.
 3. tools_library.
+4. skills_library (raiz compartilhada; supervisor e cada subagente selecionam por nome em `skills`, com `middlewares.skills.enabled=true`, §9.4).
 
 ### 8.2. Como a escolha ativa funciona
 
@@ -366,12 +368,20 @@ apontando para id inexistente. Não há fallback para o primeiro item.
 
 Causa provável: extract_transform_load não está pronto para execução segundo a validação do serviço.
 
+### 22.5. Sintoma: a skill selecionada não é oferecida ao agente/node
+
+Causa provável: o nome não existe em `skills_library` — o assembly reprova com o código
+`DEEPAGENT_SKILL_NAO_DECLARADA_NA_LIBRARY` (DeepAgent) ou `WORKFLOW_SKILL_NAO_DECLARADA_NA_LIBRARY`
+(Workflow), fail-closed, vide §16 item 7 —, o node não está em `mode: agent` (Workflow), ou faltou
+`middlewares.skills.enabled=true` junto da lista `skills` top-level (DeepAgent, §9.4).
+
 ## 23. Checklist de entendimento
 
 - Entendi como o YAML é carregado e finalizado.
 - Entendi como a configuração agentic passa por AST.
 - Entendi como o runtime escolhe workflow e supervisor ativos.
 - Entendi o papel de tools_library.
+- Entendi o papel de skills_library e por que ela exige declaração manual e seleção por nome.
 - Entendi como o ETL é ligado por extract_transform_load.
 - Entendi o que o produto realmente faz sem programação.
 - Entendi onde o limite da configuração termina e o desenvolvimento começa.

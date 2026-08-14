@@ -186,6 +186,10 @@ Cancelamento é hierárquico e cooperativo:
 - job ativo recebe `cancel_requested`;
 - o processo observa somente `ProcessHostPort.is_cancellation_requested()` ou
   `raise_if_cancelled()`;
+- o token responde de memória enquanto o veredito anterior vale
+  (`CANCELLATION_STATE_TTL_SECONDS`, 3 s) e só então relê o ledger: o processo pode consultar à
+  vontade dentro do seu laço sem transformar cada chamada em um `SELECT`, e o cancelamento é
+  percebido dentro dessa validade. Veredito "cancelado" nunca expira;
 - o Core cancela descendentes não terminais e consolida ancestrais;
 - terminal nunca é reaberto.
 

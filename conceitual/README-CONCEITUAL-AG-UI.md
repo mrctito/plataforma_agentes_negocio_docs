@@ -92,7 +92,7 @@ O slice atual tem sete capacidades estruturais importantes, todas confirmadas no
 2. Discovery publico de capabilities em /ag-ui/capabilities.
 3. Execucao publica oficial em /ag-ui/runs, sem rotas paralelas por `agent_id`.
 4. Replay sanitizado por run e por thread.
-5. Registry de tres execution kinds: deepagent, workflow e capability_pack — este ultimo com retail_demo e erp_backoffice_demo plugados como capability_pack_id de um segundo registry interno, nao como execution kind proprio.
+5. Registry de quatro execution kinds: deepagent, workflow, rag_qa e capability_pack — este ultimo com retail_demo e erp_backoffice_demo plugados como capability_pack_id de um segundo registry interno, nao como execution kind proprio. `rag_qa` (Q&A/RAG) roda pelo mesmo runtime LangGraph oficial que deepagent e workflow, sem resume/HIL, e aparece no discovery publico de `/ag-ui/capabilities` desde 2026-08-14 (detalhe tecnico: README-TECNICO-AG-UI.md, secoes 6 e 7.3).
 6. Runtime compartilhado do frontend em JavaScript puro.
 7. Visualizacao generativa condicional no chat embutivel (A2UI), configurada por YAML no supervisor DeepAgent.
 
@@ -351,7 +351,7 @@ Com AG-UI, a tela aperta o botao e o sistema passa a narrar o processo: quando c
 - src/api/services/ag_ui_adapter_registry.py
   - Motivo da leitura: entender como novos dominios entram no runtime.
   - Simbolo relevante: AgUiAdapterRegistry.default.
-  - Comportamento confirmado: registry explicito com tres execution kinds (deepagent, workflow, capability_pack); retail_demo e erp_backoffice_demo sao capability_pack_id de um segundo registry interno (AgUiCapabilityPackRegistry, em ag_ui_capability_pack.py), nao execution kind proprio.
+  - Comportamento confirmado: registry explicito com quatro execution kinds (deepagent, workflow, rag_qa, capability_pack); retail_demo e erp_backoffice_demo sao capability_pack_id de um segundo registry interno (AgUiCapabilityPackRegistry, em ag_ui_capability_pack.py), nao execution kind proprio. `rag_qa` (src/api/services/ag_ui_rag_qa_adapter.py) executa Q&A/RAG pelo mesmo LangGraphAgent oficial, com entrada no discovery publico de `/ag-ui/capabilities` desde 2026-08-14.
 
 - src/api/services/ag_ui_capabilities_service.py
   - Motivo da leitura: validar discovery publico.

@@ -63,6 +63,33 @@ A finalizacao do chunking chama primeiro o enriquecimento por dominio e depois a
 
 Na pratica, isso mantem o problema de segmentacao separado do problema de semantica de negocio.
 
+### 5.4. Tabela digitalizada dentro de transcrição de figura ganha chunk próprio (desde 2026-08-14)
+
+Quando a trilha multimodal descreve uma figura (um ábaco, uma curva, um gráfico), essa descrição
+entra no texto do documento como um bloco de transcrição — que pode ser bem longo e pode conter,
+dentro dele, uma tabela digitalizada em formato markdown (por exemplo, os valores numéricos de uma
+curva de calibração). Antes desta mudança, esse bloco inteiro era tratado como texto comum e caía
+no corte genérico por tamanho — igual a qualquer outro parágrafo. O problema: se o corte caísse no
+meio da tabela, a fatia resultante virava uma grade de números **sem identidade nenhuma** — sem
+saber de qual documento, página ou figura aquele número vinha. Medido no acervo real: 65% dos
+chunks derivados de transcrição de figura tinham esse defeito.
+
+A correção é uma etapa nova, que roda **antes** do laço de estratégias descrito acima: ela acha os
+blocos de transcrição de figura, separa a tabela (se houver) da descrição, e cria a tabela como
+**chunk próprio**, sempre com uma "etiqueta" prefixada dizendo de qual documento, página e figura
+ela veio. A descrição também ganha a mesma etiqueta em cada fatia, mesmo quando precisa ser cortada
+em várias. Resultado prático: o valor numérico específico de uma curva passa a "carregar consigo" a
+informação de qual figura e documento ele pertence, então a busca (texto exato ou semântica) consegue
+achá-lo — antes, essa mesma informação ficava perdida na fatia genérica.
+
+Nenhuma configuração nova precisa ser ligada: o comportamento é consequência direta de a
+transcrição de figura já existir no texto do documento (recurso de visão já existente).
+
+**Nível de maturidade a registrar:** a mudança está implementada e coberta por teste unitário
+(inclusive um teste que garante que nenhuma linha de conteúdo se perde no processo). O ganho real —
+menos recusa do RAG ao perguntar sobre valores dentro de figuras — só é confirmado depois de
+reingerir o acervo, o que ainda não foi feito no acervo de produção até a data deste documento.
+
 ## 6. O que pode dar errado
 
 Problemas confirmados ou diretamente implicados pelo codigo:
@@ -109,3 +136,9 @@ Se a estrategia page based nao funcionar, o fluxo segue para section, paragraph 
 - src/ingestion_layer/processors/pdf_chunking_service.py
   - Simbolo relevante: os metodos internos de execucao, finalizacao e fallback do chunking PDF
   - Comportamento confirmado: primeira estrategia valida vence, domain processing entra no final e fallback simples fica explicitamente marcado.
+
+- src/ingestion_layer/processors/pdf_figure_transcription_chunks.py
+  - Simbolo relevante: derive_figure_transcription_chunks
+  - Comportamento confirmado: separa tabela digitalizada (chunk proprio, ancorado) de descricao
+    (chunk(s) ancorados) dentro de bloco de transcricao de figura, sem alterar a geracao da
+    transcricao em si.

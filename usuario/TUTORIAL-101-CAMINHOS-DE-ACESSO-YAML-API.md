@@ -76,12 +76,18 @@ Pontos-chave do desenho:
 - o banco guarda só o **hash SHA-256** da chave (formato `pk_<ambiente>_<aleatório>`).
 
 **Estado atual (importante):** este caminho está em **transição para o modelo de projeto**
-(caminho 3). Os endpoints principais de execução (`ask`, `ingest`, `etl`) já declaram a
-operação SaaS e por isso exigem que a chave tenha binding de **projeto** — uma chave apenas
-com binding direto de `tenant_yaml` recebe `409` com
+(caminho 3), mas a migração não é uniforme entre endpoints — cada boundary decide, no próprio
+código, se exige projeto ou aceita o binding direto. As três operações de `POST /rag/execute`
+(`ask`, `ingest`, `etl`) já declaram a operação SaaS e por isso exigem que a chave tenha
+binding de **projeto** — uma chave apenas com binding direto de `tenant_yaml` recebe `409` com
 `"API key sem binding SaaS para a operação solicitada"` (comportamento comprovado em
-produção). O binding direto permanece como mecanismo de rollback da migração. **Para
-integração nova, use o caminho 3.**
+produção). **`POST /agent/execute` e `POST /ag-ui/runs` ainda não migraram**: uma chave só com
+binding direto de `tenant_yaml` continua resolvendo o YAML normalmente nesses dois endpoints,
+sem exigir projeto. O binding direto permanece como mecanismo de rollback da migração. **Para
+integração nova, use o caminho 3** — ele já funciona em todos os quatro endpoints e evita
+depender de um comportamento que pode terminar de migrar. Detalhe endpoint a endpoint, com
+evidência de código: seção **"10.5. Matriz por endpoint"** em
+[README-CONFIGURACAO-YAML.md](../tecnico/README-CONFIGURACAO-YAML.md#105-matriz-por-endpoint-quem-resolve-yaml-só-com-x-api-key).
 
 ---
 
@@ -132,6 +138,7 @@ chave; e o hash da release garante que o que está no ar é exatamente o que foi
 | `409` "API key sem binding SaaS para a operação solicitada" | Chave sem `saas_project_id`/`operation`, ou operação da chave ≠ operação do endpoint | 3 |
 | `422` "não aceita YAML alternativo" | Enviou YAML explícito numa operação ligada a projeto | 1×3 |
 | `400` "Falha ao interpretar o YAML governado" | O YAML da release ativa está defasado do contrato vigente (ex.: chave removida do produto) — publicar novo `tenant_yaml` e nova release | 2 e 3 |
+| `400` "É necessário informar yaml_config, encrypted_data ou X-API-Key com binding de YAML" em `POST /workflow/execute` mesmo enviando uma `X-API-Key` válida e com binding | Esse endpoint não tem caminho 2: uma chave sozinha nunca resolve o YAML do workflow, só autentica. É obrigatório enviar `encrypted_data`/YAML explícito (caminho 1) ou `projectKey` (caminho 3) | nenhum (exceção) |
 
 ## Onde aprofundar
 
@@ -140,6 +147,9 @@ chave; e o hash da release garante que o que está no ar é exatamente o que foi
   [TUTORIAL-101-CICLO-DE-VIDA-YAML-POR-CLIENTE.md](TUTORIAL-101-CICLO-DE-VIDA-YAML-POR-CLIENTE.md)
 - Modelo de dados completo (tabelas, FKs, invariantes, lifecycle de release):
   [README-SCHEMA-BANCO.md](../tecnico/README-SCHEMA-BANCO.md)
+- Matriz endpoint a endpoint de quem resolve YAML só com `X-API-Key`, com evidência de código
+  (arquivo/linha): seção "10.5. Matriz por endpoint" em
+  [README-CONFIGURACAO-YAML.md](../tecnico/README-CONFIGURACAO-YAML.md#105-matriz-por-endpoint-quem-resolve-yaml-só-com-x-api-key)
 - Gestão SaaS × Tenant (telas admin, endpoints de projeto/release/plano):
   [README-TECNICO-GESTAO-SAAS-TENANT.md](../tecnico/README-TECNICO-GESTAO-SAAS-TENANT.md)
 - Exemplos de integração por linguagem e criptografia do caminho 1:

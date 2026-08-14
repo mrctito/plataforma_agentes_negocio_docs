@@ -115,13 +115,17 @@ Este é o coração do sistema. Aqui o Qdrant recebe os dois vetores da pergunta
 
 1. Faz uma busca densa: compara o vetor semântico da pergunta com os vetores densos de todos os chunks indexados. Retorna os mais parecidos em significado.
 2. Faz uma busca esparsa: compara o vetor BM25 da pergunta com os vetores esparsos de todos os chunks. Retorna os que têm mais palavras em comum.
-3. Aplica **RRF** (Reciprocal Rank Fusion, ou Fusão por Rank Recíproco) para combinar os dois rankings num único ranking unificado.
+3. Aplica **DBSF** (Distribution-Based Score Fusion, ou Fusão por Distribuição de Notas) para combinar os dois rankings num único ranking unificado.
 
-**O que é RRF**: imagine que você tem duas listas de candidatos — uma lista por competência técnica e outra por comunicação. O RRF não soma as notas diretamente (isso daria vantagem para quem tem notas altas numa só dimensão). Em vez disso, ele usa a posição no ranking: quem está em primeiro em ambas as listas sobe muito; quem está em décimo em ambas fica para trás. Candidatos que aparecem bem nas duas listas ao mesmo tempo são os melhores.
+**O que é DBSF**: imagine duas listas de candidatos — uma por competência técnica e outra por comunicação. As duas notas vêm em escalas diferentes e somá-las cruas seria injusto. O DBSF primeiro coloca cada lista na mesma régua (usando a média e a dispersão das notas daquela própria lista) e só então soma. Quem vai bem nas duas dimensões sobe; quem só brilha numa não domina o resultado.
+
+**Por que não é mais RRF**: até 2026-08-13 a fusão era RRF (Reciprocal Rank Fusion), que olhava só a **posição** — 1º, 2º, 3º — e descartava a distância entre as notas. Com RRF, um resultado excelente e outro apenas razoável ficavam quase empatados por estarem lado a lado no ranking. O DBSF preserva essa distância, então o topo da lista fica mais confiável.
+
+**Efeito prático que você vai notar**: os scores agora podem passar de 1,0. Isso é esperado — o DBSF soma duas notas normalizadas e não é uma porcentagem. Não trate esse número como "grau de certeza".
 
 **Analogia do chef de cozinha**: é como buscar uma receita que seja ao mesmo tempo a mais bem avaliada pelos críticos (semântica) e a que usa exatamente os ingredientes que você tem em casa (termos exatos). O resultado cobre os dois critérios.
 
-**O RRF é executado pelo servidor do Qdrant**, não pelo código Python. O código só monta e envia a query com as instruções de fusão. Isso significa que a fusão é rápida e não consome recursos do worker.
+**O DBSF é executado pelo servidor do Qdrant**, não pelo código Python. O código só monta e envia a query com as instruções de fusão. Isso significa que a fusão é rápida e não consome recursos do worker.
 
 **Falha fechada confirmada no código**: se a coleção não comprovar o vetor sparse esperado, a busca híbrida encerra com erro estruturado. Ela não degrada silenciosamente para dense-only, porque isso esconderia uma coleção incompatível e mudaria a semântica da consulta.
 
@@ -131,7 +135,7 @@ Este é o coração do sistema. Aqui o Qdrant recebe os dois vetores da pergunta
 
 ## Fase 7 — Seleção pelo provider
 
-A parte lexical não possui retriever nem chave própria. O runtime seleciona a busca híbrida nativa pela capacidade de `vector_store.type`: Qdrant combina dense e sparse com RRF; Azure combina texto e vetor no próprio serviço. Providers sem essa capacidade seguem pela busca vetorial, sem criar FTS PostgreSQL paralelo.
+A parte lexical não possui retriever nem chave própria. O runtime seleciona a busca híbrida nativa pela capacidade de `vector_store.type`: Qdrant combina dense e sparse com DBSF; Azure combina texto e vetor no próprio serviço. Providers sem essa capacidade seguem pela busca vetorial, sem criar FTS PostgreSQL paralelo.
 
 ---
 
@@ -192,11 +196,21 @@ Se o roteador decidiu que a pergunta pode ser abordada por múltiplos ângulos, 
 
 ## Rerank: existe no sistema?
 
-O sistema tem suporte a re-ranqueamento, mas de forma condicional:
+Existe, sim — e desde 2026-08-14 ele é uma etapa explícita do caminho oficial.
 
-**BM25 provider-native:** não existe re-rank lexical em memória nem corpus textual carregado pela aplicação. No Qdrant, documento e consulta usam o modelo `qdrant/bm25` e a fusão RRF do serviço. No Azure Search, o índice precisa declarar `BM25SimilarityAlgorithm`; similarity Classic ou desconhecida falha fechada e exige correção controlada do índice.
+**Rerank nativo do Qdrant (late interaction ColBERT)**: quando `qa_system.reranker.enabled` é `true`, a busca híbrida ganha um segundo estágio **dentro da mesma consulta**. Em vez de devolver direto os melhores da fusão, o Qdrant traz 100 candidatos (`prefetch_limit`), reordena todos comparando a pergunta com o texto de cada trecho de forma bem mais detalhada, e devolve os 8 melhores (`top_k`).
 
-**Rerank neural (cross-encoder)**: não confirmado como etapa explícita no caminho online principal dos arquivos lidos.
+**O que "de forma mais detalhada" quer dizer**: o modelo comum resume o trecho inteiro num único vetor — rápido, mas perde nuance. O ColBERT guarda **um vetor por palavra** e, na comparação, casa cada palavra da pergunta com a palavra mais parecida do trecho, somando os melhores encontros. É caro demais para varrer o acervo inteiro, e por isso só entra no fim, sobre os candidatos que a busca já selecionou.
+
+**Roda no servidor, não no seu container**: o texto da pergunta viaja para o Qdrant, que gera os vetores com o Cloud Inference. Nenhum modelo é baixado ou executado pela aplicação.
+
+**Quando ele não roda** (e a busca continua funcionando, com a ordem do DBSF): o tenant não habilitou; o YAML aponta um modelo diferente do que foi usado na ingestão; ou a coleção é antiga e não tem o vetor ColBERT. Nos três casos o log diz o motivo — procure o evento `ingestion.vector_store.qdrant.hybrid_search.rerank`, que é gravado sempre, tenha reordenado ou não.
+
+**Pré-requisito**: só funciona em acervo ingerido **já com** o vetor ColBERT. Coleção antiga precisa ser reingerida com `vector_store.if_exists: overwrite`.
+
+**BM25 provider-native:** não existe re-rank lexical em memória nem corpus textual carregado pela aplicação. No Qdrant, documento e consulta usam o modelo `qdrant/bm25` e a fusão DBSF do serviço. No Azure Search, o índice precisa declarar `BM25SimilarityAlgorithm`; similarity Classic ou desconhecida falha fechada e exige correção controlada do índice.
+
+**Rerank neural por cross-encoder**: **removido do produto** em 2026-08-14. Ele nunca chegou a executar no caminho online (dependia de visão multimodal habilitada, que nenhum tenant usava) e foi substituído pelo rerank nativo descrito acima.
 
 ---
 
@@ -219,7 +233,8 @@ Pergunta do usuário
 [Qdrant: hybrid search nativo]
   → Prefetch denso: top-K por semântica
   → Prefetch esparso: top-K por palavras exatas
-  → RRF server-side: combina os dois rankings
+  → DBSF server-side: combina os dois rankings
+  → Rerank ColBERT server-side (quando habilitado): reordena os candidatos
   → [Se sparse estiver ausente → falha fechada]
        ↓
 [ACL: remove documentos não autorizados]
@@ -260,7 +275,9 @@ Causa: filtro ACL mal configurado ou bug na implementação de ACL. O sistema fi
 | **BM25** | Algoritmo de pontuação que mede relevância por frequência de palavras e raridade no corpus. Produz vetores esparsos. |
 | **IDF** | Inverse Document Frequency: palavras raras que aparecem em poucos documentos têm mais peso. Faz parte do BM25. |
 | **Hybrid search** | Busca que usa vetor denso e vetor esparso ao mesmo tempo, combinando os resultados. |
-| **RRF** | Reciprocal Rank Fusion: algoritmo que combina dois rankings usando a posição (não a nota) de cada item. |
+| **DBSF** | Distribution-Based Score Fusion: algoritmo que combina dois rankings colocando as notas na mesma régua antes de somar. Substituiu o RRF em 2026-08-13. |
+| **RRF** | Reciprocal Rank Fusion: algoritmo antigo, que combinava dois rankings pela posição (não pela nota) de cada item. |
+| **Late interaction (ColBERT)** | Modelo que guarda um vetor por palavra em vez de um por trecho, permitindo comparar pergunta e texto com muito mais detalhe. Usado no rerank. |
 | **Falha fechada** | Comportamento de encerrar a busca híbrida quando a capacidade sparse obrigatória não está disponível, sem esconder o defeito com dense-only. |
 | **Rerank** | Reordenar os documentos já recuperados usando um modelo específico, quando o fluxo o habilita. |
 | **Multi-query** | Gerar variações da pergunta original e buscar por todas elas em paralelo para encontrar mais documentos relevantes. |
@@ -277,7 +294,8 @@ Ao final da leitura, você deve conseguir responder:
 
 - [ ] Por que o sistema usa dois tipos de vetor (denso e esparso) em vez de um só?
 - [ ] Quem gera a representação BM25: a aplicação ou o provider?
-- [ ] O que é RRF e quem o executa (código Python ou Qdrant)?
+- [ ] O que é DBSF, por que substituiu o RRF e quem o executa (código Python ou Qdrant)?
+- [ ] Quando o rerank ColBERT roda, quando é pulado e onde ver o motivo no log?
 - [ ] O que acontece se a coleção não tiver o vetor sparse obrigatório?
 - [ ] Por que a qualidade do retrieval é mais importante do que a qualidade do LLM para uma boa resposta?
 - [ ] Em qual fase o sistema filtra documentos que o usuário não pode ver?
@@ -290,7 +308,7 @@ Ao final da leitura, você deve conseguir responder:
 
 - `src/qa_layer/rag_engine/intelligent_orchestrator.py` — Fluxo principal: `intelligent_retrieve`, análise, roteamento, retrieval, ACL, montagem do contexto, geração.
 - `src/qa_layer/rag_engine/retrieval_engine.py` — Estratégias de retrieval: `execute_hybrid_processor`, `_execute_native_hybrid_search` e `run_retriever_with_trace`.
-- `src/ingestion_layer/vector_stores/qdrant_client.py` — Documento e consulta com `qdrant/bm25`, prefetch dense+sparse e `models.FusionQuery(fusion=models.Fusion.RRF)`; falha fechada sem sparse.
+- `src/ingestion_layer/vector_stores/qdrant_client.py` — Documento e consulta com `qdrant/bm25`, prefetch dense+sparse e `models.FusionQuery(fusion=models.Fusion.DBSF)`; rerank ColBERT decidido em `_resolve_native_rerank_target` e executado dentro de `search_hybrid`; falha fechada sem sparse.
 - `src/ingestion_layer/vector_stores/azure_search_client.py` — Índice com `BM25SimilarityAlgorithm` e consulta híbrida texto+vetor.
 - `src/qa_layer/rag_engine/multi_query_retriever.py` — Expansão de queries: `MultiQueryRetriever`.
 - `src/qa_layer/rag_engine/generation_engine.py` — Geração final: `GenerationEngine.generate_intelligent_answer`, monta contexto e chama LLM.

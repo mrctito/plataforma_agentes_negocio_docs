@@ -166,8 +166,20 @@ repetidos nesses eventos de decisao: fingerprints permitem comparar as etapas. A
 referencias no Qdrant, FTS pronto e maior metadata persistida.
 
 - `skip` pula somente o PDF encontrado no manifesto;
-- `update` pula o PDF inalterado e reprocessa o PDF cuja versao mudou;
+- `update` pula o PDF inalterado **e completo** e reprocessa o PDF cuja versao mudou **ou que nao terminou completo**;
 - `overwrite` reprocessa o PDF mesmo quando a versao e igual.
+
+**Hash igual nao basta mais para pular (regra atual).** O `pdf_binary_sha256` prova que os *bytes* nao
+mudaram — nao prova que a ingestao daquele PDF terminou inteira. Antes, um PDF que perdeu paginas ou
+figuras ficava preso: toda reingestao sob `update` o pulava pelo hash, e ele nunca se completava. Hoje o
+`update` so pula quando **as duas** condicoes valem: o fingerprint bate **e** o desfecho anterior gravado
+no documento ativo (`metadata.document_completeness_status`) e `success`. Desfecho `partial_success` ou
+`failed` com hash igual e **reprocessado**, com o evento canonico
+`ingestion.document.evaluation.reprocess_due_to_incomplete_outcome`.
+
+Documento **sem** o campo (ingerido antes desta mudanca) conta como completo — de proposito: tratar
+ausencia como incompletude reprocessaria o acervo inteiro no dia do deploy. `overwrite` continua
+reprocessando tudo, sem olhar desfecho.
 
 O segundo comportamento de `skip` nao anula o primeiro. Em uma ingestao normal com collection existente, o job para no bootstrap e nunca alcanca o lookup documental. Assim, carga incremental sobre acervo existente exige `if_exists=update`.
 
@@ -733,6 +745,62 @@ Se nenhuma estratégia gerar chunks válidos, o serviço usa `_create_fallback_c
 
 Esse é um fallback local do chunking, confirmado no código, e não um fallback engine escondido no parsing.
 
+### 15.7. Chunking de tabela digitalizada dentro de transcrição de figura (desde 2026-08-14)
+
+`PdfChunkingService.create_chunks` virou um wrapper fino: antes de rodar o laço de estratégias
+(15.3), ele deriva os blocos de **transcrição de figura** (o texto que a trilha multimodal/visão
+insere no documento, delimitado pelos marcadores canônicos de
+`acervo_figure_transcription_stage`) e só então chama o corpo antigo do chunking
+(`_create_content_chunks`) sobre o texto **sem** esses blocos. Os chunks derivados são anexados
+depois. Módulo novo e puro (sem I/O, sem log):
+`src/ingestion_layer/processors/pdf_figure_transcription_chunks.py::derive_figure_transcription_chunks`.
+
+**Problema real que motivou a mudança:** um bloco de transcrição de figura é texto longo (média
+medida: 12.445 caracteres por bloco, no acervo DNIT) que pode conter uma ou mais tabelas
+digitalizadas em markdown. Caindo no corte genérico por tamanho (`RecursiveCharacterTextSplitter`,
+~7k chars), a tabela às vezes é cortada no meio e a fatia resultante perde toda a identidade — vira
+uma grade nua (`| Age (months) | Faulting (in.) |`) sem saber a qual documento, página ou figura
+pertence. Medição no acervo vivo: 469 de 721 chunks derivados de transcrição de figura (65%) tinham
+uma seção de template mas **não** o cabeçalho com documento/página/figura — eram órfãos. Isso fazia
+o valor fino que respondia à pergunta nunca aparecer no top-8 do rerank/busca.
+
+**Como o módulo resolve:**
+
+1. Localiza os blocos de transcrição pelos delimitadores canônicos (não por regex paralela nem por
+   template do prompt, que varia).
+2. Separa, dentro de cada bloco, o que é tabela markdown (`extract_markdown_structure`, fonte única
+   de reconhecimento de tabela — o mesmo extrator já usado para tabelas normais de PDF) do que é
+   descrição em texto corrido.
+3. Materializa **um chunk por tabela, inteiro** (`chunk_type: "table"`), com uma âncora textual
+   prefixada — reaproveitando `resolve_pdf_table_anchor`/`PdfTableAnchor`
+   (`src/ingestion_layer/processors/pdf_table_chunk_anchor.py`), sem alterar esse módulo
+   compartilhado. A âncora carrega o documento, "Transcrição de figura — página N" e a legenda (o
+   cabeçalho markdown imediatamente acima da tabela, ex. "Curva: d = 1.375 in.").
+4. Corta a descrição (o texto que não é tabela) em chunk(s) próprios (`chunk_type: "text"`) com o
+   mesmo splitter já configurado pelo serviço — mas **prefixando a mesma âncora em cada fatia**. É
+   este passo que elimina as fatias órfãs: mesmo uma descrição longa, cortada em várias fatias,
+   nunca perde a identidade.
+5. Remove o bloco do texto original antes do corte genérico (mesmo padrão de `_dedup_tables_from_text`
+   para tabela normal) — o que já virou chunk dedicado não é indexado duas vezes.
+
+**Metadata: zero campo novo.** `chunk_type` continua descrevendo a forma (`table`/`text`); o vínculo
+com a figura de origem viaja em `page_number` e na âncora textual, ambos já suportados. Nenhuma
+chave YAML nova — o comportamento é consequência de `ingestion.figure_transcription` já existir.
+
+**O que NÃO foi tocado:** a geração da transcrição em si (prompt de visão, DPI, orçamento de
+figuras) — a mudança é exclusivamente de segmentação, depois que o texto da transcrição já existe.
+
+Observabilidade: evento `ingestion.pdf.chunking.figure_transcription.split`, sempre em `info`, com
+`blocks_found`, `unclosed_blocks` (bloco sem marcador de fechamento, contabilizado e não descartado),
+`table_chunks`, `description_chunks` e `other_chunks`.
+
+**Pendência real (registrar, não normalizar como resolvida):** a implementação está testada
+unitariamente (13 testes, incluindo invariante de que nenhuma linha do bloco original se perde), mas
+o ganho no acervo real — as 469 fatias órfãs medidas caindo para 0 — só pode ser confirmado depois
+de uma reingestão. A reingestão do acervo de 15 PDFs de teste (`engenharia_dnit`) e do acervo de
+produção (~600 documentos) ainda não foi feita pelo usuário até a data deste documento; é ação
+exclusiva dele pela UI.
+
 ## 16. Metadados relevantes produzidos pelo pipeline
 
 O slice lido confirma vários grupos de metadados importantes.
@@ -747,6 +815,11 @@ O slice lido confirma vários grupos de metadados importantes.
 - `pages_failed`
 - `pages_with_ocr`
 - `pages_info`
+- `page_failure_observability` — a engine **declara** se ela consegue distinguir pagina que falhou:
+  `observed` (o contador vale) ou `unavailable` (a engine e cega para isso). `unavailable` nao significa
+  "documento completo", significa "nao da para saber" — e por isso a etapa entra como **nao verificavel**
+  no desfecho, em vez de sumir do radar. Existe porque o `unstructured` publicava `failed_pages=[]` como
+  se fosse "nenhuma pagina falhou", quando na verdade ele nunca preenchia esse contador.
 
 ### 16.2. Tabelas, imagens e anexos
 
@@ -787,18 +860,19 @@ Depois que o processor devolve chunks, o `DocumentIndexingExecutor.finalize` da 
 
 Para PDFs, esse executor ainda constrói um `pdf_runtime_summary` e completa `strategy_used` e `library_used` se esses campos ainda estiverem vazios.
 
-### 17.1. O que acontece dentro de "indexar no vector store": busca híbrida e vetores esparsos
+### 17.1. O que acontece dentro de "indexar no vector store": busca híbrida, vetores esparsos e o multivetor de rerank
 
-Este é o momento mais importante para entender como o sistema consegue depois encontrar documentos com precisão. A indexação no vector store não é só "guardar o texto no banco". Para cada chunk, o sistema gera dois tipos de vetor e os grava juntos no Qdrant.
+Este é o momento mais importante para entender como o sistema consegue depois encontrar documentos com precisão. A indexação no vector store não é só "guardar o texto no banco". Desde 2026-08-14, para cada chunk o sistema gera **três** tipos de vetor e os grava juntos no Qdrant (antes eram dois — o terceiro é o multivetor de rerank ColBERT).
 
-#### 17.1.1. Por que dois tipos de vetor?
+#### 17.1.1. Por que três tipos de vetor?
 
-Existem duas formas complementares de encontrar informação:
+Existem três formas complementares de encontrar/ordenar informação:
 
 - **Busca semântica (vetor denso)**: entende o *significado* da pergunta. Funciona bem para perguntas conceituais como "quais são os critérios de aceitação de fundações?". Não importa se as palavras exatas aparecem no texto — o que importa é que o significado é parecido.
 - **Busca por palavras exatas (vetor esparso/BM25)**: localiza termos literais. Funciona bem para códigos, siglas, números de norma, nomes técnicos. "NBR 6122:2022 seção 5.3" vai achar exatamente isso, mesmo que o sistema não entenda o que significa.
+- **Multivetor de rerank (late interaction ColBERT, `<primary>_late`)**: não participa da busca inicial — ele só **reordena** os candidatos que a fusão dense+sparse já trouxe. Em vez de resumir o chunk inteiro num único vetor, guarda **um vetor por token** do texto (`RERANKER_DEFAULT_MODEL_VECTOR_SIZE = 96` dimensões cada, `src/qa_layer/rag_engine/config_utils.py`). Na hora da busca, o Qdrant casa cada token da pergunta com o token mais parecido do trecho (MaxSim) e soma os melhores casamentos — mais caro e mais preciso, por isso só roda sobre um conjunto pequeno de candidatos, nunca sobre o acervo inteiro. Detalhe de configuração: `hnsw_config(m=0)` (não é indexado — o Qdrant só o lê para rescorear), `on_disk=True` e quantização binária (cópia adicional comprimida, não substitui o vetor original).
 
-Guardar os dois vetores por chunk permite depois fazer uma busca híbrida que combina as duas vantagens ao mesmo tempo.
+Guardar os três vetores por chunk permite depois fazer uma busca híbrida (dense+sparse, fundida por DBSF) e, quando o tenant habilitar `qa_system.reranker.enabled`, reordenar o topo por ColBERT — sem nenhum modelo rodando nos containers da plataforma (a tokenização e o rescore acontecem no Cloud Inference do próprio Qdrant). Comportamento de busca completo: `docs/tecnico/README-TECNICO-RAG-PIPELINE-COMPLETO.md` §5.7/§10.4.
 
 #### 17.1.2. Fluxo confirmado de geração e gravação
 
@@ -820,12 +894,17 @@ O adapter confirma a configuração dense+sparse da coleção Qdrant. A represen
 
 Para cada chunk, o adapter monta um `models.Document` com o texto, o modelo `qdrant/bm25` e o idioma português. O Qdrant produz a representação sparse no servidor usando o mesmo contrato aplicado depois à consulta.
 
+**Passo 4b — Preparação do documento ColBERT pelo provider (multivetor de rerank, desde 2026-08-14)**
+
+Quando a coleção tem o rerank nativo habilitado (`_should_enable_native_late_interaction()`), o mesmo molde do sparse se repete para o vetor `<primary>_late`: `_build_native_late_interaction_document()` (`src/ingestion_layer/vector_stores/qdrant_client.py`) monta um `models.Document(text=chunk.content, model=RERANKER_DEFAULT_MODEL)` — sem `options`, porque late interaction não tem parâmetro de idioma. Texto vazio falha explícito (não grava multivetor de nada). O Qdrant tokeniza e gera a matriz token-a-token no servidor; nenhum modelo é baixado ou executado no container. Se a coleção não tiver o vetor ColBERT habilitado, este passo é pulado e o chunk segue só com dense+sparse.
+
 **Passo 5 — Montagem do ponto Qdrant**
 
 `build_point_vectors()` monta o objeto `PointStruct` que será gravado no Qdrant. Ele contém:
 
 - O vetor denso (embedding semântico).
 - O documento sparse provider-native BM25.
+- O documento ColBERT provider-native (multivetor de rerank), quando a coleção o suporta.
 - O payload (metadados do chunk).
 
 **Passo 6 — Upsert em lotes no Qdrant**
@@ -855,9 +934,9 @@ Cada ponto no Qdrant carrega os seguintes campos no payload:
 
 Para chunks multimodais (imagens), acrescentam-se `has_visual_content`, `visual_complexity`, `images` e `total_images`.
 
-#### 17.1.4. Contrato único de documento e consulta sparse
+#### 17.1.4. Contrato único de documento e consulta, para sparse e para ColBERT
 
-Documento e consulta usam o mesmo builder provider-native, com modelo `qdrant/bm25` e idioma português. Essa simetria impede que a aplicação indexe com uma tokenização e consulte com outra. Se o vetor sparse obrigatório não estiver configurado, o runtime falha fechado; não existe fallback dense-only silencioso.
+Documento e consulta usam o mesmo builder provider-native — modelo `qdrant/bm25` e idioma português para o sparse, `RERANKER_DEFAULT_MODEL` (`answerdotai/answerai-colbert-small-v1`) para o multivetor de rerank. Essa simetria impede que a aplicação indexe com uma tokenização e consulte com outra. Se o vetor sparse obrigatório não estiver configurado, o runtime falha fechado; não existe fallback dense-only silencioso. O multivetor ColBERT tem uma assimetria deliberada: na **ingestão**, coleção sem o vetor falha explícito ao tentar `update` incremental (ver 17.1.5); na **busca**, coleção sem o vetor apenas pula o estágio de rerank e segue com o ranking DBSF — falhar a busca inteira por causa de um acervo defasado seria pior que devolver sem reordenar (`docs/tecnico/README-TECNICO-RAG-PIPELINE-COMPLETO.md` §10.4).
 
 #### 17.1.5. Erros comuns a evitar
 
@@ -865,7 +944,11 @@ Documento e consulta usam o mesmo builder provider-native, com modelo `qdrant/bm
 
 **"A coleção não possui sparse"**: a busca híbrida falha fechada. Corrija a coleção no lifecycle oficial e reingira o acervo; não habilite um fallback dense-only para esconder a incompatibilidade.
 
-## 18. O que acontece em caso de sucesso
+**"Ingestão `update` falhou pedindo `overwrite` por causa do vetor ColBERT"**: a coleção foi criada antes do rerank nativo existir e não tem o vetor `<primary>_late`. O Qdrant não permite acrescentar um vetor denso novo a uma coleção existente — `_assert_late_interaction_vector_available()` detecta isso e falha explícito, citando `vector_store.if_exists='overwrite'` na mensagem. Não é bug: é a proteção contra deixar o acervo pela metade (chunks novos rerankeáveis, antigos não). A correção é reingerir o acervo inteiro com `overwrite`.
+
+**Pendência operacional (registrar, não normalizar como resolvida):** este 3º vetor só existe em coleções ingeridas (ou reingeridas) a partir de 2026-08-14. Reingestão do acervo de produção `engenharia_dnit/dnit_producao` (~600 documentos, YAML próprio) ainda não foi feita pelo usuário até a data deste documento — é decisão e ação exclusivas dele pela UI. Enquanto isso, esse acervo grande busca em DBSF puro (rerank pulado, log em `info`, sem quebrar).
+
+## 18. Desfecho do documento: `success`, `partial_success` e `failed`
 
 No caminho feliz, os sinais de sucesso técnico são:
 
@@ -874,6 +957,69 @@ No caminho feliz, os sinais de sucesso técnico são:
 - `strategy_used` definido no resumo do PDF;
 - chunks indexados com sucesso no vector store;
 - documento persistido pela esteira comum.
+
+### 18.1. Por que "terminou sem exceção" deixou de ser sinônimo de sucesso
+
+Um PDF podia perder páginas, tabelas, figuras ou chunks e mesmo assim ser publicado com o mesmo carimbo
+de um documento íntegro. Ninguém mentia de propósito: é que ninguém contava o que saiu e comparava com o
+que entrou. Na prática, o operador não tinha como saber de qual documento desconfiar quando o RAG
+respondia estranho.
+
+Hoje existe **um único** classificador de completude — `derive_document_completeness`
+(`src/ingestion_layer/core/document_completeness.py`). Ele é **derivação pura**: não mede nada, não grava
+nada e não consulta banco. Recebe os fatos que cada etapa já publica no metadata do documento, mais o
+resultado real da gravação vetorial, e decide na hora:
+
+| Desfecho | Quando | Status da filha no Job Core |
+|---|---|---|
+| `success` | nenhuma etapa reportou perda | `succeeded` |
+| `partial_success` | pelo menos uma perda, **com conteúdo gravado** | `partial_success` |
+| `failed` | havia chunk para gravar, nenhum entrou e nenhum foi pulado de propósito | `failed` |
+
+`failed` é deliberadamente estreito: marcar como falha um documento que **tem** conteúdo no acervo faria o
+sistema esconder conteúdo real — o oposto da regra do produto ("prefiro alguma coisa gravada do que nada
+gravado").
+
+### 18.2. A fronteira que sustenta tudo: perda × descarte deliberado
+
+**Só é perda o que foi selecionado pela regra e impedido por erro.** O que a regra deliberadamente não
+selecionou não mancha o documento. Errar para esse lado é o pior resultado possível: todo documento
+viraria `partial_success`, o marcador viraria ruído e o operador pararia de olhar — pior que o estado
+anterior.
+
+| Etapa | **Perda** (mancha o documento) | **Descarte deliberado** (não mancha) |
+|---|---|---|
+| Página | a extração da página levantou exceção (`pages_failed`) | página em branco (`empty_pages`) — é fato do PDF, não falha |
+| OCR | a invocação do `ocrmypdf` falhou (`ocr_document_preprocessing_reason=ocr_failed`) | página que não precisava de OCR (texto nativo, página sem conteúdo visual); `force_ocr` desligado |
+| Tabela | erro de extração reportado em `extraction_issues` | — (não existe descarte por qualidade neste caminho) |
+| Figura/ábaco | `confirmed` − `transcribed` > 0: o classificador confirmou e a transcrição não veio | `screened` − `confirmed`: o classificador **rejeitou** a candidata; teto de orçamento |
+| Chunk | `failed_chunks > 0` | `skipped_chunks`: pulado por hash igual sob `if_exists=update` |
+| Registro no acervo | os vetores gravaram e o registro do documento falhou (fábrica de ponto órfão) | — |
+
+Quando a engine declara `page_failure_observability=unavailable`, a etapa "página" não vira perda **nem**
+sucesso: entra como **não verificável** no payload do desfecho. "Não sei" nunca é publicado como "está
+completo".
+
+### 18.3. `chunks_indexed` mudou de significado: agora é o que foi GRAVADO
+
+`IVectorStore.index_chunks` devolvia `bool`. O número real de chunks gravados morria dentro do adapter, e
+quem decidia o desfecho só sabia "deu certo / não deu" — um documento que produziu 667 chunks e gravou 651
+era publicado como sucesso pleno. Hoje o contrato devolve `ChunkIndexingResult`, com quatro números que
+**não se confundem**: `total_chunks` (o que o chunker entregou), `written_chunks` (o que de fato entrou),
+`skipped_chunks` (pulado de propósito por dedup) e `failed_chunks` (o que era para entrar e não entrou —
+**este** é o que mancha).
+
+Consequência para quem lê telemetria: `chunks_indexed` e `chunk_count` agora significam **gravado**, não
+"produzido". Não existe coluna nova, contador materializado nem reconciliador: o desfecho é derivado na
+leitura e vai para o log; só o **status** é persistido no documento ativo, porque a regra de dedup do
+`update` precisa dele (§3.1.1).
+
+### 18.4. Onde o desfecho aparece
+
+O veredito viaja no próprio evento terminal do documento (`ingestion.document.completed`), que o
+`log_analyzer` já lê — nenhuma segunda fonte foi criada. Do evento saem o rótulo e a frase pronta do
+motivo ("perdeu páginas e figuras e ábacos") que a tela de ingestão de PDF exibe por documento. O backend
+entrega o texto pronto; o navegador só mapeia campo → elemento.
 
 ## 19. O que acontece em caso de erro
 
@@ -901,6 +1047,27 @@ No caminho feliz, os sinais de sucesso técnico são:
 ### 19.4. Na retomada
 
 - `PdfResumeArtifactMissingError` quando o runtime promete retomar a partir de artefato que não existe.
+
+### 19.5. Erro de etapa não aborta mais o documento (mudança de comportamento)
+
+A regra do produto é explícita: **nenhum erro de etapa aborta a ingestão do PDF**. O documento vai até o
+fim, grava o que conseguiu e a perda vira marcação, não silêncio nem interrupção. O que mudou:
+
+- **Tabela:** falha de extração deixou de derrubar o documento inteiro. Ela é capturada de forma estreita
+  e nomeada (nunca `except Exception`), publicada em `extraction_issues` e vira incompletude marcada.
+  Erro estrutural e cancelamento cooperativo continuam **não** sendo engolidos.
+- **Fan-out por documento:** os dois `except` do executor filho paravam de distinguir erro de pulo — toda
+  exceção virava `skipped`, e `skipped` era agregado como sucesso pelo pai. Agora erro real produz
+  `failed` (ou `partial_success` quando há conteúdo gravado), e o rótulo `skip_processing_error` deixou de
+  existir. O isolamento continua igual: erro de um documento **nunca** aborta o lote.
+- **Telemetria de sucesso:** falhar ao registrar o documento depois de os vetores já estarem gravados
+  deixou de ser tratado como "documento processado". É exatamente a condição que fabrica ponto órfão —
+  conteúdo respondendo no RAG sem documento publicado — e por isso entra como perda da etapa `telemetry`.
+- **Ledger do Job Core:** a política de retry passou pelo mecanismo central (`run_with_external_retry`),
+  com **orçamento de tempo total** além do teto de tentativas. `PoolTimeout` custava 5 tentativas × 30 s
+  (≈157 s de documento congelado por ocorrência); com orçamento de 25 s — menor que o timeout de 30 s do
+  pool — a primeira falha já esgota o tempo e não há segunda tentativa. Falha transitória barata
+  (conexão derrubada) continua com as 5 tentativas.
 
 ## 20. Observabilidade e diagnóstico
 
@@ -1173,6 +1340,21 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
   - Motivo da leitura: chunking final.
   - Símbolo relevante: `PdfChunkingService.create_chunks`.
   - Comportamento confirmado: Strategy Pattern, finalização dos chunks e fallback simples.
+
+- `src/ingestion_layer/processors/pdf_figure_transcription_chunks.py`
+  - Motivo da leitura: chunking de tabela digitalizada dentro de transcrição de figura (§15.7).
+  - Símbolo relevante: `derive_figure_transcription_chunks`.
+  - Comportamento confirmado: separa bloco de transcrição em chunk(s) de tabela (âncora + grade
+    completa) e chunk(s) de descrição (cada fatia com a mesma âncora), reaproveitando
+    `resolve_pdf_table_anchor`/`PdfTableAnchor` sem alterá-lo.
+
+- `src/ingestion_layer/vector_stores/qdrant_client.py`
+  - Motivo da leitura: 3º vetor (multivetor de rerank ColBERT) na indexação (§17.1).
+  - Símbolo relevante: `_build_vector_params`, `_build_native_late_interaction_document`,
+    `_should_enable_native_late_interaction`, `_assert_late_interaction_vector_available`.
+  - Comportamento confirmado: coleção nova nasce com vetor nomeado `<primary>_late`
+    (`multivector_config=MAX_SIM`, `hnsw_config(m=0)`, `on_disk=True`, quantização binária);
+    ingestão `update` sobre coleção sem esse vetor falha explícito pedindo `overwrite`.
 
 - `src/ingestion_layer/file_pipeline_services.py`
   - Motivo da leitura: integração com a esteira comum.

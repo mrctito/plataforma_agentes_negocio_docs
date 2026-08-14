@@ -1,0 +1,11 @@
+flowchart LR
+    V1["Caracterizar UI atual"] --> V2["Codificar telas em estados factuais"]
+    V2 --> V3["Validar navegação e acessibilidade"]
+    V3 --> GVISUAL{"Aprovação visual do usuário"}
+    GVISUAL --> B1["Fundação genérica e segredos"]
+    B1 --> B2["Shopify OAuth e APIs"]
+    B1 --> B3["Meta OAuth, versão e webhook"]
+    B2 --> A1["Ativar AIDAN e tools/YAML"]
+    B3 --> A1
+    A1 --> E2E["E2E com contas reais"]
+    E2E --> R["Rollout, auditoria e documentação"]

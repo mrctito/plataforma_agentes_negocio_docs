@@ -79,7 +79,9 @@ Dentro de IntelligentRAGOrchestrator.intelligent_retrieve, a ordem confirmada é
 2. Resolver top_k via get_retrieval_top_k.
 3. Construir access_context a partir do payload.
 4. Registrar início do pipeline e telemetria.
-5. Se o intelligent_pipeline estiver desabilitado, executar pipeline de fallback.
+5. Se o intelligent_pipeline estiver desabilitado, falhar explícito com `ContentQAError` citando a
+   chave `intelligent_pipeline.enabled: false` e o `correlation_id` (desde 2026-08-14; não existe
+   mais pipeline de fallback aqui — ver nota de fallback em §15.2).
 6. Fazer inicialização lazy dos componentes na primeira execução.
 7. Executar query rewrite.
 8. Rodar análise e roteamento da query.
@@ -212,18 +214,28 @@ Backends confirmados:
 
 ## 5.7. reranker
 
-Lido em qa_system.reranker.
+Lido em qa_system.reranker por `get_reranker_config`
+(`src/qa_layer/rag_engine/config_utils.py`). Desde 2026-08-14 este bloco configura o **rerank nativo
+do Qdrant** (late interaction ColBERT executado no servidor). O reranker cross-encoder que rodava
+dentro do container foi removido do produto.
 
 Chaves confirmadas:
 
-- enabled
-- provider
-- model
-- fallback_model
-- top_k
-- feedback_field
-- feedback_weight
-- vision_weight
+- `enabled` — liga o estágio de rerank na busca híbrida.
+- `provider` — só aceita `qdrant_native` (default). Qualquer outro valor, inclusive o antigo
+  `huggingface`, **falha explícito**: a chave legada não é convertida em silêncio.
+- `model` — modelo late interaction. Default `answerdotai/answerai-colbert-small-v1`, o mesmo que
+  gravou o multivetor na ingestão. Apontar outro modelo faz a busca **pular** o rerank (§10.4).
+- `prefetch_limit` — candidatos que cada sub-busca traz **antes** de reordenar. Default 100.
+- `top_k` — quantos documentos saem depois do rerank. Default 8.
+
+Chaves que **deixaram de existir** (eram do cross-encoder e não têm equivalente no MaxSim
+server-side): `fallback_model`, `feedback_field`, `feedback_weight`, `vision_weight`. YAML antigo que
+ainda as traga não quebra — elas são simplesmente ignoradas.
+
+Validação obrigatória: `prefetch_limit` menor que `top_k` falha explícito. Pedir 8 resultados a
+partir de 5 candidatos é configuração sem sentido, e falhar cedo é melhor que devolver menos
+silenciosamente.
 
 ## 5.8. especialização Excel
 
@@ -243,7 +255,28 @@ Chaves confirmadas:
 
 ## 5.9. detalhe crítico de configuração
 
-O orchestrator lê enable_fallbacks em intelligent_pipeline, mas o código força self.enable_fallbacks = False e apenas registra que fallback foi solicitado. Portanto, o comportamento real confirmado não é “fallback livre se o YAML pedir”. O comportamento real é mais duro: o pipeline moderno opera em fail-first, com quedas pontuais controladas apenas onde a implementação local já programou isso.
+O pipeline moderno opera em fail-first, sem chave de configuração que ligue fallback. Até 2026-08-14 existia a chave `intelligent_pipeline.enable_fallbacks`, lida e imediatamente descartada (o código forçava `self.enable_fallbacks = False`); ela era parâmetro órfão e foi REMOVIDA do código e dos YAMLs. Erro no pipeline agora falha explícito, com `correlation_id` na mensagem — não existe caminho que devolva resposta degradada em silêncio.
+
+## 5.10. evidence_gate
+
+Lido em `qa_system.evidence_gate` pelo `__init__` de `IntelligentRAGOrchestrator`
+(`src/qa_layer/rag_engine/intelligent_orchestrator.py`, linhas 483-495). Decide se há evidência
+suficiente no que foi recuperado para deixar o LLM responder — comportamento explicado em §10.5.
+
+Chaves confirmadas (validadas pelo schema normalizer desde 2026-08-14,
+`YamlSchemaNormalizer._validate_evidence_gate_contract`; chave fora desta lista falha explícito):
+
+- `enabled` — default `true`. Com `false`, o gate nunca bloqueia.
+- `min_dense_score` — piso de cosseno denso. Default `0.65` (constante `DEFAULT_EVIDENCE_GATE_MIN_SCORE`,
+  linha 256), calibrado em 2026-07-29 sobre o caminho **sem** rerank (respostas corretas 0.679-0.722,
+  reprovada 0.625). Só se aplica quando o rerank não ordenou o conjunto (§10.5).
+- `message` — texto devolvido ao usuário quando o gate bloqueia. Default: "Não encontrei no acervo
+  material suficiente para responder isso com segurança. Poderia detalhar melhor a pergunta..."
+  (`DEFAULT_EVIDENCE_GATE_MESSAGE`, linha 258).
+
+Valor malformado de `min_dense_score` (ex.: texto em vez de número) não falha: cai em
+`except (TypeError, ValueError)` e usa o default em silêncio — a validação de schema pega chave
+com nome errado, não valor de tipo errado.
 
 ## 6. Query rewrite
 
@@ -384,8 +417,11 @@ Fluxo confirmado no retriever:
 - pode compor pergunta textual com descrição de visão;
 - gera embedding de visão para a consulta;
 - roda busca de texto e busca de visão em paralelo;
-- mescla os dois conjuntos;
-- aplica rerank depois da fusão texto-visão.
+- mescla os dois conjuntos, deduplicando por chave e ordenando por score, com bônus para o
+  resultado de visão.
+
+Atenção: esse último passo é **mescla**, não o rerank de §10.4. O cross-encoder que rodava aqui foi
+removido do produto; o rerank do caminho oficial é server-side e acontece dentro da busca híbrida.
 
 Isso não é um “retriever PDF”. É um recurso de query multimodal e ranking multimodal.
 
@@ -411,7 +447,19 @@ Sinais registrados:
 
 ## 10.2. Resultado híbrido provider-native
 
-Qdrant entrega o ranking já combinado por RRF sobre prefetch dense+sparse. Azure Search entrega o resultado de texto+vetor pelo próprio índice. O pós-retrieval não consulta PostgreSQL nem aplica retriever lexical paralelo.
+Qdrant entrega o ranking já combinado por **DBSF** (Distribution-Based Score Fusion) sobre prefetch
+dense+sparse — desde 2026-08-14, no lugar do RRF. Azure Search entrega o resultado de texto+vetor
+pelo próprio índice. O pós-retrieval não consulta PostgreSQL nem aplica retriever lexical paralelo.
+
+Por que a troca importa na leitura do score: o RRF pontuava por **posição** (1º, 2º, 3º…) e sempre
+entregava valores dentro de [0,1]. O DBSF normaliza cada sub-busca pela distribuição dos próprios
+resultados (média ± 3 desvios) e **soma** — os scores passam de 1,0 com facilidade e não podem ser
+grampeados. Por isso `search_hybrid` devolve o score do estágio **cru**.
+
+O que o DBSF **não** resolve: ele continua relativo ao lote. Uma busca em que tudo é irrelevante
+produz o mesmo topo de uma busca excelente. Quem mede relevância absoluta é o `dense_score`
+(cosseno entre a pergunta e o trecho), devolvido ao lado do score de fusão — é ele, e não o `score`,
+que serve de evidência para decidir se há material suficiente para responder.
 
 ## 10.3. Fusão
 
@@ -427,17 +475,97 @@ O fluxo inclui estruturação dos resultados, deduplicação, execução do algo
 
 ## 10.4. Rerank
 
-O rerank neural foi confirmado dentro do retriever vetorial multimodal e também na infraestrutura de retrievers.
+O rerank é **nativo do Qdrant** e roda no servidor, não no container. Ele não é um passo separado do
+pós-retrieval: é o **estágio externo do mesmo `query_points`** que já faz a busca híbrida, numa única
+viagem de rede.
 
-Fluxo observado:
+Como funciona, em ordem:
 
-- consulta get_reranker_config;
-- se enabled=false, a etapa é ignorada;
-- tenta aplicar o modelo principal;
-- se falhar, ainda pode tentar fallback_model;
-- se tudo falhar, preserva a ordem anterior sem mascarar o que aconteceu.
+1. dense e sparse buscam `prefetch_limit` candidatos cada (default 100);
+2. o DBSF funde os dois num prefetch aninhado;
+3. o nível externo reordena esses candidatos por **MaxSim** entre a pergunta e o multivetor ColBERT
+   de cada trecho, e devolve `top_k` (default 8).
 
-## 10.5. ACL e normalização
+Late interaction, em nível 101: o modelo não comprime o texto num único vetor. Ele guarda um vetor
+por token e, na hora de comparar, casa cada token da pergunta com o token mais parecido do trecho e
+soma os melhores casamentos. É mais caro e mais preciso — por isso só reordena candidatos já
+recuperados, nunca faz a busca inicial.
+
+Onde a decisão mora: `QdrantVectorStore._resolve_native_rerank_target`
+(`src/ingestion_layer/vector_stores/qdrant_client.py`), ponto **único**. Ela devolve "reordena com
+este vetor" ou "não reordena por este motivo", e nenhum ramo é silencioso. As três razões de não
+reordenar:
+
+- `disabled_by_config` — o tenant não pediu rerank. Caminho normal.
+- `model_mismatch` — o YAML aponta um modelo late interaction diferente do que gravou o multivetor
+  na ingestão. Rerankear assim compararia a pergunta com outro espaço vetorial e a ordem sairia
+  aleatória, em silêncio. Pular é estritamente melhor.
+- `late_interaction_vector_missing` — a coleção foi ingerida antes do rerank nativo e não tem o vetor
+  `<primary>_late`. A busca segue com a ordem do DBSF.
+
+Note a assimetria deliberada com a ingestão: lá, coleção sem o multivetor **falha explícito**
+(`_assert_late_interaction_vector_available`), porque seguir gravaria acervo pela metade e o estrago
+é permanente. Aqui, na busca, o mesmo caso é **skip logado**, porque falhar deixaria o tenant inteiro
+sem RAG por causa de um acervo defasado.
+
+Observabilidade: `ingestion.vector_store.qdrant.hybrid_search.rerank`, sempre em `info`, executado ou
+não — com `status` (`executed`/`skipped`), `reason`, `duration_ms` e, em `metadata`,
+`documents_in`/`documents_out`/`late_interaction_model`/`late_interaction_vector`/
+`top_k_requested`/`top_k_applied`. O nível `info` é requisito, não detalhe: o reranker anterior da
+plataforma passou meses sem executar justamente porque logava a decisão só em `debug`.
+
+Efeito colateral a conhecer: com rerank ligado, `reranker.top_k` **sobrepõe** o `top_k` pedido pelo
+chamador. Os dois aparecem no log (`top_k_requested` × `top_k_applied`) para a divergência nunca ser
+silenciosa.
+
+Requisito de acervo: o rerank só funciona sobre coleção ingerida **com** o vetor `<primary>_late`.
+Acervo antigo precisa de reingestão com `vector_store.if_exists: overwrite` — o Qdrant não acrescenta
+vetor denso novo a coleção existente.
+
+## 10.5. Gate de evidência (responder × recusar por score)
+
+Depois do rerank (ou da fusão DBSF pura, quando não há rerank) e antes da geração, o orchestrator
+decide se o conjunto recuperado sustenta uma resposta. Ponto único:
+`IntelligentRAGOrchestrator._avaliar_gate_de_evidencia` (linha 2173), chamado de
+`_assemble_final_result` (linha 2351). Quando bloqueia, monta
+`_montar_resultado_sem_evidencia` (linha 2265): **nenhuma chamada ao LLM**, `sources`/
+`source_documents` vazios de propósito (mostrar trechos que a própria plataforma julgou
+insuficientes sugeriria que a resposta veio deles) e `answer` é a mensagem de `evidence_gate.message`.
+
+Regra (um único predicado, sem segundo gate paralelo):
+
+1. `enabled: false` no YAML → não bloqueia.
+2. **Rerank ColBERT ordenou o conjunto** (`rerank_score` presente nos documentos) → não bloqueia.
+   Motivo nomeado no log: `rerank_reordenou_conjunto_sem_piso_calibravel`.
+3. Nenhum documento trouxe `dense_score` → não bloqueia (ausência de medição não é evidência de
+   irrelevância — é como uma resposta sustentada só por memória/histórico continua passando).
+4. Melhor `dense_score` abaixo de `min_dense_score` → **bloqueia**.
+
+**Por que o rerank desliga o piso denso, em vez de julgar pelo MaxSim (mudança de 2026-08-14):**
+o piso de 0,65 foi calibrado sobre execuções em que o conjunto devolvido era o topo denso do acervo.
+Com rerank, `search_hybrid` devolve o top-k por MaxSim tirado de ~100 candidatos fundidos por DBSF —
+o `max(dense_score)` que chega ao gate pode nem ser o argmax do pool, e é amostra viesada para baixo.
+Medição real: respostas **corretas** com dense 0.629 e 0.639, dentro da faixa que a calibração de
+2026-07-29 chamava de reprovada (0.625) — o vão de 0.054 virou 0.004. Um piso de MaxSim foi avaliado
+e descartado: o MaxSim tem escala dependente do número de tokens da pergunta (soma por token, sem
+teto em 1,0), não existe caso negativo medido no caminho rerankeado para calibrar um piso, e o Qdrant
+não devolve a contagem de tokens da inferência no retorno de `query_points` para normalizar por ela.
+Inventar um número seria falsa segurança (`CLAUDE.md §1`).
+
+**Pendência real, decisão do usuário ainda em aberto:** com rerank ligado, o gate hoje **não tem
+nenhuma trava de score** — ele responde sempre que o rerank ordenou, mesmo que o material seja pouco
+relevante. Mitigação em vigor: os dois sinais (`dense_top_score` e `rerank_top_score`) são publicados
+em `info` a cada execução, criando série histórica real para calibrar um piso futuro; o modelo
+continua recusando honestamente sem ajuda do gate (medido: 0 alucinações em 8 execuções no acervo de
+teste, incluindo 2 recusas corretas); e `evidence_gate.enabled: false` continua disponível para
+desligar o gate inteiro. Sem instrumento calibrável hoje, qualquer piso de MaxSim seria sorteio, não
+proteção — daí a decisão de não bloquear em vez de bloquear com número inventado.
+
+Observabilidade: o evento `rag_pipeline_step` (`generation:evidence_gate`) sempre loga
+`evidence_gate_min_dense_score`, `dense_top_score`, `rerank_top_score` (`None` quando o rerank não
+ordenou este conjunto) e `blocked`, executado ou não.
+
+## 10.6. ACL e normalização
 
 Depois da recuperação, o orchestrator executa AccessControlEvaluator.filter_documents e normalize_documents.
 
@@ -557,7 +685,12 @@ O sucesso não é apenas geração de texto. É geração de texto apoiada por u
 
 ### 15.2. Timeout
 
-Se intelligent_retrieve ultrapassa asyncio.timeout, o código executa pipeline de fallback interno do orchestrator e registra timeout_fallback.
+Se intelligent_retrieve ultrapassa asyncio.timeout, desde 2026-08-14 o orchestrator **não** executa
+mais nenhum pipeline de fallback: ele levanta `ContentQAError` citando o limite em segundos
+(`max_pipeline_time`) e o `correlation_id`. `_execute_fallback_pipeline` e o `timeout_fallback` que
+existiam antes foram removidos por serem, na prática, uma resposta com `status ok` e `answer` vazio
+(o dict de fallback do retrieval nunca teve chamada à geração) — diretriz do usuário: "prefiro deixar
+claro que não funcionou do que mascarar o erro e entregar resposta ruim".
 
 ### 15.3. Erros tratáveis do pipeline
 
@@ -569,7 +702,7 @@ HANDLED_PIPELINE_ERRORS inclui, entre outros:
 - QdrantVectorStoreError e UnexpectedResponse quando o backend Qdrant está presente
 - AzureCognitiveSearchError, adicionalmente, no caminho de hybrid nativo (NATIVE_HYBRID_ERRORS)
 
-Mesmo assim, a presença desse bloco não significa “fallback liberado sempre”. O próprio orchestrator força enable_fallbacks=False como estado efetivo, então a regra geral continua sendo falhar cedo quando a infraestrutura moderna não está íntegra.
+Mesmo assim, a presença desse bloco não significa resposta degradada: desde 2026-08-14 o orchestrator não tem nenhum fallback de pipeline. Esses erros são capturados apenas para registrar o log canônico e são reerguidos como `ContentQAError` com o `correlation_id`. A regra é falhar cedo e explícito quando a infraestrutura moderna não está íntegra.
 
 ## 16. Troubleshooting operacional
 
@@ -614,13 +747,16 @@ Como investigar:
 
 ### 16.5. Resposta lenta
 
-Causa provável: query rewrite com LLM, multi-query, hybrid nativo com retry, visão multimodal ou rerank neural.
+Causa provável: query rewrite com LLM, multi-query, hybrid nativo com retry ou visão multimodal. O
+rerank nativo entra na conta, mas roda dentro do mesmo `query_points` — o custo dele aparece em
+`duration_ms` do evento de rerank, não como viagem extra de rede.
 
 Como investigar:
 
 - pipeline_metrics;
 - retrieval_trace;
-- events de query_rewrite, retrieval, semantic_cache e rag:reranker.
+- events de query_rewrite, retrieval e semantic_cache;
+- `ingestion.vector_store.qdrant.hybrid_search.rerank` (o step `rag:reranker` não existe mais).
 
 ## 17. Comparação técnica com o padrão de mercado
 
@@ -690,7 +826,7 @@ O ganho prático é que o LLM recebe um contexto melhor. O modelo não vira resp
 - src/qa_layer/rag_engine/intelligent_orchestrator.py
   - Motivo da leitura: fluxo principal do runtime avançado.
   - Símbolo relevante: intelligent_retrieve,_execute_routing_decision, _assemble_final_result.
-  - Comportamento confirmado: rewrite, routing, retrieval, ACL, geração e retrieval_trace.
+  - Comportamento confirmado: rewrite, routing, retrieval, gate de evidência (§10.5), ACL, geração e retrieval_trace.
 
 - src/qa_layer/rag_engine/retrieval_engine.py
   - Motivo da leitura: execução das estratégias de recuperação.
