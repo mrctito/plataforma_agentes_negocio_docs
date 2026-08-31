@@ -24,6 +24,35 @@ As fontes executáveis principais são:
 O modelo físico está em
 [`README-SCHEMA-BANCO.md`](README-SCHEMA-BANCO.md#domínio-job-core).
 
+## Por que este desenho, e não uma fila de mensagens
+
+A versão ingênua de execução assíncrona é uma fila em memória com um pool de threads: some no
+reinício, não deixa histórico, não sabe dizer o que estava rodando quando o processo caiu e não tem
+como cancelar de verdade um trabalho já iniciado. Para um lote de dezenas de horas — que é o caso da
+ingestão de um acervo — nenhuma dessas propriedades é aceitável.
+
+A escolha estrutural que define o Job Core é esta: **a fila é o próprio ledger**. Não há broker
+separado no caminho — o estado durável vive em PostgreSQL (`job_core.job_runs` e
+`job_run_events`) e os workers disputam trabalho por reivindicação atômica no banco
+(`FOR UPDATE ... SKIP LOCKED`).
+
+O contraste com o desenho convencional — uma fila de mensagens ao lado de um banco de estado — é o
+que justifica a decisão:
+
+| | Fila de mensagens + banco | Job Core |
+|---|---|---|
+| **Fonte de verdade** | duas, que podem discordar ("a fila diz que entregou, o banco diz que não começou") | uma só |
+| **Entrega duplicada** | possível por *redelivery*; exige idempotência em todo consumidor | a linha é reivindicada **uma vez**; não existe reentrega |
+| **Histórico** | mensagem consumida desaparece | o registro e seus eventos permanecem, auditáveis |
+| **Progresso** | tipicamente por *callback*, que morre com o processo | eventos duráveis gravados no ledger |
+| **Sobrevivência a queda** | depende da durabilidade configurada no broker | o trabalho continua existindo porque nunca saiu do banco |
+
+O custo dessa escolha é assumido e declarado: o Job Core faz *polling* no banco em vez de receber
+*push*, e não oferece as capacidades de roteamento sofisticado de um broker maduro. Para trabalho
+assíncrono de longa duração — minutos a horas por unidade — a latência de aquisição é irrelevante
+diante do tempo de execução, e a fonte de verdade única vale mais do que o *push*. Para trabalho de
+altíssima frequência e baixa latência, a conclusão seria outra.
+
 ## Responsabilidades e limites
 
 O Core é responsável por:
@@ -107,6 +136,30 @@ agent/workflow/RAG assíncronos, continuação HIL, checkpoints e manutenções.
 O consumer runtime aceito é `job_core_polling`. Não existem catálogo ou executor de
 payload, registry/dispatcher scheduler ou worker de lifecycle background como caminho alternativo.
 
+### Como um produto vertical registra processos sem a plataforma conhecê-lo
+
+Produtos verticais construídos **sobre** a plataforma (hoje, a camada Aidan) precisam registrar
+processos no Job Core, mas a plataforma não pode importá-los: a direção de dependência é
+`vertical → plataforma`, nunca o contrário. A saída **não** é um segundo registry — isso quebraria
+a autoridade única do Job Core. É o parâmetro genérico `extra_descriptors`:
+
+```
+app/runners/worker_runner.py        (composition root EXTERNO, fora de src/)
+  → build_worker_process_runtime(extra_descriptors=...)
+    → build_async_job_worker_runtime(extra_descriptors=...)
+      → build_async_job_process_registry(extra_descriptors=...)
+        → JobProcessRegistry  (um só, com tudo dentro)
+```
+
+O catálogo recebe descritores prontos e não sabe de quem são — ele nunca menciona o vertical.
+Quem monta os descritores, com as dependências concretas, é o próprio vertical; quem junta as
+duas pontas é o runner, que vive fora de `src/` exatamente por isso (o mesmo padrão que
+`service_api.py` na raiz já usa para montar rotas de produto).
+
+**Erro a evitar:** importar o vertical dentro de `src/api/services/` para "simplificar". Isso passa
+no teste unitário e reprova no contrato de arquitetura, porque acopla a plataforma a um produto
+que ela deveria ignorar.
+
 ## Envelope, publicação e polling
 
 `JobEnvelope` preserva os campos físicos `job_id`, `route_kind`, `dispatch_mode`, `job_type`,
@@ -175,10 +228,30 @@ Estados terminais e imutáveis: `cancelled`, `succeeded`, `partial_success`, `fa
 `reconciled_failed`. Estados não terminais: `queued`, `claimed`, `running`, `waiting_children`,
 `cancelling`, `cancel_requested`, `stale` e `orphaned`.
 
+São **treze** estados ao todo, cinco deles terminais.
+
 `stale`, `orphaned` e `reconciled_failed` permanecem no modelo e no DDL para leitura histórica,
 mas o runtime atual não os produz. Liveness ativa considera `claimed`, `running`, `cancelling` e
 `cancel_requested`. `waiting_children` só vira candidato quando a árvore prova que não há filho
 ativo e ainda existe descendente não terminal preso.
+
+### Sinal de vida e janela de obsolescência
+
+Uma execução ativa emite sinal de vida a cada **30 segundos** (`heartbeat_interval_seconds`, valor
+default do executor, em thread própria). A janela de obsolescência é de **180 segundos**
+(`stale_after_seconds`) — ou seja, uma execução precisa perder várias batidas seguidas antes de ser
+considerada morta. A folga é deliberada: um pico de latência do banco não pode cancelar trabalho
+saudável.
+
+Quando a janela expira, o desfecho é sempre `cancelled`, com o motivo registrado
+(`job_core_liveness_expired`) e a prova que o sustenta — `active_execution_heartbeat_expired`, para
+execução ativa que parou de dar sinal, ou `waiting_children_orphaned`, para pai preso esperando
+filhos que não existem mais.
+
+> **Consequência operacional que vale conhecer:** uma indisponibilidade do PostgreSQL mais longa que
+> a janela de obsolescência derruba jobs que estavam **vivos** — eles simplesmente não conseguiram
+> registrar o sinal. Ao diagnosticar cancelamentos em massa por `job_core_liveness_expired`, a
+> primeira hipótese a testar é falha de banco no período, não falha do domínio.
 
 Cancelamento é hierárquico e cooperativo:
 
@@ -198,6 +271,34 @@ Cancelamento é hierárquico e cooperativo:
 O único terminal que pode produzir é `cancelled`; nunca recupera, reexecuta, reencaminha ou
 reenfileira. O token concreto e o store ficam encapsulados no host criado pelo executor e não são
 expostos ao processo.
+
+**Por que cancel-only, e não recuperação automática.** Ressuscitar uma execução parece generoso e é
+perigoso: a rodada a que ela pertencia já terminou, e a configuração que a originou pode não valer
+mais. Reiniciar o servidor não pode trazer de volta à vida uma tarefa de uma rodada encerrada, com
+parâmetros vencidos, competindo por recursos com o trabalho atual. A regra é direta — **rodada morta
+é morta**: um filho que ficou `queued` sob um pai já encerrado é cancelado, nunca promovido a
+execução.
+
+### Alcance real do cancelamento
+
+Cancelar precisa cancelar. São três alcances, e os dois primeiros existem porque a ausência deles é
+mensurável em memória retida e vazão perdida:
+
+1. **Cooperativo, dentro do processo** — o processo observa o pedido nos pontos de checagem que ele
+   próprio define, pelo host (`is_cancellation_requested()` / `raise_if_cancelled()`).
+2. **Escalada de sinal no grupo de processos** — quando o trabalho roda num subprocesso pesado
+   (extração de documento, OCR, visão), o encerramento sinaliza o **grupo inteiro**: `SIGTERM`,
+   carência curta, depois `SIGKILL`. Isso alcança os "netos" que as bibliotecas nativas criam. Matar
+   apenas o processo filho deixa esses netos vivos, segurando memória por tempo indefinido.
+3. **Portão antes de nascer** — o subprocesso caro só é criado depois de uma verificação de
+   cancelamento. Sem esse portão, um trabalho que esperou na fila abriria o processo pesado ao ganhar
+   a vaga, **depois** de o cancelamento já ter sido registrado.
+
+Os alcances 2 e 3 vivem no domínio que executa o subprocesso, não no Core — o Core sinaliza o
+cancelamento, e quem tem processo externo é responsável por propagá-lo até o fim da própria cadeia.
+O detalhe da implementação no pipeline de PDF está em
+[README-TECNICO-INGESTAO-PDF-PIPELINE-COMPLETO.md](README-TECNICO-INGESTAO-PDF-PIPELINE-COMPLETO.md)
+§27.2.1 e §27.2.2.
 
 ## HIL: dois jobs, uma continuidade factual
 

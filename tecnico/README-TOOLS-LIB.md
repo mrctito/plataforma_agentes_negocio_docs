@@ -1165,6 +1165,38 @@ Convenções deste catálogo:
 - Sugestão de melhoria: adicionar tool somente com implementação, capability e teste de recipe.
 - Prioridade: Alta.
 
+### normalize_table_markdown e gate numérico de tabela PDF
+
+- Descrição: normalizador determinístico que devolve o espaço comido pela extração de tabela (`ClasseIII` → `Classe III`, `2,00m` → `2,00 m`) e comparador único que prova que uma reescrita de grade não alterou nenhum número.
+- Tags: `pdf`, `tabela`, `determinístico`, `fail-closed`
+- Tipo: função pura e gate de validação
+- Arquivos: `src/ingestion_layer/processors/pdf_pipeline/pdf_table_text_normalization.py`, `src/ingestion_layer/processors/pdf_table_numeric_gate.py`.
+- Linguagem: Python
+- Responsabilidade principal: corrigir a colagem que nasce dentro do `pymupdf4llm` no único ponto em que a grade vira chunk, e ser a **fonte única** do veredito "nenhum dígito mudou" para as duas etapas que reescrevem tabela (normalizador e enriquecedor por LLM).
+- Dependências principais: apenas biblioteca padrão; nenhuma dependência de provider, YAML ou I/O.
+- Acoplamento forte com domínio: Baixo; texto de tabela em Markdown.
+- Uso atual: Sim; ligados no chunker de PDF (`pdf_chunking_service.py`) sob a chave `ingestion.content_profiles.type_specific.pdf.processing.parsing.table_text_normalization`, e reusados pelo enriquecedor por LLM e pelos scripts de simulação/prova em `.claude/scripts/qdrant/`.
+- Seguro reutilizar como está: Sim; o gate compara a sequência ordenada de tokens numéricos, então inserir espaço não reprova e trocar algarismo reprova.
+- Riscos ou limitações: o normalizador **não** resolve colagem toda minúscula (`Classedorojeto`) — esse caso é declarado como limite e só a passada de LLM conserta; a chave que o liga entra no `extraction_policy_fingerprint`, logo ligá-la **dispara reprocesso** do acervo sob `if_exists: update`.
+- Sugestão de melhoria: manter o gate como implementação única; segundo comparador numérico é violação do gate de invariante (teste de arquitetura já protege).
+- Prioridade: Alta.
+
+### PdfTableEnricher e compositor do bloco de enriquecimento
+
+- Descrição: enriquecedor de tabela por LLM em UMA chamada (descrição narrativa + grade com grafia corrigida + veredito de vazio) e compositor único do bloco anexado ao `content` do chunk.
+- Tags: `pdf`, `tabela`, `llm`, `orçamento`
+- Tipo: service e compositor/aplicador
+- Arquivos: `src/ingestion_layer/processors/pdf_table_enricher.py`, `src/ingestion_layer/processors/pdf_table_enrichment_block.py`.
+- Linguagem: Python
+- Responsabilidade principal: transformar grade de números em conteúdo pesquisável sem nunca substituir a grade original nem alterar um algarismo, e ser o único lugar que decide o que entra no bloco e como ele é renderizado.
+- Dependências principais: `create_llm_from_yaml` + `with_structured_output` + `run_sync_with_external_retry` e o gate numérico de tabela. O teto em dólar NÃO mora aqui: quem monta o `TranscriptionBudgetGuard` e decide parar é o orquestrador (`content_type_dispatcher.py`), e o enricher só expõe `budget_exhausted_result(...)` para o resultado sair com o motivo tipado.
+- Acoplamento forte com domínio: Médio; ingestão de PDF com tabela.
+- Uso atual: Sim; montado pelo `content_type_dispatcher.py` sob `ingestion.table_enrichment` (`enabled`, `engine`, `model`, `budget_usd`, `scope`), com os cinco metadados de auditoria (`table_enriched`, `table_enrichment_version`, `table_emptiness_verdict`, `table_emptiness_confidence`, `table_normalization_approved`) registrados na allowlist do `ChunkMetadataReducer`.
+- Seguro reutilizar como está: Sim, para tabela em Markdown; fail-closed em quatro frentes (dígito alterado descarta a reescrita, grade original nunca é substituída, erro de provider/orçamento não derruba a ingestão, o veredito determinístico do gate de qualidade continua determinístico).
+- Riscos ou limitações: exige preço declarado do modelo em `ingestion.analysis_cost_table` (sem isso falha fechado, por desenho); **uma** chamada por tabela é o contrato — virar duas anula o ganho, que vem de aposentar o juiz dedicado de formulário em branco; a saída da LLM varia entre corridas (o número de rejeições do gate muda), e é o gate que torna essa variação inofensiva; o bloco `ingestion.table_enrichment` fica **fora** do fingerprint, logo ligá-lo sozinho não reprocessa nada.
+- Sugestão de melhoria: manter a exclusão mútua com o juiz de formulário em branco protegida por teste de arquitetura; qualquer novo veredito de vazio deve nascer aqui, não em paralelo.
+- Prioridade: Alta.
+
 ### UniversalJsonAnalyzer e contratos JSON avançados
 
 - Descrição: analyzer extensível que detecta estrutura, tipos de campo, domínio, config e sugestões de consulta para JSON sem acoplar consumidores aos detectors concretos.
@@ -1260,6 +1292,22 @@ Convenções deste catálogo:
 - Riscos ou limitações: chain type desconhecido deve falhar; wrapper duplicado fora da factory cria drift.
 - Sugestão de melhoria: manter registry como única seleção de builder.
 - Prioridade: Alta.
+
+### Construtor offline do vocabulário de expansão de query por domínio
+
+- Descrição: pacote que monta o vocabulário de expansão de query a partir do acervo já indexado — extração de candidatos (funções puras), expansão por LLM com checkpoint em disco, montagem do vocabulário e publicação no YAML.
+- Tags: `rag`, `query expansion`, `offline`, `vocabulário`
+- Tipo: funções puras, adapter de LLM, generator e publisher
+- Arquivos: `src/qa_layer/domain_specific_rag/vocabulary/{candidate_extraction,llm_expander,expansion_cache,vocabulary_generator,vocabulary_publisher}.py`.
+- Linguagem: Python
+- Responsabilidade principal: gerar vocabulário **do próprio acervo** (proibida lista escrita à mão) e publicá-lo no caminho que o consumidor de runtime lê, mantendo construtor caro e offline fora do caminho da pergunta.
+- Dependências principais: `create_llm_from_yaml` com `temperature=0` + `with_structured_output` (caminho canônico LangChain), NDJSON de checkpoint em disco e substituição textual de bloco YAML.
+- Acoplamento forte com domínio: Baixo no pacote (a decisão de "isto serve / isto é ruído" é função pura testável); as heurísticas de código de norma e legenda de quadro são específicas do acervo de engenharia.
+- Uso atual: Sim; consumido pelos três scripts da geração (`.claude/scripts/qdrant/build_dnit_vocabulary_candidates.py` e `.claude/scripts/dnit/{generate,publish}_dnit_vocabulary.py`). O leitor em runtime é `src/qa_layer/rag_engine/gesdoc_query_expansion.py`, que só LÊ o resultado.
+- Seguro reutilizar como está: Sim para outro domínio, trocando os candidatos; as três responsabilidades (varrer, gerar, publicar) são separadas de propósito para que a migração do destino troque só o publicador.
+- Riscos ou limitações: nada aqui roda por requisição — não chamar no caminho da pergunta; o publicador edita o YAML por substituição **textual** justamente para não apagar os comentários de configuração (carregar e re-serializar apagaria todos); o custo do vocabulário inline é tamanho de arquivo (o YAML DNIT foi de 171 KB para 723 KB).
+- Sugestão de melhoria: quando o destino migrar para as tabelas do registro do acervo, alterar apenas `vocabulary_publisher.py`.
+- Prioridade: Média.
 
 ### QueryAnalyzer, AdaptiveQueryRouter e StrategyExecutorRegistry
 
@@ -1589,11 +1637,19 @@ Convenções deste catálogo:
 - Arquivos: `src/services/transactional_email_service.py`, `src/services/brevo_transactional_email_client.py`, `src/services/resend_transactional_email_client.py`.
 - Linguagem: Python
 - Responsabilidade principal: evitar que routers/tools conheçam autenticação e payload dos providers.
-- Dependências principais: HTTPX, ExternalRetry, logging e settings.
+- Dependências principais: HTTPX, ExternalRetry, logging, settings para o
+  e-mail institucional da plataforma e ClientDirectory/security keys para
+  tools escopadas por tenant.
 - Acoplamento forte com domínio: Baixo; capacidade transversal de envio.
-- Uso atual: Sim; auth router e factories Brevo/Resend usam o application service.
+- Uso atual: Sim; o auth router usa o provider institucional configurado no
+  servidor, enquanto `brevo_send_email` e `resend_send_email` compõem o mesmo
+  application service em tempo de chamada com a credencial do canal do tenant
+  ativo.
 - Seguro reutilizar como está: Sim, pela camada de aplicação.
-- Riscos ou limitações: provider configurado não possui fallback implícito; `correlation_id` e sender válidos são obrigatórios.
+- Riscos ou limitações: provider configurado não possui fallback implícito;
+  `correlation_id` e sender válidos são obrigatórios. As tools exigem um único
+  canal de e-mail ativo e as chaves específicas do provider nesse canal; SMTP
+  não substitui silenciosamente Brevo ou Resend.
 - Sugestão de melhoria: evoluir HTML/templates/anexos primeiro no contrato interno.
 - Prioridade: Alta.
 

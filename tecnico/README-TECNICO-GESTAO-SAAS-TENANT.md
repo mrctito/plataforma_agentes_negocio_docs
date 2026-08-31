@@ -242,8 +242,10 @@ SQL (`sql.Literal`). Isso e o oposto do estado anterior a esta rodada, em que o 
 `environment='prod'` de forma literal.
 
 O dominio comercial (`src/saas_commercial/service.py`) tem uma trava adicional e independente:
-`SaasCommercialService._require_prod(environment)` recusa operar quando o ambiente nao e `prod` —
-checkout, transicao de assinatura e concessao de entitlement so funcionam hoje em producao. Ou seja:
+`SaasCommercialService._require_deployment_environment(environment)` recusa operar quando o ambiente
+informado nao e o ambiente canonico do processo (`environment_name()`) — checkout, transicao de assinatura e
+concessao de entitlement acontecem no ambiente do proprio deployment, e ambiente cruzado, vazio ou desconhecido
+falha fechado. Ou seja:
 **leitura de projeto/release/plano ja segue o `ENVIRONMENT` canonico do processo; escrita comercial
 (assinatura/billing/entitlement) segue restrita a `prod`** ate que exista necessidade real de simular
 comercio em outro ambiente.
@@ -489,7 +491,7 @@ portaria consulta antes de deixar alguem administrar um produto.
   (`PostgresQueryExecutor`), nunca `cursor.execute` direto.
 - Confirmei que a operacao de plano respeita o subconjunto de operacoes da release ativa.
 - Confirmei que a mutacao nova emite `_log_state_change` com `event_name` explicito.
-- Confirmei que nenhuma escrita comercial nova ignora `_require_prod` sem justificativa expressa.
+- Confirmei que nenhuma escrita comercial nova ignora `_require_deployment_environment` sem justificativa expressa.
 - Confirmei que o `environment` usado em queries novas vem de `self._repository.environment`
   (ou equivalente canonico), nunca de um literal.
 - Validei a mudanca com o `correlation_id` real de uma execucao, lendo o log oficial dessa execucao.
@@ -533,10 +535,12 @@ Em `src/saas_project/repository.py` (writer de lifecycle) e `src/saas_project/ht
 Via a property `SaasHttpRepository.environment`, que deriva do segregador canonico do processo, e via
 `_environment_literal()` para injetar esse valor com seguranca no SQL.
 
-**6. Por que o dominio comercial recusa operar fora de `prod`?**
-`SaasCommercialService._require_prod` bloqueia checkout, transicao de assinatura e concessao de
-entitlement quando `ENVIRONMENT != prod`, ate existir necessidade real de simular comercio em outro
-ambiente.
+**6. Por que o dominio comercial recusa operar fora do ambiente do deployment?**
+`SaasCommercialService._require_deployment_environment` bloqueia checkout, transicao de assinatura e
+concessao de entitlement quando o `environment` informado nao e o do proprio processo. A trava nao e mais o
+literal `prod` (T15.11, 2026-08-21): a regra canonica do repositorio e **segregar** por `ENVIRONMENT`
+(`CLAUDE.md` §3), entao cada deployment opera no seu ambiente e nunca no do vizinho. O predicado e unico e
+vive em `src/core/environment_namespace.py::deployment_environment_rejection`.
 
 **7. Onde entram as validacoes de que um plano so oferece operacoes da release ativa?**
 Em `SaasHttpService.create_plan` e `update_plan` (`src/api/services/saas_http_service.py`), antes de
@@ -587,7 +591,9 @@ Em `docs/conceitual/README-CONCEITUAL-GESTAO-SAAS-TENANT.md`.
   (linhas 274-381), `_log_state_change` (linha 850), `audit_events`/`usage_metrics` (linhas 623/681).
 - `src/saas_project/http_repository.py` — `environment` property (linhas 25-29),
   `_environment_literal` (linha 31), `list_admin_tenants`/`list_subscribers` com cast `::text`.
-- `src/saas_commercial/service.py` — `_require_prod` (linha 343 e chamadas em 60/114/174/260/325).
+- `src/saas_commercial/service.py` — `_require_deployment_environment` (linha 342 e chamadas em 60/114/174/260/325).
+- `src/core/environment_namespace.py` — `deployment_environment_rejection` (predicado unico do ambiente operacional).
+- `src/saas_project/models.py` — `SaasOperationalContext.validated()` (linhas 122-124), o segundo portao.
 - `src/api/security/permissions.py` — `PermissionKeys.SAAS_*` (linhas 115-119),
   `PERMISSION_CATALOG` (linhas 564-587).
 - `src/api/security/permission_metadata.py` — `AccessMode`, `endpoint_permission` (default

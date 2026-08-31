@@ -55,7 +55,18 @@ Leia estes dois manuais antes dos documentos de PDF quando a dúvida envolver `P
 
 O pipeline de PDF é o mais rico em decisões documentais. Ele trata PDF digital, PDF escaneado, texto nativo, OCR, parsing por engines, tabelas, imagens, multimodalidade, chunking e manifesto operacional. Use estes documentos quando o problema envolver qualidade de extração, OCR, parsing, páginas, tabelas, imagens ou diagnóstico de PDF difícil.
 
-Nesta atualização, os manuais de PDF também passaram a cobrir a fronteira assíncrona completa do produto: `POST /rag/ingest`, job pai, worker pai, fan-out documental, worker filho e o momento em que o slice PDF especializado realmente entra em ação.
+Os manuais de PDF cobrem também a fronteira assíncrona completa do produto: `POST /rag/ingest`, job pai, worker pai, fan-out documental, worker filho e o momento em que o slice PDF especializado realmente entra em ação.
+
+Assuntos que vivem **no manual técnico de PDF** e costumam ser procurados no lugar errado:
+
+| Dúvida | Seção |
+|---|---|
+| Como escolho a engine de extração, e como trato **um** documento sem afetar os outros? | §8.2, §8.12 |
+| Por que meu manual grande foi extraído pela metade? | §29.3 (os dois tetos), §29.3.1 (teto por página) |
+| O que significa um documento publicado como "inconsistente"? | §18, §18.5 |
+| Por que a resposta cita uma página diferente da que está no rodapé? | §16.5 |
+| Mudei uma configuração — o acervo inteiro vai ser reprocessado? | §16.6 |
+| Reingeri um documento; a versão antiga saiu do acervo? | §16.7 |
 
 Antes de ingerir um acervo novo, também é possível **medir** volume e custo sem gravar nada — a mesma esteira de ingestão, com a flag `ingestion.analysis_only`:
 
@@ -95,6 +106,22 @@ O pipeline de Confluence transforma páginas de wiki corporativa em acervo consu
 - [README-TECNICO-INGESTAO-WEBSCRAP-PIPELINE-COMPLETO.md](README-TECNICO-INGESTAO-WEBSCRAP-PIPELINE-COMPLETO.md)
 
 O pipeline de Web Scraping cuida da aquisição remota de páginas por URL. Ele lida com seeds explícitas, estratégia de captura, autenticação, rate limiting, proxy, cache, deduplicação, anexos, documento prefetched e reentrada na esteira comum. Use estes documentos quando a origem for uma URL ou página web, não apenas um arquivo HTML já disponível.
+
+## Visão de ponta a ponta: ingestão e resposta juntas
+
+Os manuais acima recortam a esteira por formato. Quando a pergunta é **como as duas metades se
+encaixam** — o acervo construído de um lado e a resposta produzida do outro —, dois documentos tratam
+o assunto de forma integrada:
+
+- [README-TECNICO-PIPELINE-INGESTAO-RAG-DNIT.md](README-TECNICO-PIPELINE-INGESTAO-RAG-DNIT.md) — a
+  explicação em camadas de por que cada nível de sofisticação foi acrescentado, **o que foi medido**
+  em cada um deles e onde estão os limites reais. É a leitura certa para quem precisa entender o
+  desenho e o custo de cada decisão, sem detalhe de implementação.
+- [README-PLAYBOOK-PIPELINE-INGESTAO-RAG-ROBUSTO.md](README-PLAYBOOK-PIPELINE-INGESTAO-RAG-ROBUSTO.md)
+  — as regras de engenharia transferíveis, em forma de playbook.
+
+Regra prática de escolha: para **entender o desenho**, comece pelo primeiro; para **implementar,
+configurar ou diagnosticar**, use os manuais técnicos por formato.
 
 ## Relação com ETL e RAG
 

@@ -17,6 +17,26 @@ O erro mais comum é tratar ingestão como upload de arquivo. No código real, i
 
 Isso importa porque OCR, parsing, chunking, persistência e indexação não devem ficar misturados no endpoint HTTP.
 
+### 2.1. O que separa esta esteira de uma ingestão ingênua
+
+Uma ingestão ingênua faz três coisas: lê o arquivo, corta o texto em pedaços, gera os vetores. O
+problema não é que ela seja simples — é que ela **não sabe quando deu errado**. Um arquivo lido pela
+metade, uma geração antiga não removida, um lote interrompido no meio: nos três casos ela termina sem
+exceção e reporta sucesso.
+
+As quatro decisões estruturais desta esteira atacam exatamente isso:
+
+| Decisão | O que ela compra |
+|---|---|
+| **Execução como job durável, não como script** | o lote sobrevive a reinício de servidor, é cancelável de verdade e deixa histórico auditável (§5, §6) |
+| **Desfecho derivado, não presumido** | "terminou sem exceção" não é sucesso: cada documento recebe um veredito que separa perda real de descarte deliberado |
+| **Identidade e versão explícitas por documento** | reingerir substitui a geração anterior em vez de acumular duas versões do mesmo documento no acervo |
+| **Um pipeline especializado por formato, atrás de contrato comum** | PDF, planilha, HTML e JSON têm problemas diferentes, e tratá-los com a mesma leitura genérica perde estrutura em todos |
+
+Quem quiser a versão detalhada dessas garantias no formato mais exigente — PDF — deve ler
+[README-TECNICO-INGESTAO-PDF-PIPELINE-COMPLETO.md](README-TECNICO-INGESTAO-PDF-PIPELINE-COMPLETO.md),
+§0.4.
+
 ## 3. Componentes que governam o fluxo
 
 Os componentes abaixo são os pontos mais importantes para entender o comportamento real da ingestão.
@@ -41,14 +61,55 @@ No Google Drive, `ingestion.google_drive.sources` aceita três modos distintos:
 
 | `type` | Campos decisivos | Efeito |
 |---|---|---|
-| `folder` | `folder_id`, `recursive`, `file_types`, `max_results` | lista a pasta e, quando solicitado, seus descendentes |
+| `folder` | `folder_id`, `recursive`, `file_types`, `file_patterns`, `max_results` | lista a pasta e, quando solicitado, seus descendentes |
 | `documents` | `document_ids` | usa IDs explícitos; `recursive` é falso |
-| `search` | `query`, `file_types`, `max_results` | lista por consulta do Drive |
+| `search` | `query`, `file_types`, `file_patterns`, `max_results` | lista por consulta do Drive |
 
 `ingestion.google_drive.max_files` aplica o limite global depois da resolução das fontes. A
 enumeração percorre a paginação usando `nextPageToken`; receber menos itens que `pageSize` não é
 prova de que a listagem terminou. Recursão é escolha explícita do modo `folder`, não comportamento
 que deve ser presumido para toda fonte.
+
+### 3.1 Filtro por nome de arquivo (`file_patterns`)
+
+`file_patterns` restringe, por nome de arquivo, o que a varredura entrega ao pipeline. Arquivo que
+não casa nenhum padrão é descartado ainda na listagem: não vira job filho, não é baixado e não é
+processado. É a mesma chave já usada por S3, MinIO e Azure Blob, com a semântica de glob do
+`fnmatch` — `eng*.pdf`, `*RELATORIO*` ou o nome exato `IPR-740.pdf`.
+
+```yaml
+ingestion:
+  google_drive:
+    enabled: true
+    max_files: 600
+    file_patterns:            # vale para todas as fontes abaixo
+      - "eng*.pdf"
+      - "IPR-740.pdf"
+    sources:
+      - type: "folder"
+        folder_id: "1NiMpZ..."
+        file_types: ["pdf", "application/pdf"]
+        file_patterns: ["rel*.pdf"]   # opcional: sobrepõe o global nesta fonte
+        max_results: 600
+```
+
+Regras que valem no runtime:
+
+- **Precedência:** `sources[].file_patterns` vence `google_drive.file_patterns`, simétrico a
+  `sources[].max_results` sobre `google_drive.max_files`. Ausência nos dois níveis (ou lista vazia)
+  mantém o comportamento padrão de entregar tudo o que a varredura encontrar.
+- **Caixa ignorada:** `eng*.pdf` casa `ENG-123.PDF`. Só no Google Drive — S3, MinIO e Azure Blob
+  seguem sensíveis à caixa, como sempre foram.
+- **Ordem em relação ao limite:** o filtro roda antes do corte por `max_results`/`max_files`, então
+  o teto conta apenas arquivos que passaram; um arquivo descartado não consome vaga do lote.
+- **Escrita única, dois consumidores:** o filtro é aplicado dentro do datasource
+  (`GoogleDriveDatasourceClient.list_available_documents`), de onde tanto o planejamento do fan-out
+  quanto o processamento remoto herdam a mesma decisão. O predicado é o helper canônico
+  `src/ingestion_layer/core/file_pattern_matching.py::matches_file_patterns`.
+- **Observabilidade:** `ingestion.request_source_resolvers.google_drive.file_patterns.resolved`
+  registra o filtro aplicado e sua origem; o resumo da varredura ganha `skipped_by_file_pattern`; e
+  `ingestion.content_family.remote.google_drive.file_pattern_filter_empty` alerta em nível `warning`
+  quando o filtro descarta 100% dos arquivos elegíveis — o cenário típico de padrão digitado errado.
 
 ## 4. Contrato operacional mínimo do run
 
@@ -132,6 +193,24 @@ O fluxo comum da ingestão segue esta lógica:
 6. Se for fan-out, `DocumentFanoutCoordinator` publica os filhos e preserva o run pai como unidade lógica.
 7. O operador acompanha o lote pelas rotas `/ingestion-runs/query` e `/ingestion-runs/detail`.
 
+## 6.1. Reingestão e identidade do documento
+
+Um acervo vivo é um acervo reprocessado, e é aí que uma esteira ingênua acumula lixo. Três garantias
+sustentam o reprocesso nesta plataforma, todas detalhadas no manual de PDF:
+
+- **Identidade lógica estável.** O documento é reconhecido pela origem (sistema de origem e
+  identificador externo), não pelo caminho do arquivo. Renomear não cria um documento novo.
+- **Geração identificada por conteúdo *e* política.** A chave que separa uma ingestão da seguinte
+  inclui tanto os bytes do arquivo quanto a configuração de extração usada. É o que faz "mesmo
+  arquivo, configuração melhor" ser reconhecido como uma geração nova.
+- **Substituição, não acumulação.** Depois da publicação confirmada, as gerações anteriores daquele
+  documento são removidas do vector store, com contagem antes e depois como prova. Resíduo é tratado
+  como falha, não como sucesso silencioso.
+
+O efeito prático para quem opera: sob `vector_store.if_exists: update`, uma reingestão pula o que não
+mudou, reprocessa o que mudou de conteúdo **ou** de configuração, e reprocessa também o que ficou
+incompleto na rodada anterior.
+
 ## 7. Como estudar o resto da ingestão
 
 Depois deste documento, a leitura mais produtiva é esta:
@@ -162,6 +241,8 @@ Cada caixa (documento) só é retirada da prateleira uma única vez — não exi
   paralelo.
 - `src/services/ingestion_request_builder.py` e
   `src/services/ingestion_request_source_resolvers.py`: request consolidado e contratos das fontes.
+- `src/ingestion_layer/core/file_pattern_matching.py`: predicado único do filtro por nome
+  (`file_patterns`) usado por Google Drive, S3 e Azure Blob.
 - `src/ingestion_layer/clients/google_drive_client.py`: paginação por `nextPageToken` e limite
   explícito da listagem.
 - `src/services/document_fanout_coordinator.py`: inventário, replay e limites globais antes da

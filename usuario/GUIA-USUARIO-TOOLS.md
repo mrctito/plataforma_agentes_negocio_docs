@@ -296,8 +296,23 @@ O significado prático é simples:
 
 - o YAML pede a tool pelo nome builtin `brevo_send_email`;
 - o catálogo é injetado automaticamente porque `tools_library` chegou vazia;
-- quando a tool rodar, ela vai exigir `user_session.correlation_id` e
-  delegar o envio ao contrato interno do produto, sem criar provider paralelo.
+- quando a tool rodar, ela usa o tenant da execução autenticada naquele
+  momento; uma tool reaproveitada pelo cache nunca conserva o clube que a
+  construiu;
+- a plataforma descobre o único canal de e-mail ativo do clube e usa somente
+  `brevo_api_key`, `brevo_sender_email` e, opcionalmente,
+  `brevo_sender_name` guardados nesse canal;
+- não há fallback para a conta global da plataforma, SMTP ou outro tenant. Se
+  o canal ou a credencial Brevo estiver ausente, o envio falha com uma causa
+  explícita antes de chamar o provider.
+
+Para `resend_send_email`, a regra é idêntica com as chaves
+`resend_api_key`, `resend_sender_email` e `resend_sender_name`.
+
+Hoje a tela **Caixa de e-mail do clube** configura a caixa SMTP/IMAP; ela não
+cadastra as chaves HTTP específicas de Brevo ou Resend. Portanto, declarar uma
+dessas tools no YAML só torna o envio operacional quando a credencial do
+provider já estiver gravada no registro seguro do canal do clube.
 
 Limite importante: este exemplo mostra apenas a declaração da tool no
 YAML agentic. Os argumentos `to`, `subject`, `body` e `recipient_name`

@@ -360,8 +360,16 @@ O backend so aceita esse desafio quando:
 
 1. o `channel_id` existe no diretorio;
 2. o canal possui `client_code`;
-3. o perfil do tenant possui `meta_webhook_verify_token`;
-4. o token recebido bate com o esperado.
+3. o canal tem verify token resolvido pelo caminho canonico de segredo, ou seja, a chave
+   `META_WEBHOOK_VERIFY_TOKEN` em `public.tenant_security_keys.keys_json` (do tenant ou do canal);
+4. o token recebido bate com o esperado (comparacao em tempo constante).
+
+> **Mudou em 2026-08-21:** antes o verify token era lido do perfil do tenant
+> (`public.tenants.meta_webhook_verify_token`), enquanto o provisionamento gravava outro lugar —
+> duas fontes de verdade que nao se encontravam. Agora o verify token vem do **mesmo** lugar de onde
+> ja vinha o segredo da assinatura HMAC, sincronizado por
+> `SecurityKeysLoader.apply_security_overrides`. Canal sem essa chave **falha fechado** (HTTP 500 com
+> `correlation_id`), nunca aprova o desafio por omissao.
 
 Se qualquer um desses pontos falhar, a verificacao nao passa. Isso e intencional. O sistema nao aceita fallback silencioso de token ou canal.
 
@@ -720,7 +728,7 @@ Verifique:
 
 1. o canal existe;
 2. o canal tem `client_code`;
-3. o tenant tem `meta_webhook_verify_token`;
+3. existe a chave `META_WEBHOOK_VERIFY_TOKEN` em `tenant_security_keys` para aquele tenant/canal;
 4. o token enviado pela Meta bate com o esperado.
 
 ### 20.2. Sintoma: POST do webhook retorna 401

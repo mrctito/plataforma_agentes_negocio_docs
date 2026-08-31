@@ -6,6 +6,40 @@ Este documento descreve o caminho online do RAG moderno do projeto, isto é, o p
 
 Quando algum detalhe de corpus aparece, ele aparece apenas como pré-condição técnica para entender uma decisão do retrieval. Este manual não documenta a produção do corpus.
 
+### 1.1. Este não é um RAG ingênuo
+
+Vale dizer isto no começo, porque muda a forma de ler o resto do documento.
+
+O RAG ingênuo — o desenho de quase todo tutorial — tem quatro passos: transformar a pergunta em um
+vetor, buscar os N trechos mais próximos, colar esse texto num prompt, pedir a resposta. Ele não
+falha por ser simples. Ele falha por três razões estruturais que só aparecem em acervo técnico real:
+
+- **um único vetor não acha termo literal.** Busca semântica sozinha erra exatamente onde o domínio
+  técnico é mais exigente: sigla, código de norma, número de identificação. "IS-203" e "Bueiro
+  Tubular" precisam casar **como estão escritos**;
+- **um único `top-k` mistura duas decisões diferentes.** Quantos candidatos colher e quantos entregar
+  ao modelo não são o mesmo número, e tratá-los como um só degrada o resultado sem que ninguém
+  perceba (§10.4.1);
+- **ele sempre responde.** Sem gate de evidência e sem proveniência, o sistema não distingue "achei a
+  resposta" de "achei alguma coisa" — e a resposta errada chega com a mesma confiança da certa.
+
+O que este pipeline faz em cada uma dessas camadas está detalhado ao longo do documento, e
+consolidado numa tabela camada a camada em **§17**. Três exemplos, para dar a medida:
+
+- a busca é **híbrida** — significado e palavra literal, em duas representações independentes,
+  fundidas por DBSF dentro do próprio banco vetorial (§10.2);
+- o pipeline **recusa responder** quando o material recuperado não sustenta a resposta, sem gastar
+  uma chamada de modelo (§10.5);
+- a citação carrega **as duas numerações de página** — a física do arquivo e a impressa no rodapé,
+  que é a que o leitor procura (§11.1).
+
+E a diferença mais difícil de imitar não é nenhuma técnica da lista: é que **as decisões foram
+medidas**. O rerank de interação tardia — o estado da arte da etapa — está implementado e a
+recomendação para o acervo técnico medido é **mantê-lo desligado**, porque os números mostraram que
+ali ele achatava a ordenação que a fusão já produzia, de 56,4% de dispersão para 1,94% (§5.7). Um
+pipeline maduro não é o que acumula técnicas; é o que sabe qual delas está ajudando, e tem como
+provar.
+
 ## 2. Entry points reais
 
 ### 2.1. Fachada pública da consulta
@@ -121,9 +155,20 @@ Chaves confirmadas:
 
 Efeito prático:
 
-- se disabled=false, a pergunta segue intacta;
+- se `enabled: false`, a pergunta segue intacta;
 - se não houver LLM, a etapa devolve passthrough com motivo explícito;
 - se a similaridade entre original e reescrita ficar abaixo do mínimo, a reescrita é rejeitada.
+
+**Estado real desta chave, para não induzir a erro operacional.** O default de `enabled` é `false`, e
+os YAML de configuração hoje versionados no repositório mantêm esse valor — inclusive o de produção
+do acervo técnico. Na prática, a etapa executa como passthrough com `reason="disabled"`. Dois
+detalhes de projeto que decorrem disso:
+
+- a reescrita usa **o mesmo LLM principal** da resposta, não um modelo auxiliar barato — ligá-la
+  acrescenta uma chamada de modelo ao caminho quente;
+- as `variations` produzidas pela reescrita são **descartadas** pelo orquestrador. Elas não
+  alimentam multi-query; quem faz expansão de consulta em produção é o mecanismo lexical de domínio
+  descrito em §6.1.
 
 ## 5.2. retriever vetorial moderno
 
@@ -131,13 +176,42 @@ Lido em rag_system.retriever.vector_store.
 
 Chaves confirmadas:
 
-- k
-- similarity_threshold
-- use_mmr
-- mmr_fetch_k
-- mmr_lambda
+- `k`
+- `similarity_threshold`
+- `use_mmr`
+- `mmr_fetch_k`
+- `mmr_lambda`
 
-Observação importante: o código considera k e similarity_threshold como obrigatórios no modo moderno.
+Observação importante: o código considera `k` e `similarity_threshold` como obrigatórios no modo
+moderno.
+
+**`k` é a chave que governa o tamanho da entrega quando o rerank está desligado.** A resolução do
+`top_k` do pipeline tem precedência declarada em `get_retrieval_top_k`:
+
+1. `rag_system.retriever.hybrid.fusion.general.final_top_k`, quando o retriever híbrido está ativo;
+2. `rag_system.retriever.vector_store.k`;
+3. `llm.openai.top_k_docs`;
+4. default `5`.
+
+Com o rerank ligado, esse valor é sobreposto por `qa_system.reranker.top_k` (§10.4). Saber qual das
+duas chaves está no comando é a diferença entre ajustar o lote entregue ao modelo e mexer numa chave
+inerte.
+
+**`use_mmr`, `mmr_fetch_k` e `mmr_lambda` são chaves existentes e hoje sem efeito.** MMR (*Maximal
+Marginal Relevance*) é a técnica que penaliza candidatos redundantes para que o lote entregue não
+fique concentrado num documento só. As chaves são lidas e aparecem no log, mas não produzem
+reordenação, por duas razões independentes:
+
+- **no caminho híbrido**, que é o modo padrão para Qdrant e Azure Search, a rota monta a chamada de
+  busca com um conjunto fixo de argumentos (consulta, `top_k`, filtros) e não repassa parâmetro de
+  MMR;
+- **no caminho vetorial simples**, a execução depende de uma operação de busca por relevância
+  marginal que **nenhum vector store do repositório implementa** — a verificação de capacidade falha
+  e o fluxo segue pela similaridade normal.
+
+O efeito residual de ligar `use_mmr: true` é apenas cosmético no log, que passa a registrar a
+intenção. **Diversidade de lote, portanto, é desenvolvimento a fazer, não chave a ligar** — e este
+manual registra isso em vez de listar a chave como recurso disponível.
 
 ## 5.3. híbrido e router adaptativo
 
@@ -237,6 +311,22 @@ Validação obrigatória: `prefetch_limit` menor que `top_k` falha explícito. P
 partir de 5 candidatos é configuração sem sentido, e falhar cedo é melhor que devolver menos
 silenciosamente.
 
+**Recomendação medida, e ela contraria a expectativa.** O rerank de interação tardia é o estado da
+arte da etapa, e a plataforma o executa da forma mais econômica possível (dentro do próprio banco
+vetorial, sem modelo hospedado e sem viagem extra de rede). Ainda assim, a medição comparativa sobre
+o acervo técnico de produção mostrou que, **naquele acervo**, ele reduzia a informação entregue ao
+modelo em vez de aumentá-la: a dispersão de pontuação do lote — a diferença percentual entre o maior
+e o menor score dos trechos entregues — caiu de **56,4%** (mediana, sem rerank) para **1,94%** (com
+rerank), com **100% das buscas medidas** terminando com o lote praticamente empatado. Um lote
+empatado dentro de 2% torna a priorização entre os trechos indiferente, e execuções idênticas passam
+a variar de resposta.
+
+O critério de decisão, portanto, é: **`enabled: true` é a configuração certa quando a fusão entrega
+um lote pouco separado, e a configuração errada quando a fusão já separa bem.** Isso se mede, não se
+presume — a dispersão está disponível no evento de rerank descrito em §10.4. O custo do estágio é da
+ordem de **15% de latência**. A leitura completa da medição, com o desenho do experimento, está em
+[README-TECNICO-PIPELINE-INGESTAO-RAG-DNIT.md](README-TECNICO-PIPELINE-INGESTAO-RAG-DNIT.md) §7.3.
+
 ## 5.8. especialização Excel
 
 Lido em json_specialized_rag_excel.
@@ -260,19 +350,19 @@ O pipeline moderno opera em fail-first, sem chave de configuração que ligue fa
 ## 5.10. evidence_gate
 
 Lido em `qa_system.evidence_gate` pelo `__init__` de `IntelligentRAGOrchestrator`
-(`src/qa_layer/rag_engine/intelligent_orchestrator.py`, linhas 483-495). Decide se há evidência
-suficiente no que foi recuperado para deixar o LLM responder — comportamento explicado em §10.5.
+(`src/qa_layer/rag_engine/intelligent_orchestrator.py`). Decide se há evidência suficiente no que foi
+recuperado para deixar o LLM responder — comportamento explicado em §10.5.
 
 Chaves confirmadas (validadas pelo schema normalizer desde 2026-08-14,
 `YamlSchemaNormalizer._validate_evidence_gate_contract`; chave fora desta lista falha explícito):
 
 - `enabled` — default `true`. Com `false`, o gate nunca bloqueia.
-- `min_dense_score` — piso de cosseno denso. Default `0.65` (constante `DEFAULT_EVIDENCE_GATE_MIN_SCORE`,
-  linha 256), calibrado em 2026-07-29 sobre o caminho **sem** rerank (respostas corretas 0.679-0.722,
-  reprovada 0.625). Só se aplica quando o rerank não ordenou o conjunto (§10.5).
+- `min_dense_score` — piso de cosseno denso. Default `0.65` (constante
+  `DEFAULT_EVIDENCE_GATE_MIN_SCORE`), calibrado sobre o caminho **sem** rerank (respostas corretas na
+  faixa 0,679-0,722; reprovada em 0,625). Só se aplica quando o rerank não ordenou o conjunto (§10.5).
 - `message` — texto devolvido ao usuário quando o gate bloqueia. Default: "Não encontrei no acervo
   material suficiente para responder isso com segurança. Poderia detalhar melhor a pergunta..."
-  (`DEFAULT_EVIDENCE_GATE_MESSAGE`, linha 258).
+  (`DEFAULT_EVIDENCE_GATE_MESSAGE`).
 
 Valor malformado de `min_dense_score` (ex.: texto em vez de número) não falha: cai em
 `except (TypeError, ValueError)` e usa o default em silêncio — a validação de schema pega chave
@@ -297,7 +387,35 @@ Fluxo confirmado:
 Garantias relevantes:
 
 - preserva códigos, siglas e números por política do prompt;
-- pode devolver passthrough por disabled, llm_unavailable, parse_error, low_similarity e outros motivos explícitos.
+- pode devolver passthrough por `disabled`, `llm_unavailable`, `parse_error`, `low_similarity` e
+  outros motivos explícitos.
+
+## 6.1. Expansão lexical de domínio — a expansão que roda hoje
+
+Além da reescrita por LLM (§5.1, desligada por default), existe um segundo mecanismo de expansão de
+consulta, este **sem modelo de linguagem, determinístico e ligado em produção**: a expansão lexical
+por vocabulário de domínio.
+
+Como funciona, em nível 101: um dicionário declarado no próprio YAML associa termos que o usuário
+provavelmente escreve aos termos que o acervo realmente usa. A pergunta é casada contra esse
+vocabulário e os termos correspondentes são **concatenados à consulta** antes da busca híbrida. É o
+que faz a perna lexical da busca encontrar a grafia do documento quando o usuário escreveu a do
+cotidiano.
+
+- **Onde se configura:** `domain_specific_rag.domains.<dominio>.query_expansion.auto_vocabulary`,
+  com `enabled` no mesmo bloco. O vocabulário vive **dentro do YAML**, não em arquivo separado.
+- **Parâmetros efetivos:** teto de termos acrescentados por consulta (`max_terms`, 6) e confiança
+  mínima para acrescentar um termo (`min_confidence`, 0,4).
+- **Ativação:** é *opt-in* explícito — o default é desligado, e o registro de domínios reconhece hoje
+  um único domínio configurado.
+- **Fail-closed:** domínio ligado sem vocabulário resolvível falha explicitamente, em vez de rodar
+  como se estivesse expandindo.
+- **Onde o efeito aparece:** os termos entram em `technical_terms` da análise da pergunta e são
+  concatenados à consulta enviada ao processador híbrido.
+
+Por que isso importa para quem opera: é barato (nenhuma chamada de modelo), é auditável (o
+dicionário é texto no YAML, revisável por especialista de domínio) e ataca exatamente a falha que a
+busca semântica sozinha não cobre — o termo técnico raro que precisa casar **literalmente**.
 
 ## 7. Query analysis
 
@@ -514,9 +632,36 @@ não — com `status` (`executed`/`skipped`), `reason`, `duration_ms` e, em `met
 `top_k_requested`/`top_k_applied`. O nível `info` é requisito, não detalhe: o reranker anterior da
 plataforma passou meses sem executar justamente porque logava a decisão só em `debug`.
 
+### 10.4.1. Profundidade da colheita × tamanho da entrega
+
+Estes são **dois números diferentes**, e confundi-los é a origem mais comum de comparação inválida
+entre configurações de busca. O código os separa explicitamente:
+
+| | Candidatos colhidos por sub-busca | Documentos entregues ao modelo |
+|---|---|---|
+| **Rerank ligado** | `reranker.prefetch_limit` (default 100) | `reranker.top_k` (default 8) |
+| **Rerank desligado** | `max(reranker.prefetch_limit, top_k)` | `top_k` do chamador (§5.2) |
+
+Duas consequências práticas:
+
+- **A profundidade da colheita é independente do tamanho da entrega, com ou sem rerank.** Isso é
+  deliberado. Com rerank, o lote grande existe para alimentar o MaxSim — não há o que reordenar num
+  lote do tamanho da saída. Sem rerank, vale pelo mesmo motivo que torna o DBSF poderoso e
+  traiçoeiro: **a fusão é relativa ao lote**. Ela renormaliza cada sub-busca pela distribuição dos
+  resultados que aquela sub-busca devolveu, então colher menos candidatos não entrega "os mesmos
+  trechos, mais rápido" — **reescreve o conjunto**. Reduzir a colheita é uma mudança de resultado,
+  não de desempenho.
+- **O `max` protege o chamador.** A validação de configuração compara `prefetch_limit` com
+  `reranker.top_k`, nunca com o `top_k` de quem chamou. Sem o `max`, um chamador que pedisse mais
+  documentos do que o tamanho do pool receberia menos do que pediu, em silêncio.
+
 Efeito colateral a conhecer: com rerank ligado, `reranker.top_k` **sobrepõe** o `top_k` pedido pelo
 chamador. Os dois aparecem no log (`top_k_requested` × `top_k_applied`) para a divergência nunca ser
 silenciosa.
+
+> **Armadilha de experimento, registrada porque já inverteu uma conclusão.** Desligar o rerank sem
+> ajustar a chave que passa a governar a entrega (`top_k`, via §5.2) mede um lote colapsado, não o
+> pipeline sem rerank. Toda comparação entre as duas configurações precisa mover **as duas** chaves.
 
 Requisito de acervo: o rerank só funciona sobre coleção ingerida **com** o vetor `<primary>_late`.
 Acervo antigo precisa de reingestão com `vector_store.if_exists: overwrite` — o Qdrant não acrescenta
@@ -526,13 +671,17 @@ vetor denso novo a coleção existente.
 
 Depois do rerank (ou da fusão DBSF pura, quando não há rerank) e antes da geração, o orchestrator
 decide se o conjunto recuperado sustenta uma resposta. Ponto único:
-`IntelligentRAGOrchestrator._avaliar_gate_de_evidencia` (linha 2173), chamado de
-`_assemble_final_result` (linha 2351). Quando bloqueia, monta
-`_montar_resultado_sem_evidencia` (linha 2265): **nenhuma chamada ao LLM**, `sources`/
+`IntelligentRAGOrchestrator._avaliar_gate_de_evidencia`, chamado de `_assemble_final_result`. Quando
+bloqueia, monta `_montar_resultado_sem_evidencia`: **nenhuma chamada ao LLM**, `sources`/
 `source_documents` vazios de propósito (mostrar trechos que a própria plataforma julgou
 insuficientes sugeriria que a resposta veio deles) e `answer` é a mensagem de `evidence_gate.message`.
 
-Regra (um único predicado, sem segundo gate paralelo):
+**O que este gate é, e o que ele não é.** Ele avalia a **pontuação da recuperação antes da geração** —
+ou seja, decide se vale a pena chamar o modelo. Ele **não** confere a resposta depois de pronta, e
+**não** valida citações contra os trechos recuperados (§11.2).
+
+Regra (um único predicado, sem segundo gate paralelo). Note que **três dos quatro ramos são
+fail-open** — bloquear é a exceção, e isso é deliberado:
 
 1. `enabled: false` no YAML → não bloqueia.
 2. **Rerank ColBERT ordenou o conjunto** (`rerank_score` presente nos documentos) → não bloqueia.
@@ -584,7 +733,77 @@ Fluxo confirmado:
 5. registra token usage via BillingCollector;
 6. devolve resposta e tempo de geração.
 
-Quando não há LLM, a etapa falha explicitamente com ContentQAError.
+Quando não há LLM, a etapa falha explicitamente com `ContentQAError`.
+
+## 11.1. Citação e rastreabilidade da fonte
+
+Numa resposta técnica, o endereço da informação vale tanto quanto a informação. Uma resposta correta
+com referência errada é, na prática de engenharia, uma resposta que não serve — porque o leitor não
+consegue conferir.
+
+**Um dono único, três superfícies.** A montagem da referência é feita por funções puras em
+`src/qa_layer/rag_engine/document_reference.py`, e a mesma implementação alimenta as três
+superfícies onde a citação aparece: o **contexto entregue ao modelo**, a **lista de fontes** da
+resposta e a **projeção de trechos** usada pelo caminho de recuperação sem geração. Não há três
+formatações que possam divergir entre si.
+
+**O que entra na referência**, nesta ordem, separado por `" | "`:
+
+1. título do documento (com precedência entre título, nome e origem);
+2. localizador de seção, quando existe âncora de seção;
+3. `Norma …`, a partir do código normativo do documento;
+4. `Manual …`, a partir do código de manual;
+5. página.
+
+**A página é dupla, e é aqui que mora a diferença.** Um manual técnico tem duas numerações que quase
+nunca coincidem: a **física** (a folha do arquivo PDF) e a **impressa** (o número no rodapé, que é o
+que o engenheiro procura, e que o sumário do próprio documento usa). O acervo carrega as duas —
+`page_number` e `printed_page_number` — e a citação as apresenta no formato `p. 256 (arquivo p. 259)`:
+a impressa primeiro, porque é a que se procura; a física entre parênteses, porque é a que se usa
+para navegar no leitor de PDF.
+
+Regras de degradação, todas explícitas:
+
+- documento **com** as duas numerações → `p. <impressa> (arquivo p. <física>)`;
+- documento **só com** a física → `p. <física>`;
+- documento **sem** página → a parte de página simplesmente não entra na referência, em vez de
+  aparecer vazia ou zerada.
+
+Onde a numeração impressa é apurada e por que ela não existe em todos os documentos é assunto da
+ingestão — ver
+[README-TECNICO-INGESTAO-PDF-PIPELINE-COMPLETO.md](README-TECNICO-INGESTAO-PDF-PIPELINE-COMPLETO.md).
+
+**Telemetria de cobertura.** O uso da página impressa é resumido a cada execução e publicado no
+evento `generation:sources_selected`. Isso permite medir, no acervo real, em que fração das respostas
+a citação saiu com o endereço que o leitor procura — em vez de supor.
+
+**O que a plataforma controla no texto da resposta.** As regras de resposta padrão instruem o modelo
+a **não** escrever página ou rótulo de documento no corpo do texto, nem inventar uma seção "Fontes":
+a lista de fontes é montada pela plataforma, a partir dos trechos efetivamente entregues, e anexada
+ao resultado. O cabeçalho de cada documento no contexto também é entregue **sem número de ordem**, de
+propósito, para o modelo não copiar "Documento 1" como se fosse uma referência.
+
+## 11.2. O que é auditável, e o que não é validação automática
+
+Esta distinção precisa ser feita com precisão, porque é fácil prometer demais.
+
+**O que existe:** cada resposta carrega a lista dos trechos que a plataforma entregou ao modelo, com
+documento e página; e toda a execução vive sob um identificador de correlação único, de ponta a
+ponta. Isso torna possível **auditar depois** se as páginas citadas numa resposta estavam entre as
+páginas entregues àquela execução — e auditorias desse tipo foram efetivamente conduzidas sobre o
+acervo técnico de produção, com resultado publicado em
+[README-TECNICO-PIPELINE-INGESTAO-RAG-DNIT.md](README-TECNICO-PIPELINE-INGESTAO-RAG-DNIT.md) §7.6.
+
+**O que NÃO existe:** uma validação automática pós-geração que confronte as citações do texto contra
+os trechos recuperados e bloqueie a resposta em caso de divergência. Não há etapa de *grounding* ou
+*faithfulness check* no caminho online. A rastreabilidade é **auditável**, não **verificada em tempo
+de execução** — e este manual não descreve como guarda automática algo que é procedimento de
+auditoria.
+
+**Uma lacuna correlata, registrada:** a telemetria de busca guarda hoje a consulta usada, a contagem
+de resultados, a duração e a faixa de pontuação, mas **não** a lista de (documento, página,
+pontuação) devolvida. Auditar uma resposta específica muito depois do fato exige reexecutar a busca
+contra o acervo. Fechar essa lacuna é recomendação técnica aberta.
 
 ## 12. Diagnósticos e telemetria
 
@@ -758,27 +977,46 @@ Como investigar:
 - events de query_rewrite, retrieval e semantic_cache;
 - `ingestion.vector_store.qdrant.hybrid_search.rerank` (o step `rag:reranker` não existe mais).
 
-## 17. Comparação técnica com o padrão de mercado
+## 17. Camada a camada: RAG ingênuo × este pipeline
 
-Comparado ao RAG ingênuo de mercado, o projeto adiciona praticamente todas as camadas intermediárias que se espera de um RAG avançado de inferência.
+A §1.1 apresentou a tese; esta seção a detalha. A tabela confronta camada a camada, e cada linha da
+coluna da direita corresponde a um mecanismo descrito neste manual — não a uma intenção de projeto.
 
-- query preprocessing com rewrite;
-- query analysis;
-- query router;
-- retrieval especializado por estratégia;
-- post-retrieval com fusão, deduplicação e rerank;
-- ACL;
-- telemetria e diagnostics.
+| Camada | RAG ingênuo | Este pipeline |
+|---|---|---|
+| **Consulta** | usa a pergunta como o usuário digitou | expansão lexical por vocabulário de domínio, determinística e auditável (§6.1); análise de tipo, entidades e termos técnicos (§7) |
+| **Escolha da busca** | uma estratégia fixa para toda pergunta | roteador adaptativo que classifica a pergunta e **sobrepõe** a decisão para híbrida quando detecta código exato ou sinal técnico (§8) |
+| **Busca** | só similaridade semântica — perde a sigla, o número de norma, o código literal | duas representações independentes (densa e esparsa BM25), fundidas por DBSF dentro do próprio banco (§10.2) |
+| **Ordenação** | a ordem que o banco devolveu | fusão que normaliza distribuições incomparáveis; rerank de interação tardia disponível, **com critério medido para ligar ou não** (§5.7, §10.4) |
+| **Profundidade** | busca N e entrega N | profundidade de colheita separada do tamanho da entrega, porque a fusão é relativa ao lote (§10.4.1) |
+| **Decisão de responder** | responde sempre, com o que veio | gate de evidência pré-geração, que **recusa sem chamar o modelo** quando não há material (§10.5) |
+| **Segurança** | filtro aplicado — ou esquecido — na consulta | ACL avaliada sobre o conjunto recuperado, antes da geração (§10.6) |
+| **Citação** | o modelo escreve a fonte que achar | referência montada pela plataforma a partir dos trechos entregues, com numeração de página física **e** impressa (§11.1) |
+| **Falha** | devolve resposta degradada e parece ter funcionado | falha explícita com identificador de correlação; nenhum caminho de fallback silencioso (§5.9, §15) |
+| **Observabilidade** | nenhuma, ou tempo total | decisão de cada estágio registrada em `info`, incluindo os estágios que **não** executaram e por quê (§10.4, §12) |
 
-Isso está alinhado com o que referências oficiais de RAG avançado descrevem como query preprocessing, query routing e post-retrieval processing.
+Uma linha da tabela merece destaque, porque é a que mais distingue um pipeline de produção de uma
+prova de conceito e é a que nunca aparece em tutorial: **a capacidade de recusar**. Um sistema que
+sempre responde é um sistema que responde errado quando não sabe. Aqui a recusa é um caminho de
+primeira classe, tomado antes de gastar uma chamada de modelo — e o efeito colateral saudável é que
+"não encontrei material suficiente" vira uma resposta legítima do produto, em vez de um texto
+plausível construído sobre contexto irrelevante.
 
-Ao mesmo tempo, o código lido não confirmou algumas peças como parte explícita do caminho online principal:
+### 17.1. O que este pipeline deliberadamente não faz
 
-- fact-check pós-geração dentro do mesmo pipeline;
-- compressor de prompt como etapa dedicada;
-- processador PDF exclusivo de retrieval.
+Registrado com a mesma clareza, porque um manual que só lista virtudes não é utilizável para decidir:
 
-Portanto, o posicionamento técnico correto é: este runtime está acima do padrão simples de mercado e bem alinhado a um RAG avançado focado em recuperação, mas não deve ser descrito como suíte total de governança pós-resposta se o código não mostrar isso no fluxo online.
+- **não há verificação automática de citação pós-geração** (§11.2) — a rastreabilidade é auditável,
+  não validada em tempo de execução;
+- **não há compressor de contexto** como etapa dedicada;
+- **não há diversificação de lote em funcionamento** — as chaves de MMR existem e são inertes
+  (§5.2); um lote concentrado num único documento é um resultado possível hoje;
+- **não há retriever exclusivo de PDF** — conteúdo de PDF entra pelas rotas gerais (§13.2);
+- **não há retentativa automática que mascare falha** — erro é erro, e aparece como erro.
+
+O posicionamento honesto, portanto: este é um pipeline de **recuperação** avançada, com governança de
+acesso, rastreabilidade e observabilidade de nível de produção. Ele não é, e não deve ser
+apresentado como, uma suíte completa de verificação pós-resposta.
 
 ## 18. Como operar e validar
 

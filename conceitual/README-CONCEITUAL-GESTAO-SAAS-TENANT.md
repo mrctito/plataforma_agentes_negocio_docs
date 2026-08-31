@@ -370,7 +370,8 @@ colunas dedicadas — qualquer relatorio financeiro futuro precisa ler dentro de
 ### `ENVIRONMENT`
 
 Segrega toda leitura/escrita `saas_*`. Controla, entre outras coisas, se o dominio comercial aceita
-operar (`_require_prod` hoje trava esse dominio a `prod`).
+operar: a escrita comercial so acontece quando o ambiente informado e **o mesmo do processo**
+(`_require_deployment_environment`), nunca cruzado entre ambientes.
 
 ### Status do projeto, da release e do plano
 
@@ -602,7 +603,7 @@ o papel tecnico de cada tela.
 - `src/saas_project/` (`repository.py`, `service.py`, `resolver.py`, `http_repository.py`) — ciclo de
   vida de projeto/release/ponteiro e read-models do boundary.
 - `src/saas_commercial/` (`service.py`, `repository.py`) — plano, assinatura, billing, entitlement, com
-  `_require_prod` restringindo o dominio comercial a `ENVIRONMENT=prod`.
+  `_require_deployment_environment` restringindo o dominio comercial ao `ENVIRONMENT` do proprio deployment.
 - `src/api/routers/saas_router.py` — boundary HTTP unico; identidade administrativa por sessao
   federada + `X-SaaS-Tenant-Id`; identidade de assinante por `user_account_id` da sessao.
 - `src/api/services/saas_http_service.py` — orquestra os services autorais para o boundary; registra

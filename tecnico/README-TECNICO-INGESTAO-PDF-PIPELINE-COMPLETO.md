@@ -44,6 +44,43 @@ O pipeline de ingestão de PDF é uma parte especializada da esteira de ingestã
 
 A responsabilidade deste pipeline começa quando o arquivo já foi baixado e acaba quando chunks indexados foram entregues ao vector store. Tudo antes (autenticação, seleção de fontes, download) e tudo depois (resposta ao usuário, busca semântica, geração de resposta) é responsabilidade de outras camadas.
 
+### 0.4. Onde este pipeline difere de uma ingestão ingênua
+
+Uma ingestão ingênua de PDF cabe em três linhas de código: abrir o arquivo com uma biblioteca de
+extração, cortar o texto a cada N caracteres, gerar os vetores. Ela funciona em demonstração e falha
+de maneiras específicas em acervo real — quase sempre **em silêncio**, que é o que a torna cara.
+
+A tabela confronta camada a camada. Cada item da coluna da direita é um mecanismo descrito neste
+manual, com a seção onde ele é detalhado.
+
+| Camada | Ingestão ingênua | Este pipeline |
+|---|---|---|
+| **Escolha do extrator** | uma biblioteca, para todo documento | catálogo de engines atrás de um contrato único, escolhidas por configuração — inclusive **por documento nomeado** (§8.2, §8.2.2) |
+| **PDF escaneado** | sai vazio, ou é ignorado | estágio de OCR próprio antes do parse, com decisão página a página; e política explícita para o documento que continua sem texto (§6) |
+| **Teto de tempo** | valor fixo, ou nenhum | teto de parede por documento e, na engine que suporta, teto **proporcional ao número de páginas** (§29.3) |
+| **Extração cortada** | publicada como sucesso | gate de truncamento que reprova na origem nas engines que o têm; nas demais, o documento é publicado **marcado como inconsistente**, nunca como sucesso (§18.5) |
+| **Recorte** | corte cego a cada N caracteres | estratégias ordenadas que respeitam página, seção e parágrafo, com tabela em trecho dedicado e âncora de identidade (§15) |
+| **Tabela** | vira texto corrido e perde a grade | esteira própria de extração, com modo preciso disponível por documento (§29.5, §8.2.2) |
+| **Página** | número da folha do arquivo, quando há | dupla numeração — física e a **impressa no rodapé**, que é a que o leitor procura (§16.5) |
+| **Reprocesso** | reingerir tudo, ou não reingerir | impressão digital de política por documento: muda a configuração de um, reprocessa só ele (§16.6) |
+| **Reingestão** | acumula gerações e serve conteúdo duplicado | substituição de geração por chave que inclui conteúdo **e** política (§16.7) |
+| **Execução** | script que roda até cair | jobs duráveis com ledger, retomada, cancelamento real e paralelismo governado (§2, §3.4) |
+| **Desfecho** | "terminou sem exceção" = sucesso | classificador único de completude que separa perda real de descarte deliberado (§18) |
+| **Observabilidade** | log de início e fim | decisão de cada estágio registrada, incluindo o que **não** executou e por quê (§20) |
+
+Três dessas linhas concentram a maior parte do valor, e nenhuma delas aparece em tutorial:
+
+- **Extração cortada nunca é publicada como sucesso.** Uma biblioteca que estoura o próprio teto de
+  tempo tende a devolver o que conseguiu, com um status de sucesso parcial. Aceitar isso publica um
+  manual de centenas de páginas com poucos caracteres por página, marcado como íntegro — e ninguém
+  descobre até o acervo responder mal. A regra aqui é falhar e avisar (§18.1).
+- **Reprocesso é cirúrgico.** Numa base grande, "mudei uma configuração" e "reprocessar tudo" são
+  ordens de grandeza diferentes de custo. A impressão digital de política é o que permite mudar a
+  configuração de um documento sem tocar nos demais (§16.6).
+- **A página impressa.** É o detalhe que parece burocrático e determina se o leitor consegue conferir
+  a resposta. Um manual técnico numera o rodapé de forma independente da folha do arquivo, e é o
+  número do rodapé que o sumário e a citação usam (§16.5).
+
 ## 1. O que este documento cobre
 
 Este manual técnico explica o comportamento real do pipeline de PDF no código lido. O foco aqui não é vender a capacidade nem resumir o tema. O foco é seguir a ordem de execução, entender o contrato YAML que altera o comportamento, explicar os principais branches e deixar claro como diagnosticar o ponto exato onde um PDF falhou.
@@ -434,17 +471,99 @@ O resolvedor de parsing lê o bloco canônico `processing.parsing.engine` (via `
 
 ### 8.2. Engines de pipeline confirmadas
 
-Engines que podem ocupar `config.pipeline` quando `type: pipeline` (confirmar a lista vigente em `engine_catalog.py`):
+Engines que podem ocupar `config.pipeline` quando `type: pipeline`:
 
-- `docling`
-- `pymupdf4llm`
-- `unstructured`
+| `config.pipeline` | Natureza | Onde ela ganha |
+|---|---|---|
+| `pymupdf4llm` | rápida, com OCR seletivo da própria biblioteca | caminho padrão; preserva marcador de página e hierarquia; única com teto de tempo proporcional a páginas (§29.3) |
+| `docling` | pesada, baseada em modelos | reconstrução de tabela (modo preciso) e enriquecimento de fórmula; é a única que oferece esses dois recursos |
+| `opendataloader` | determinística, sem IA e **sem OCR** | tabela íntegra a custo muito baixo, preservando a numeração de página impressa |
+| `unstructured` | generalista | estratégias e inferência de estrutura de tabela próprias |
 
 (`type: custom` não usa `config.pipeline` — usa a engine de receita; ver 8.5.)
+
+**Os toggles aceitos são fechados por engine, e chave fora do conjunto falha explícito.** Isso evita
+o erro clássico de declarar uma opção que a engine escolhida simplesmente ignora, e achar que ela
+está ligada:
+
+| Engine | Toggles obrigatórios | Toggles opcionais |
+|---|---|---|
+| `docling` | `ocr`, `tables`, `structured_chunking`, `skip_scanned_pdf` | `subprocess_timeout_seconds`, `document_timeout_seconds`, `table_mode`, `do_formula_enrichment` |
+| `pymupdf4llm` | `ocr`, `skip_scanned_pdf` | `subprocess_timeout_seconds`, `subprocess_timeout_per_page_seconds` |
+| `opendataloader` | `skip_scanned_pdf` | `subprocess_timeout_seconds` |
+| `unstructured` | `strategy`, `languages`, `infer_table_structure`, `skip_scanned_pdf` | `subprocess_timeout_seconds` |
+
+Note que **`opendataloader` não aceita `ocr`**: ela é determinística e não faz reconhecimento de
+imagem. Um documento 100% escaneado sai dela sem texto, e o desfecho passa a ser decidido pela
+política do documento (§6.9).
+
+### 8.2.1. `table_mode` e `do_formula_enrichment` (apenas `docling`)
+
+Dois recursos avançados de extração, ambos desligados por default porque **custam caro**:
+
+- **`table_mode`** — default `fast`. Em `accurate`, a reconstrução da grade separa linhas que o modo
+  rápido funde. É a diferença entre uma célula normativa legível e uma célula com palavras coladas.
+- **`do_formula_enrichment`** — default `false`. Converte a fórmula que é imagem em notação
+  matemática textual, tornando-a indexável e pesquisável. O custo medido é da ordem de **86 a 134
+  segundos por página**, o que torna o uso indiscriminado proibitivo em acervo grande — e é
+  exatamente por isso que a chave existe **por documento** (§8.2.2).
+
+### 8.2.2. `engine_overrides` — curadoria nominal por documento
+
+Este é o mecanismo que torna a estratégia multi-engine operável sem transformar cada decisão numa
+reingestão do acervo inteiro.
+
+```yaml
+processing:
+  parsing:
+    engine:                       # bloco base: vale para todo documento não nomeado abaixo
+      type: pipeline
+      config:
+        pipeline: pymupdf4llm
+        ocr: true
+        skip_scanned_pdf: false
+    engine_overrides:             # exceções curadas, por nome de arquivo
+      - engine: docling
+        config:
+          ocr: true
+          tables: true
+          structured_chunking: true
+          skip_scanned_pdf: false
+          table_mode: accurate    # separa linhas coladas neste documento
+          subprocess_timeout_seconds: 14400.0
+          document_timeout_seconds: 10800.0
+        documents:
+          - "manual_com_quadro_normativo.pdf"
+```
+
+Regras reais do contrato:
+
+- **`documents` casa por nome de arquivo normalizado**, sem diferenciar maiúsculas de minúsculas.
+- **Um documento em duas entradas falha explícito.** Ambiguidade de curadoria é erro de
+  configuração, não algo a resolver por precedência implícita.
+- **`config` no override aceita apenas os toggles** da engine escolhida; declarar `pipeline`, `name`
+  ou `steps` ali é recusado.
+- **Override ausente herda o bloco base** — não é preciso repetir a configuração inteira.
+- É **fonte única** tanto para o runtime quanto para a impressão digital de política (§16.6): a
+  configuração que executa é a mesma que decide se o documento precisa ser reprocessado.
+
+> **A escolha da engine é curadoria declarada, não classificação automática.** A plataforma tem um
+> classificador de tipo de documento, mas hoje ele **alimenta metadata** — ele não escolhe a engine.
+> A decisão de qual programa lê qual documento vem do YAML: o bloco base para o acervo, e
+> `engine_overrides` para as exceções que um especialista identificou. Roteamento automático por
+> classe de documento é evolução planejada, e este manual não a descreve como capacidade atual.
 
 ### 8.3. Disponibilidade da engine
 
 Antes de instanciar a engine declarada, o resolvedor verifica dependências externas. Se a engine estiver indisponível, o runtime **falha fechado** — não há outra engine para assumir, porque não há fila. A indisponibilidade vira erro observável, não um desvio silencioso.
+
+**Disjuntor (*circuit breaker*) por engine.** Existe um registro em memória, por processo, que pode
+marcar temporariamente uma engine como indisponível depois de falhas repetidas, evitando insistir num
+componente comprovadamente quebrado. A distinção que ele faz é a parte importante do desenho:
+**esgotamento de recurso — estouro de teto de tempo ou de memória — NÃO abre o disjuntor.** Um
+documento que precisou de mais tempo do que o configurado é uma condição *daquele documento*, não uma
+prova de que a engine está incapaz. Confundir as duas coisas tiraria de operação uma engine saudável
+por causa de um único documento grande.
 
 ### 8.4. Como o resolvedor constrói a engine
 
@@ -794,14 +913,15 @@ Observabilidade: evento `ingestion.pdf.chunking.figure_transcription.split`, sem
 `blocks_found`, `unclosed_blocks` (bloco sem marcador de fechamento, contabilizado e não descartado),
 `table_chunks`, `description_chunks` e `other_chunks`.
 
-**Pendência real (registrar, não normalizar como resolvida):** a implementação está testada
-unitariamente (13 testes, incluindo invariante de que nenhuma linha do bloco original se perde), mas
-o ganho no acervo real — as 469 fatias órfãs medidas caindo para 0 — só pode ser confirmado depois
-de uma reingestão. A reingestão do acervo de 15 PDFs de teste (`engenharia_dnit`) e do acervo de
-produção (~600 documentos) ainda não foi feita pelo usuário até a data deste documento; é ação
-exclusiva dele pela UI.
+**Proteção contra regressão:** a implementação é coberta por testes unitários, incluindo a invariante
+de que **nenhuma linha do bloco original se perde** na separação — a garantia que impede a
+segmentação de virar uma forma silenciosa de descartar conteúdo.
 
-## 16. Metadados relevantes produzidos pelo pipeline
+## 16. Metadados, identidade e proveniência do documento
+
+Esta seção cobre o que o pipeline **sabe e registra** sobre cada documento: os metadados que ele
+produz (§16.1 a §16.4), a proveniência de página (§16.5), e as duas chaves de identidade que
+governam reprocesso e substituição de geração (§16.6 e §16.7).
 
 O slice lido confirma vários grupos de metadados importantes.
 
@@ -815,6 +935,9 @@ O slice lido confirma vários grupos de metadados importantes.
 - `pages_failed`
 - `pages_with_ocr`
 - `pages_info`
+- `page_number` — a página **física** do arquivo, sempre presente
+- `printed_page_number` e `printed_page_number_status` — a página **impressa** no rodapé e a
+  qualidade dessa derivação (§16.5)
 - `page_failure_observability` — a engine **declara** se ela consegue distinguir pagina que falhou:
   `observed` (o contador vale) ou `unavailable` (a engine e cega para isso). `unavailable` nao significa
   "documento completo", significa "nao da para saber" — e por isso a etapa entra como **nao verificavel**
@@ -847,6 +970,123 @@ O slice lido confirma vários grupos de metadados importantes.
 - `library_used`
 - `domain_processing_enabled`
 - `enabled_domain_processors`
+- `extraction_policy_fingerprint` (§16.6)
+
+### 16.5. Proveniência de página: física e impressa
+
+Um manual técnico tem **duas** numerações de página, e elas quase nunca coincidem. A **física** é a
+folha do arquivo PDF. A **impressa** é o número no rodapé — que é a que o sumário do documento usa, a
+que a norma cita e a que o leitor procura. Entre uma e outra há um deslocamento causado por capa,
+folha de rosto e sumário.
+
+Citar só a página física produz uma resposta tecnicamente correta cujo endereço o leitor não
+encontra. Por isso o acervo guarda as duas.
+
+**Como a impressa é apurada.** A convenção é `deslocamento = física − impressa`. O pipeline injeta um
+marcador de página no texto antes do recorte; o número que o extrator capturou do rodapé fica ao lado
+desse marcador. Comparar os dois, trecho a trecho, dá pares (física, impressa) — e o deslocamento
+dominante do documento sai da consolidação desses pares. Há duas fontes de par reconhecidas: o
+marcador de página junto ao rodapé, e a indicação de página visível dentro de transcrição de figura.
+
+**A derivação recusa quando não tem confiança**, e essa é a parte que importa:
+
+| Confiança | Regra |
+|---|---|
+| Alta | ao menos 10 pares **e** ao menos 95% deles no mesmo deslocamento |
+| Média | ao menos 3 pares **e** ao menos 90% deles no mesmo deslocamento |
+| Insuficiente | há pares, mas eles não sustentam uma decisão automática |
+
+O deslocamento só é aplicado com confiança **alta ou média** e desde que o documento **não** tenha
+faixa secundária de numeração — um anexo que recomeça a contagem própria invalida a constante única,
+e nesse caso o pipeline prefere não carimbar a arriscar carimbar errado.
+
+**Como é gravado.** O deslocamento é derivado **uma vez por documento** e carimbado por trecho num
+ponto único, que cobre todos os construtores de chunk. A página física **nunca** é substituída: o
+campo `printed_page_number` é acrescentado ao lado dela, e `printed_page_number_status` declara o
+que aconteceu:
+
+- `derived` — a página impressa foi apurada para este trecho;
+- `unavailable` — o documento não sustenta a constante, ou o trecho está numa folha anterior ao
+  início da numeração impressa (caso em que não existe número impresso a citar).
+
+Como a citação consome esses campos é assunto do lado da resposta — ver
+[README-TECNICO-RAG-PIPELINE-COMPLETO.md](README-TECNICO-RAG-PIPELINE-COMPLETO.md) §11.1.
+
+> **Estado do acervo, dito com precisão.** Os dois campos passaram a integrar a lista de campos
+> gravados no payload do vector store em **31/08/2026**. Daqui em diante, toda ingestão os grava. No
+> acervo já existente, eles estão presentes por **carga direta posterior** (*backfill*) — o que
+> significa que um acervo ingerido antes dessa data e reprocessado **com a versão anterior do
+> pipeline** os perderia. Com a versão atual, a reingestão os preserva.
+
+### 16.6. `extraction_policy_fingerprint` — reprocesso cirúrgico
+
+Reprocessar um acervo grande custa dezenas de horas. Reprocessar os poucos documentos cuja
+configuração mudou custa uma janela noturna. A peça que permite escolher é a **impressão digital da
+política de extração**: um valor calculado a partir da configuração que governa a extração daquele
+documento — o bloco de PDF, os parâmetros de recorte compatíveis e, quando existe, o
+`engine_overrides` daquele documento específico.
+
+A regra é simples: **se a impressão digital muda, o documento precisa ser reprocessado; se não muda,
+ele é pulado.** O mesmo valor participa da chave de geração (§16.7), de modo que a configuração que
+executa é a mesma que decide o reprocesso e a mesma que identifica a geração — sem três verdades
+paralelas.
+
+**O que fica deliberadamente FORA do cálculo**, e o porquê de cada exclusão:
+
+| Excluído | Motivo |
+|---|---|
+| `api_key` | segredo não pode governar reprocesso, nem circular em hash de política |
+| `timeout_seconds`, `retry_attempts`, `retry_wait_min`, `retry_wait_max`, `jobs` | parâmetros operacionais: mudam desempenho, não o conteúdo extraído |
+| `field_sources`, `legacy_field_sources` | mapeamento de leitura, sem efeito na extração |
+| **`engine_overrides`** | **a exclusão mais importante**: curadoria de um documento não pode forçar o reprocesso de todos os outros. O override entra no cálculo **do documento que ele nomeia** (§8.2.2), e não no dos demais |
+| `table_quality_gate` | auditoria de qualidade, ortogonal ao conteúdo extraído |
+
+Endpoint, região, versão de API e modelo ficam **dentro** do cálculo, de propósito: trocar de
+provedor de extração muda o resultado e deve reprocessar.
+
+**Um portão no código, não uma recomendação:** o cálculo **falha explicitamente** se sobrar qualquer
+variável de ambiente não expandida (`${VARIAVEL}`) na configuração. Calcular a impressão digital
+sobre a variável crua produz um valor diferente do real — e o efeito prático seria um arquivo de
+ambiente não carregado mandar o acervo inteiro para reprocesso, em silêncio.
+
+> **Onde a chave mora muda o escopo do reprocesso.** `table_mode: accurate` declarado no bloco base
+> altera a impressão digital de **todos** os documentos; declarado dentro de `engine_overrides`,
+> altera a **dos documentos nomeados**. A diferença entre as duas é uma janela de horas contra uma
+> janela de dias.
+
+### 16.7. Substituição de geração: um acervo vivo é um acervo reprocessado
+
+Quando um documento é reingerido, a geração anterior precisa sair do vector store. Caso contrário o
+acervo serve **duas versões do mesmo documento ao mesmo tempo** — e a busca pode devolver a antiga.
+
+**A chave que identifica uma geração tem três componentes:**
+
+1. a **identidade lógica** do documento (estável entre versões);
+2. a **impressão digital do conteúdo** (os bytes do arquivo);
+3. a **impressão digital da política de extração** (§16.6).
+
+A terceira componente é o que torna a limpeza correta. Sem ela, reprocessar **o mesmo arquivo** com
+uma configuração diferente produzia a mesma chave — e a limpeza, que remove "tudo deste documento
+exceto a geração ativa", não encontrava nada para remover. O resultado era conteúdo morto convivendo
+com conteúdo vivo, indistinguível para a busca.
+
+**Como a limpeza funciona:**
+
+- um **predicado único** define o que é geração superada: mesma identidade de documento **e** chave
+  de geração diferente da ativa. Pontos legados que não carregam a chave casam a segunda condição e
+  saem junto, que é o comportamento correto;
+- a limpeza roda **depois** da publicação confirmada. Se houver divergência entre o que foi publicado
+  e o que o registro conhece, ela é **adiada** em vez de executada às cegas — apagar com base numa
+  leitura inconsistente é o erro caro deste caminho;
+- a operação tem **prova de vida**: a contagem de pontos superados é medida antes e depois, e
+  qualquer resíduo é tratado como **falha**, não como sucesso silencioso;
+- o filtro de limpeza é protegido por teste de arquitetura, que reprova a build se alguém
+  reintroduzir uma variante do predicado.
+
+> **Ressalva registrada:** o teste de arquitetura protege o **filtro** de limpeza. A **fórmula** da
+> chave de geração é protegida hoje pela assinatura do próprio construtor, que obriga a declarar
+> explicitamente a componente de política — não por um teste dedicado. É uma proteção mais fraca, e
+> está dita como tal.
 
 ## 17. Integração com a esteira comum de ingestão e indexação vetorial
 
@@ -934,6 +1174,26 @@ Cada ponto no Qdrant carrega os seguintes campos no payload:
 
 Para chunks multimodais (imagens), acrescentam-se `has_visual_content`, `visual_complexity`, `images` e `total_images`.
 
+**A lista de campos permitidos é uma allowlist, e isso tem uma consequência que vale conhecer.** Um
+campo novo produzido por uma etapa do pipeline **não chega ao payload** enquanto não for acrescentado
+a essa lista — e o descarte é silencioso: a gravação segue verde. Foi exatamente o que aconteceu com
+a numeração de página impressa, calculada corretamente e descartada antes de gravar. A lição virou
+prática: **campo novo exige teste de contrato que falhe se ele sumir do payload**.
+
+#### 17.1.3.1. Índices de payload no Qdrant
+
+Sete campos recebem índice do tipo *keyword*, todos ligados a **identidade e versão** do documento:
+
+`content_hash`, `page_id`, `document_identity_key`, `document_version_id`, `vector_document_key`,
+`embedding_signature`, `hybrid_fingerprint`.
+
+É o que torna a substituição de geração (§16.7) uma consulta indexada, e não uma varredura.
+
+> **Limite a declarar:** `page_number` e `printed_page_number` **não têm índice**. Filtrar a busca
+> por página seria uma varredura da coleção. Isso é coerente com o uso real — página é informação de
+> **citação**, não critério de filtro —, mas quem planejar um filtro por página precisa saber que ele
+> não é barato hoje.
+
 #### 17.1.4. Contrato único de documento e consulta, para sparse e para ColBERT
 
 Documento e consulta usam o mesmo builder provider-native — modelo `qdrant/bm25` e idioma português para o sparse, `RERANKER_DEFAULT_MODEL` (`answerdotai/answerai-colbert-small-v1`) para o multivetor de rerank. Essa simetria impede que a aplicação indexe com uma tokenização e consulte com outra. Se o vetor sparse obrigatório não estiver configurado, o runtime falha fechado; não existe fallback dense-only silencioso. O multivetor ColBERT tem uma assimetria deliberada: na **ingestão**, coleção sem o vetor falha explícito ao tentar `update` incremental (ver 17.1.5); na **busca**, coleção sem o vetor apenas pula o estágio de rerank e segue com o ranking DBSF — falhar a busca inteira por causa de um acervo defasado seria pior que devolver sem reordenar (`docs/tecnico/README-TECNICO-RAG-PIPELINE-COMPLETO.md` §10.4).
@@ -946,7 +1206,11 @@ Documento e consulta usam o mesmo builder provider-native — modelo `qdrant/bm2
 
 **"Ingestão `update` falhou pedindo `overwrite` por causa do vetor ColBERT"**: a coleção foi criada antes do rerank nativo existir e não tem o vetor `<primary>_late`. O Qdrant não permite acrescentar um vetor denso novo a uma coleção existente — `_assert_late_interaction_vector_available()` detecta isso e falha explícito, citando `vector_store.if_exists='overwrite'` na mensagem. Não é bug: é a proteção contra deixar o acervo pela metade (chunks novos rerankeáveis, antigos não). A correção é reingerir o acervo inteiro com `overwrite`.
 
-**Pendência operacional (registrar, não normalizar como resolvida):** este 3º vetor só existe em coleções ingeridas (ou reingeridas) a partir de 2026-08-14. Reingestão do acervo de produção `engenharia_dnit/dnit_producao` (~600 documentos, YAML próprio) ainda não foi feita pelo usuário até a data deste documento — é decisão e ação exclusivas dele pela UI. Enquanto isso, esse acervo grande busca em DBSF puro (rerank pulado, log em `info`, sem quebrar).
+**Requisito de acervo:** este 3º vetor só existe em coleções ingeridas (ou reingeridas) depois que o
+rerank nativo passou a existir. Coleção anterior a isso continua funcionando — a busca simplesmente
+pula o estágio de rerank e entrega a ordem da fusão DBSF, com a decisão registrada em `info`. Habilitar
+o rerank sobre um acervo antigo exige reingestão com `vector_store.if_exists: overwrite`, porque o
+Qdrant não acrescenta um vetor denso novo a uma coleção existente.
 
 ## 18. Desfecho do documento: `success`, `partial_success` e `failed`
 
@@ -1020,6 +1284,51 @@ O veredito viaja no próprio evento terminal do documento (`ingestion.document.c
 `log_analyzer` já lê — nenhuma segunda fonte foi criada. Do evento saem o rótulo e a frase pronta do
 motivo ("perdeu páginas e figuras e ábacos") que a tela de ingestão de PDF exibe por documento. O backend
 entrega o texto pronto; o navegador só mapeia campo → elemento.
+
+### 18.5. Gates de truncamento na extração — o que reprova e o que é publicado marcado
+
+Esta seção precisa ser lida com atenção, porque a resposta correta é **"depende da engine e do
+caminho"**, e generalizar seria enganoso.
+
+O problema que os gates atacam: uma biblioteca de extração que estoura o próprio teto interno tende
+a devolver o que conseguiu com um status de **sucesso parcial**. Aceitar isso como válido publica um
+documento truncado com o mesmo carimbo de um documento íntegro.
+
+**Onde existe gate de truncamento que REPROVA a extração:**
+
+| Engine / caminho | Gate | Como ele decide |
+|---|---|---|
+| `docling`, caminho completo (com tabelas/OCR/estrutura ligados) | sim | só o status de conversão **plenamente bem-sucedido** segue; o status de sucesso parcial da biblioteca **reprova** |
+| `opendataloader` | sim | compara os marcadores de página emitidos contra a contagem de páginas obtida por uma **biblioteca independente** — a engine não avaliza o próprio corte |
+| `pymupdf4llm` | **não** | não há guarda de truncamento nesta engine |
+| `unstructured` | **não** | não há guarda de truncamento nesta engine |
+| `docling`, **fast path** textual (a configuração default, com os recursos pesados desligados) | **não** | mede falha **por página** e rotula o documento como sucesso parcial, em vez de reprovar |
+
+Quando o gate reprova, ele levanta um erro **de tipo próprio** (`PdfConversionIncompleteError`), que
+é deliberadamente distinto do erro de esgotamento de recurso — truncamento e "documento precisou de
+mais tempo do que o configurado" são diagnósticos diferentes e não devem ser confundidos.
+
+**O que acontece com o documento marcado como sucesso parcial: ele é publicado, de propósito.** Isso
+é uma decisão de projeto, não um descuido. Quando a extração já gravou vetores no acervo, esconder o
+documento seria pior: o conteúdo está lá e responderia às buscas de qualquer forma, só que sem
+registro. A publicação preserva a verdade operacional — e o estado registrado **nunca é "sucesso"**:
+
+| Desfecho do documento | Estado registrado |
+|---|---|
+| `success` | concluído |
+| `partial_success` | **inconsistente** |
+| `failed` | erro |
+
+O estado *inconsistente* existe justamente para não ter que escolher entre duas mentiras: marcar
+como sucesso esconderia a perda; marcar como erro pintaria como falha total um documento que tem
+conteúdo útil no acervo. Sob `if_exists: update`, é esse desfecho gravado que faz o documento ser
+**reprocessado** na próxima ingestão mesmo com o conteúdo do arquivo inalterado (§3.1.1).
+
+> **O limite honesto desta seção.** Não existe hoje detector de *colapso* de extração — algo que
+> compare o volume de texto obtido com o que seria esperado para aquela quantidade de páginas. O
+> corte atual é praticamente binário entre "zero caractere" e "íntegro", e é na faixa intermediária
+> que moram os documentos truncados pelas engines que não têm gate. Este é o principal ponto cego
+> conhecido do pipeline, e está registrado como tal em vez de omitido.
 
 ## 19. O que acontece em caso de erro
 
@@ -1161,6 +1470,35 @@ Como confirmar: presença de `PdfResumeArtifactMissingError` e ausência de `ope
 
 Ação recomendada: corrigir a coerência entre manifesto e artefatos persistidos antes de retomar.
 
+### Sintoma: o documento entrou "com sucesso", mas o acervo responde mal sobre ele
+
+Causa provável: extração truncada. O documento tem conteúdo — só que muito menos do que deveria.
+
+Como confirmar: comparar o número de caracteres extraídos com o número de páginas do documento. Uma
+razão da ordem de dezenas de caracteres por página, num manual de texto, é sinal forte de
+truncamento. Verificar em seguida o desfecho registrado (`success` × `partial_success`) e qual engine
+processou aquele documento — se foi uma engine sem gate de truncamento (§18.5), o corte não teria
+reprovado.
+
+Ação recomendada: revisar os tetos de tempo daquele documento (§29.3). Em `pymupdf4llm`, conferir se
+`subprocess_timeout_per_page_seconds` está declarado — sem essa chave, um manual de centenas de
+páginas recebe o mesmo teto de um documento de cinco. Depois de corrigir, o reprocesso é dirigido:
+declarar a correção em `engine_overrides` muda a impressão digital de política **daquele documento**
+e ele volta sozinho na próxima ingestão sob `if_exists: update` (§16.6).
+
+### Sintoma: a resposta cita uma página que não bate com o rodapé do manual
+
+Causa provável: o documento não teve a numeração impressa apurada, e a citação está usando a página
+física do arquivo.
+
+Como confirmar: verificar `printed_page_number_status` nos trechos daquele documento. `unavailable`
+significa que a derivação não alcançou confiança suficiente ou que o documento tem faixa secundária
+de numeração (§16.5).
+
+Ação recomendada: nenhuma correção de configuração resolve — a apuração depende de o extrator ter
+capturado o rodapé. Vale verificar se a engine usada preserva o marcador de página; migrar um
+documento para uma engine que não o preserva **apaga** a numeração impressa dele.
+
 ### Sintoma: chunks existem, mas a busca fica ruim
 
 Causa provável: extração textual ruim, estratégia inadequada ou seções e páginas não propagadas corretamente.
@@ -1197,6 +1535,32 @@ O serviço do PDF multimodal foi lido por inteiro, mas não toda a implementaç�
 
 O comportamento do processor dentro da ingestão está confirmado. Um entrypoint operacional exclusivo para o pipeline PDF, fora da esteira comum, não foi confirmado no código lido.
 
+### 23.4. Não existe detector de colapso de extração
+
+O pipeline distingue bem "zero caractere" de "íntegro", e as engines com gate de truncamento (§18.5)
+cobrem o corte declarado pela própria biblioteca. O que **não** existe é uma verificação de
+plausibilidade — comparar o volume de texto obtido com o esperado para aquela quantidade de páginas.
+É nessa faixa intermediária que mora o documento truncado por uma engine sem gate. Esta é a lacuna
+mais valiosa que o pipeline conhece sobre si mesmo.
+
+### 23.5. Cobertura desigual dos gates de truncamento entre engines
+
+Duas das quatro engines de pipeline têm gate de truncamento; duas não têm (§18.5). A consequência
+prática é que a garantia "extração cortada não é publicada como sucesso" **depende da engine
+escolhida** — e a engine padrão do acervo é uma das que não têm o gate, apoiando-se na marcação de
+desfecho em vez da reprovação na origem.
+
+### 23.6. Escolha de engine por classe de documento não é automática
+
+A estratégia multi-engine descrita em §8.2.2 é operada por **curadoria**: um especialista identifica o
+documento e o nomeia no YAML. O classificador de tipo de documento existente hoje alimenta metadata e
+**não** direciona a engine. Roteamento automático por classe é evolução planejada.
+
+### 23.7. Página não é campo indexado no vector store
+
+`page_number` e `printed_page_number` não têm índice de payload (§17.1.3.1). Filtro de busca por
+página seria varredura da coleção.
+
 ## 24. Diagrama técnico de responsabilidades
 
 ![24. Diagrama técnico de responsabilidades](../assets/diagrams/docs-readme-tecnico-ingestao-pdf-pipeline-completo-diagrama-02.svg)
@@ -1209,8 +1573,14 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
 - Entendi onde o YAML controla parsing, OCR, multimodal e chunking.
 - Entendi o papel do OCR document-level.
 - Entendi o resolvedor de engine ÚNICA (`engine: {type, config}`, sem fila/fallback).
+- Entendi que a escolha de engine é **curadoria declarada no YAML**, não classificação automática, e sei usar `engine_overrides` para tratar um documento sem afetar os demais.
+- Entendi a diferença entre os dois tetos de tempo e sei qual deles precisa ser maior.
+- Entendi que o teto proporcional a páginas existe em uma engine só.
+- Entendi quais engines têm gate de truncamento e o que significa um documento publicado como inconsistente.
 - Entendi a função do manifesto operacional e do artefato de extração.
 - Entendi a diferença entre OCR complementar e multimodalidade.
+- Entendi por que existem duas numerações de página e quando a impressa não é aplicada.
+- Entendi o que a impressão digital de política reprocessa e o que ela deliberadamente ignora.
 - Entendi como o PDF volta para a esteira comum de indexação.
 - Entendi como diagnosticar se a falha aconteceu antes do parsing, durante parsing ou depois do parsing.
 
@@ -1366,6 +1736,72 @@ O diagrama evidencia o que mais importa do ponto de vista técnico: o PDF é um 
   - Símbolo relevante: `validate_pdf_yaml_contract` e defaults internos do PDF.
   - Comportamento confirmado: caminhos canônicos, rejeição de legado e base default do runtime.
 
+- `src/ingestion_layer/pdf_tools/pdf_engine_spec_parser.py`
+  - Motivo da leitura: contrato de `engine` e `engine_overrides` (§8.2.2).
+  - Comportamento confirmado: valida a estrutura da spec; casa `engine_overrides` por nome de arquivo
+    normalizado sem diferenciar caixa; documento declarado em duas entradas falha explícito; `config`
+    do override recusa `pipeline`/`name`/`steps`.
+
+- `src/ingestion_layer/processors/pdf_parsing_engine_resolver.py`
+  - Motivo da leitura: validação dos toggles por engine (§8.2).
+  - Comportamento confirmado: conjuntos **fechados** de toggles por pipeline — chave fora do conjunto
+    levanta erro; `table_mode` (default `fast`) e `do_formula_enrichment` (default `false`) existem
+    apenas para `docling`; `opendataloader` não aceita `ocr`.
+
+- `src/ingestion_layer/pdf_tools/opendataloader_pdf_parsing_engine.py`
+  - Motivo da leitura: engine determinística de tabela (§8.2).
+  - Comportamento confirmado: wrapper sobre executável Java, sem IA e sem OCR; separador de página
+    nativo compatível com o marcador do produto, o que preserva a numeração impressa; gate próprio de
+    truncamento por contagem independente de páginas; declara
+    `page_failure_observability="unavailable"` em vez de reportar lista vazia de falhas.
+
+- `src/ingestion_layer/pdf_tools/pymupdf4llm_pdf_parsing_engine.py`
+  - Motivo da leitura: teto de tempo proporcional a páginas (§29.3.1).
+  - Comportamento confirmado: `max(piso, páginas × orçamento por página)`, sem teto superior; falha na
+    contagem de páginas mantém o teto fixo e registra a decisão.
+
+- `src/ingestion_layer/pdf_tools/heavy_pdf_parse_budget.py`
+  - Motivo da leitura: orçamento de concorrência de parse pesado (§29.3.2).
+  - Comportamento confirmado: semáforo por processo governado por variável de ambiente, limitado por
+    núcleos e pela quota de CPU do contêiner; resolução registrada em
+    `ingestion.parallelism.budget.resolved`.
+
+- `src/ingestion_layer/pdf_tools/engine_circuit_breaker.py`
+  - Motivo da leitura: disjuntor por engine (§8.3).
+  - Comportamento confirmado: registro em memória por processo; **esgotamento de recurso não abre o
+    disjuntor**.
+
+- `src/utils/pdf_extraction_policy_fingerprint.py`
+  - Motivo da leitura: impressão digital da política de extração (§16.6).
+  - Comportamento confirmado: hash sobre a configuração de PDF e o override do documento, com lista
+    explícita de chaves excluídas — `engine_overrides` entre elas; falha fechada quando sobra variável
+    de ambiente não expandida.
+
+- `src/ingestion_layer/processors/pdf_pipeline/pdf_page_provenance.py`
+  - Motivo da leitura: proveniência de página física e impressa (§16.5).
+  - Comportamento confirmado: deslocamento consolidado por documento com faixas de confiança;
+    aplicação recusada quando há faixa secundária de numeração; a página física nunca é substituída.
+
+- `src/ingestion_layer/core/document_completeness.py`
+  - Motivo da leitura: classificador único de desfecho (§18).
+  - Símbolo relevante: `derive_document_completeness`.
+  - Comportamento confirmado: derivação pura; separa perda real de descarte deliberado; estado
+    adicional para etapa **não verificável** quando a engine declara não observar falha de página.
+
+- `src/ingestion_layer/pdf_tools/docling_pdf_parsing_engine.py` e
+  `src/ingestion_layer/pdf_tools/pdf_parsing_engine_contract.py`
+  - Motivo da leitura: gates de truncamento (§18.5).
+  - Comportamento confirmado: no caminho completo do `docling`, apenas conversão plenamente
+    bem-sucedida segue e o sucesso parcial da biblioteca reprova com `PdfConversionIncompleteError`;
+    o **fast path** textual não passa por esse guarda e rotula o documento como sucesso parcial.
+
+- `src/ingestion_layer/vector_stores/qdrant_client.py` (supersessão)
+  - Motivo da leitura: substituição de geração (§16.7).
+  - Símbolo relevante: `delete_superseded_document_versions` e o predicado único de gerações
+    superadas.
+  - Comportamento confirmado: filtro por identidade do documento excluindo a geração ativa; contagem
+    exata antes e depois como prova de vida, com resíduo tratado como falha.
+
 - `src/ingestion_layer/pdf_tools/pdf_subprocess_runner.py`
   - Motivo da leitura: runner genérico de subprocesso de parsing.
   - Símbolo relevante: `run_pdf_subprocess`, `SubprocessPdfParsingSupervisor`.
@@ -1405,13 +1841,33 @@ O componente central é `pdf_subprocess_runner.py`, com a função pública `run
 
 - fazer spawn do processo filho com o comando recebido;
 - escrever o payload (PDF em base64 + configuração) no stdin do filho;
+- **verificar cancelamento ANTES de abrir o subprocesso** (portão pré-spawn, ver abaixo);
 - supervisionar com polling a cada 200ms (`_SUPERVISOR_POLL_INTERVAL_SECONDS`);
 - cancelar cooperativamente se o estado de cancelamento for sinalizado externamente;
-- encerrar o filho em caso de timeout: primeiro `terminate`, aguarda 2s (`_SUPERVISOR_KILL_GRACE_SECONDS`), depois `kill` se ainda estiver vivo;
+- encerrar o filho em caso de timeout: primeiro `SIGTERM`, aguarda 2s (`_SUPERVISOR_KILL_GRACE_SECONDS`), depois `SIGKILL` — **sinalizando o grupo de processos inteiro**, não só o filho;
 - ler o stdout do filho e decodificar a resposta via `decode_worker_response` do codec compartilhado (`pdf_parsing_result_codec.py`);
 - levantar exceção em qualquer falha (timeout, returncode != 0, resultado inválido).
 
-O timeout padrão é `180.0s` (`_DEFAULT_TIMEOUT_SECONDS`), mas pode ser sobrescrito por configuração YAML (veja seção 29).
+O timeout padrão é `180.0s` (`_DEFAULT_TIMEOUT_SECONDS`), sobrescrito por configuração YAML — veja a
+seção 29.3, que explica os dois tetos e o teto proporcional a páginas.
+
+#### 27.2.1. Encerramento do grupo de processos, e por que ele importa
+
+O subprocesso é criado com sessão própria (`start_new_session=True`), o que o torna **líder do
+próprio grupo**. Duas consequências práticas:
+
+- um sinal de interrupção do ambiente (por exemplo, controle operacional do worker ou do terminal)
+  não mata o parse no meio e não aparece disfarçado como falha da engine;
+- o encerramento pelo supervisor usa `killpg` no grupo, alcançando também os **"netos"** que as
+  bibliotecas de OCR, visão e execução Java criam. Matar só o processo filho deixaria esses netos
+  vivos, segurando memória e CPU indefinidamente.
+
+#### 27.2.2. Portão pré-spawn
+
+Antes de abrir um subprocesso caro — que pode consumir vários gigabytes e minutos de CPU — o runner
+verifica se o job já foi cancelado. Sem esse portão, um documento que esperou na fila do orçamento de
+parse pesado abriria o subprocesso ao ganhar a vaga **mesmo com o cancelamento já registrado**: o
+laço de supervisão só cobre o *depois* da criação do processo. O portão cobre o *antes*.
 
 ### 27.3. O que acontece quando o tempo esgota
 
@@ -1433,6 +1889,7 @@ Cada engine tem seu próprio módulo worker:
 
 - `docling_pdf_parsing_worker.py`: usa o `DoclingPdfParsingEngine` (que internamente usa `docling_pdf_parsing_subprocess.py` para serializar o `DoclingDocument`).
 - `pymupdf4llm_pdf_parsing_worker.py`: usa a engine PyMuPDF4LLM.
+- `opendataloader_pdf_parsing_worker.py`: usa a engine OpenDataLoader (wrapper sobre um executável Java).
 - `unstructured_pdf_parsing_worker.py`: usa a engine Unstructured.
 - `custom_pdf_parsing_worker.py`: usa a engine custom (receita de tools: `fitz_text_tool.py` + `pdfplumber_tables_tool.py`).
 
@@ -1500,7 +1957,7 @@ ingestion.content_profiles.type_specific.pdf
 
 O sistema rejeita explicitamente caminhos legados como `content_profiles.type_specific.pdf`, `ingestion.pdf` e `pdf` na raiz. Qualquer tentativa de usar esses caminhos resulta em falha fechada.
 
-### 29.2. Chaves que governam a seleção e ordem das engines de parsing
+### 29.2. Chaves que governam a seleção da engine de parsing
 
 ```yaml
 ingestion:
@@ -1526,9 +1983,84 @@ ingestion:
 
 **Importante (esquema atual, sem legado):** o caminho antigo `processing.parsing.base.options` — uma **fila ordenada** de várias engines com `mode` (`default`/`auto`/`always`/`never`) e fallback entre elas — **foi REMOVIDO**. Não existe mais fila nem fallback de engines de *parsing*; declara-se UMA engine pelo bloco `engine: {type, config}`. Internamente o runtime ainda reaproveita a classe `DeterministicLegoPdfParsingEngine`, mas sempre com **uma única opção** — o comportamento efetivo é de engine única e determinística. (Atenção: `base.options` continua existindo, porém **só para OCR**, sob `processing.ocr.*` — ver a seção de OCR; não confundir com parsing.)
 
-### 29.3. Chave de timeout do subprocesso
+"Uma engine por acervo" **não** significa uma engine para todo documento: o bloco `engine` define o
+padrão do acervo, e `engine_overrides` (§8.2.2) declara as exceções por documento nomeado. Continua
+sendo **uma** engine determinística por documento — o que muda é qual delas, e a decisão é
+declarada, não sorteada em tempo de execução.
 
-O timeout do subprocesso de parsing é configurável via `pdf_config_resolver.py`. O valor default é `180.0s`. Para sobrescrever, confirme a chave exata no resolver — o caminho é resolvido internamente pelo runtime de configuração PDF.
+Os toggles aceitos variam por engine e formam conjuntos **fechados** (§8.2): declarar uma chave que a
+engine escolhida não conhece falha explicitamente, em vez de ser ignorada em silêncio.
+
+### 29.3. Tetos de tempo: dois relógios, com ordem obrigatória
+
+Este é um dos pontos onde uma configuração aparentemente inocente decide se um manual grande entra
+íntegro no acervo ou entra pela metade. São **dois** tetos, e eles não são intercambiáveis.
+
+| Chave | Quem faz cumprir | O que acontece ao estourar |
+|---|---|---|
+| `subprocess_timeout_seconds` | o **supervisor do processo pai** (parede externa) | o subprocesso inteiro é encerrado; o documento termina como recurso esgotado |
+| `document_timeout_seconds` | a **própria biblioteca `docling`**, internamente | a biblioteca interrompe a conversão e reporta o que conseguiu |
+
+**A regra: `subprocess_timeout_seconds` tem que ser MAIOR que `document_timeout_seconds`.** Se o teto
+externo for menor, o supervisor mata o processo antes que a biblioteca consiga reportar o próprio
+diagnóstico — e você perde a informação de *por que* o documento não terminou, ficando só com "o
+processo foi morto". Configurações de referência mantêm uma folga larga entre os dois (por exemplo,
+14.400 s externos para 10.800 s internos).
+
+`document_timeout_seconds` existe apenas em `docling`; o teto de parede externo vale para todas as
+engines. O default do supervisor, quando nada é declarado, é `180.0 s` — adequado para documentos
+pequenos e **claramente insuficiente** para manuais escaneados de centenas de páginas, que é o motivo
+de a chave existir.
+
+#### 29.3.1. Teto proporcional ao número de páginas (apenas `pymupdf4llm`)
+
+Um teto fixo é errado por construção quando o acervo mistura documentos de 5 e de 500 páginas:
+generoso demais para o pequeno, curto demais para o grande. A engine `pymupdf4llm` resolve isso
+calculando o teto em função do tamanho real do documento:
+
+```
+teto efetivo = max(subprocess_timeout_seconds, páginas × subprocess_timeout_per_page_seconds)
+```
+
+```yaml
+engine:
+  type: pipeline
+  config:
+    pipeline: pymupdf4llm
+    ocr: true
+    skip_scanned_pdf: false
+    subprocess_timeout_seconds: 6000.0            # piso, para documentos pequenos
+    subprocess_timeout_per_page_seconds: 9.0      # orçamento por página
+```
+
+Com esses valores, um documento de 40 páginas recebe o piso de 6.000 s; um de 900 páginas recebe
+8.100 s. **Não há teto superior** — a fórmula é deliberadamente um piso mais uma proporção, porque o
+custo de um teto folgado é zero (o documento que termina antes simplesmente termina antes) e o custo
+de um teto curto é uma extração truncada depois de horas de processamento.
+
+A contagem de páginas é feita antes do parse. Se ela falhar, o runtime **mantém o teto fixo** e
+registra a decisão — nunca adivinha um número de páginas.
+
+> **Esta chave não existe em `docling`, `opendataloader` nem `unstructured`.** Nessas engines o teto
+> é o valor fixo declarado. Documentos grandes nelas exigem que o valor seja dimensionado à mão.
+
+### 29.3.2. Orçamento de paralelismo pesado (não é teto de tempo)
+
+Há um terceiro controle que costuma ser confundido com os anteriores e **não tem relação com
+tempo**: o orçamento de concorrência de parse pesado. Ele é um semáforo dentro de cada processo
+worker, que limita **quantas extrações pesadas rodam simultaneamente** naquele processo.
+
+- Governado por **variável de ambiente**, não por YAML.
+- O limite efetivo respeita os núcleos disponíveis e a quota de CPU do contêiner (lida da
+  configuração de *cgroup*), para não sobre-subscrever o servidor.
+- A invariante que ele mantém é `vagas × threads por vaga ≤ CPUs disponíveis` — o erro clássico aqui
+  é somar paralelismo de documentos com paralelismo interno das bibliotecas de ML e degradar tudo.
+- A resolução do orçamento é registrada uma vez por processo, no evento
+  `ingestion.parallelism.budget.resolved`.
+
+Este orçamento é ortogonal ao paralelismo por documento do fan-out (§2.4) e ao limite de filhos
+ativos do Job Core: o primeiro decide quantos documentos entram em execução, este decide quantos
+deles podem estar dentro de uma extração cara ao mesmo tempo.
 
 ### 29.4. Chaves que governam as camadas executáveis de OCR
 
@@ -1688,7 +2220,8 @@ Em palavras simples: o embedding de texto que alimenta o Qdrant é configurado e
 
 | O que controla | Caminho YAML principal | Tipo de engine |
 |---|---|---|
-| Parsing de texto do PDF (engine ÚNICA) | `ingestion.content_profiles.type_specific.pdf.processing.parsing.engine` (`{type, config}`) | `type: pipeline` → `config.pipeline`: docling, pymupdf4llm, unstructured · ou `type: custom` |
+| Parsing de texto do PDF (engine ÚNICA) | `ingestion.content_profiles.type_specific.pdf.processing.parsing.engine` (`{type, config}`) | `type: pipeline` → `config.pipeline`: `pymupdf4llm`, `docling`, `opendataloader`, `unstructured` · ou `type: custom` |
+| Exceções de engine por documento nomeado | `ingestion.content_profiles.type_specific.pdf.processing.parsing.engine_overrides` | mesma lista acima, aplicada só aos documentos nomeados (§8.2.2) |
 | OCR interno da engine de parsing | `ingestion.content_profiles.type_specific.pdf.processing.parsing.engine.config.ocr` | definido pela engine escolhida; em `pymupdf4llm`, OCR seletivo da própria biblioteca |
 | OCR documental (reescreve o PDF) | `ingestion.content_profiles.type_specific.pdf.processing.ocr.document_preprocessing` | ocrmypdf |
 | OCR complementar posterior | `ingestion.content_profiles.type_specific.pdf.processing.chunking.ocr_on_empty_pages` + `ingestion.content_profiles.type_specific.pdf.multimodal.ocr` | fila de OCR por imagem do bloco multimodal |

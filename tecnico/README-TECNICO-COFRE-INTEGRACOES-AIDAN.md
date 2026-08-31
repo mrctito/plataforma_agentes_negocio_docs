@@ -46,6 +46,40 @@ Portanto, “código pronto” e “scripts prontos” não significam “banco 
 “integração conectada”. Essas são etapas diferentes e permanecem explicitamente
 separadas.
 
+### 2.1 Cofre provisório de `development` — fonte TEMPORÁRIA já ligada (2026-08-19/20)
+
+O cofre criptográfico descrito no resto deste documento continua sendo o destino final, mas
+o cutover dele virou **hardening pós-MVP** por decisão do usuário (decisão **D1** do plano
+`docs/.interno/.planos/aidan-consolidado/00-PLANO.md`). Enquanto isso, para que o
+desenvolvimento tenha de onde ler credencial real, entrou em operação uma fonte **temporária**:
+
+- **O que é:** o arquivo `aidan-vault-provisorio.txt`, na raiz do repositório, com uma linha
+  `CHAVE=valor` por credencial. Permissão `600`, ignorado pelo `.gitignore` e protegido por
+  teste automatizado de não-rastreabilidade. Os nomes das chaves são **os mesmos** que o código
+  já procura no ambiente (`AIDAN_SHOPIFY_STORE_URL`, `AIDAN_META_APP_SECRET`,
+  `AIDAN_META_VERIFY_TOKEN`, `AIDAN_META_ACCESS_TOKEN`, `AIDAN_SHOPIFY_ADMIN_ACCESS_TOKEN`) —
+  o cofre provisório é uma fonte alternativa, nunca um vocabulário novo.
+- **Onde é lido:** somente em `src/security/provisional_integration_vault.py`, chamado pelo
+  resolvedor canônico `src/security/security_keys_resolver.py`. **Não existe segundo
+  resolvedor**: a ordem única de fontes é `security_keys` do YAML → cofre provisório → `.env`
+  → default.
+- **Só em `development`:** a checagem de ambiente acontece **antes** de qualquer toque no
+  filesystem. Em `prod` o arquivo não é procurado, aberto nem interpretado — a resolução segue
+  o caminho canônico e falha fechada quando a credencial não existe.
+- **Nunca vaza:** o log registra apenas a **origem** da resolução
+  (`reason="cofre_provisorio_development"` no evento
+  `security.security_keys_resolver.secret_resolved`) — jamais o valor, o prefixo do valor ou o
+  nome da chave. O arquivo não entra em Git, navegador, YAML persistido, modelo ou documento.
+- **Ponto exato de remoção (pós-MVP):** apagar `src/security/provisional_integration_vault.py`;
+  remover a chamada a `read_provisional_vault_secret` em
+  `SecurityKeysStore._resolve_outside_yaml`; apagar o arquivo e as duas linhas do `.gitignore`;
+  remover `tests/validation/test_08-01-09_security_keys_provisional_vault.py`. Nenhum outro
+  ponto do código conhece esse arquivo.
+
+Efeito prático: em `development` a credencial passa a ter de onde ser lida sem hardening
+prematuro; em produção **nada** mudou, e o cofre criptográfico continua sendo o único caminho
+previsto.
+
 ## 3. O que é um cofre de integrações
 
 Uma integração com Shopify, Instagram ou WhatsApp usa credenciais que permitem
@@ -153,6 +187,12 @@ implementados e comprovados.
 ## 7. Contrato criptográfico implementado
 
 O owner genérico está em
+[`src/security/at_rest_envelope_crypto.py`](../../src/security/at_rest_envelope_crypto.py).
+Ele deixou de ser exclusivo de integrações em 2026-08-20 (T13 do plano Aidan), quando o
+atendimento omnichannel passou a proteger o conteúdo de mensagem com o mesmo owner: cada
+domínio fornece apenas o seu contexto de AAD, e o `crypto_scope` autenticado impede que o
+envelope de um domínio seja aberto no contexto de outro. O contexto de AAD das integrações
+está em
 [`src/security/integration_secret_crypto.py`](../../src/security/integration_secret_crypto.py).
 O adapter que recebe o key ring do deployment está em
 [`src/security/deployment_secret_master_key_provider.py`](../../src/security/deployment_secret_master_key_provider.py).
@@ -477,7 +517,7 @@ laboratório já existe.
 ### 13.1 Owner criptográfico
 
 O contrato é protegido por
-[`tests/unit/security/test_02-62-06_integration_secret_crypto.py`](../../tests/unit/security/test_02-62-06_integration_secret_crypto.py).
+[`tests/unit/security/test_02-62-06_at_rest_envelope_crypto.py`](../../tests/unit/security/test_02-62-06_at_rest_envelope_crypto.py).
 
 | Rodada | Resultado |
 |---|---|

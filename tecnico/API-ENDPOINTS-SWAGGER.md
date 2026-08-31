@@ -543,6 +543,12 @@ Regra operacional importante: nao existe fallback implicito para SMTP no
 caminho novo. Se a configuracao obrigatoria do provider selecionado
 estiver ausente, o boundary responde falha explicita de configuracao.
 
+Estas variaveis pertencem ao e-mail institucional usado pelo fluxo de
+autenticacao. As tools agentic `brevo_send_email` e `resend_send_email` nao
+consomem essa conta global: elas resolvem, em tempo de invocacao, as chaves do
+provider no canal de e-mail do tenant autenticado e falham se esse escopo nao
+estiver configurado.
+
 Exemplo de request para solicitar o link:
 
 ```json

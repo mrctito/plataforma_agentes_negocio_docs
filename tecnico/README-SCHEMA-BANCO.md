@@ -119,8 +119,9 @@ entitlements revogados e eventos do provider. O estado inspecionado após a roda
 2026-07-12 contém nove assinaturas, quatro ativas, 22 eventos e 24 entitlements, dos quais dez
 ativos. Esses registros não
 são ofertas com cobrança real. O provider T12 é somente `simulated`, e o `SaasCommercialService`
-recusa operar (`_require_prod`) quando `ENVIRONMENT` do processo não é `prod` — checkout, transição
-de assinatura e concessão/revogação de entitlement só existem hoje em produção. As leituras
+recusa operar (`_require_deployment_environment`) quando o `environment` informado não é **o ambiente
+canônico do processo** — checkout, transição de assinatura e concessão/revogação de entitlement acontecem
+no ambiente do próprio deployment, nunca cruzados entre ambientes. As leituras
 administrativas de projeto/release/plano, por outro lado, já derivam `environment` do segregador
 canônico do processo (`SaasHttpRepository.environment`), não de um literal fixo. Preço/moeda por
 plano deixaram de ser fixos em zero: o boundary aceita `UPDATE` de `provider_config_json` por
@@ -2965,6 +2966,42 @@ correlatas do fluxo web.
 - Entendi por onde começar uma investigação sem confundir tabela histórica com fonte de verdade.
 
 ## Schema Implementado de Integrações Governadas
+
+### Estado físico de capabilities e saúde — T42 aplicada em 2026-08-29
+
+As conexões de provider e a saúde operacional continuam com owners únicos; T42 não criou registry
+nem tabela de fatos paralelos:
+
+- `integrations.provider_connection_registry` é o cadastro de conexões de provider. A coluna
+  `environment` é obrigatória e deriva do ambiente canônico do tenant. A unique governada
+  `(environment, tenant_id, provider_code, connection_code, provider_connection_id)` é o alvo da FK
+  dos fatos de provider. A unique legada `(tenant_id, connection_code)` continua existindo.
+- `integrations.integration_health_checks` é o ledger append-only de saúde para **dois tipos de alvo**.
+  Um fato aponta para exatamente uma conexão de provider **ou** para exatamente um canal do tenant;
+  nunca para ambos e nunca para nenhum.
+- Fato de provider: `provider_connection_id`, `provider_code` e `connection_code` são preenchidos;
+  `tenant_channel_id` é nulo. A FK governada impede cruzar ambiente, tenant, provider ou conexão.
+- Fato de canal: `tenant_channel_id` é preenchido; `provider_connection_id`, `provider_code` e
+  `connection_code` são nulos. A FK `(environment, tenant_id, tenant_channel_id)` aponta para
+  `public.tenant_channels` e impede cruzar ambiente ou tenant.
+- `observed_count` é opcional, nunca negativo e hoje registra somente uma contagem operacional
+  observada pelo probe de fila. Ausência de snapshot permanece ausência; não vira zero.
+- O índice `integration_health_checks_channel_latest` sustenta a última medição por canal e dimensão
+  (`probe_type`). Os índices legados e governados de provider permanecem preservados.
+
+Aplicação controlada, nunca em runtime:
+
+1. `20260829_{precheck,migrate,postcheck,rollback}_integration_capability_environment.sql` fez o
+   backfill mínimo de ambiente a partir de `public.tenant_channels`;
+2. `20260829_{precheck,migrate,postcheck,rollback}_integration_channel_health.sql` ampliou o mesmo
+   ledger para fatos de canal;
+3. o postcheck real preservou **3 conexões e 22 fatos de provider**, com **0 fato de canal** antes do
+   primeiro probe do código implantado.
+
+Limite explícito: este recorte não aplicou a migração ampla histórica do cofre, não alterou
+`tenant_secrets`/`tenant_security_keys` e não fecha G-9. Portanto a presença de `environment` no
+registry e no health não deve ser apresentada como prova de que toda a governança de segredos já foi
+migrada.
 
 ## Schema do Banco Demo de Varejo
 

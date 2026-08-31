@@ -35,7 +35,6 @@ Este documento complementa [README-CONCEITUAL-INSTAGRAM-AGENTE-COMENTARIOS-DM.md
 - `POST /channels/{channel_id}/end-users/upsert`
 - `POST /channels/instagram/{channel_id}/messages`
 - `POST /channels/instagram/{channel_id}/send`
-- `POST /channels/instagram/{channel_id}/history`
 - `POST /channels/instagram/webhook/test`
 
 ### 2.3. Permissoes relevantes
@@ -504,9 +503,15 @@ As configuracoes mais importantes confirmadas no codigo sao estas.
 
 1. `channel_type=instagram`
 2. `execution_mode=ask|agent|workflow`
-3. `queue_mode=inline|redis|rabbitmq`
+3. `queue_mode=inline|redis|rabbitmq` — com `redis`/`rabbitmq` o webhook so **reconhece e
+   enfileira** (ACK rapido), e todo o efeito acontece no consumidor; com `inline` o efeito acontece
+   na propria requisicao. **Nao existe fallback:** se a fila estiver indisponivel, o webhook
+   responde **503** e a Meta reentrega — executar o agente no boundary estouraria o teto de 5 s de
+   ACK do Messenger Platform e a mensagem se perderia
 4. `yaml_path` do canal
 5. `security.secret_token` para validar HMAC do webhook
+5.1. `security.verify_token` (chave `META_WEBHOOK_VERIFY_TOKEN` em `tenant_security_keys`) para
+   responder ao desafio `GET` de assinatura do webhook
 6. `metadata.default_user_email`
 7. `metadata.channel_end_user_policy` para controle de remetente
 8. `security_keys.access_token` do Instagram
@@ -540,17 +545,18 @@ POST /channels/instagram/webhook/test
 
 Esse endpoint devolve os payloads internos criados pelo parser.
 
-### 14.2. Consultar historico salvo
+### 14.2. Consultar historico
 
-```json
-POST /channels/instagram/17841499999999999/history
-{
-  "limit": 20,
-  "direction": "both"
-}
-```
+A rota `POST /channels/instagram/{channel_id}/history` **nao existe mais** (removida em 2026-08-21).
+Ela lia arquivos JSON que o receiver gravava no filesystem local, o que era PII em disco e nao
+funcionava nos containers, que nao tem filesystem persistente.
 
-Isso ajuda a auditar o que entrou e saiu do canal.
+Onde auditar hoje:
+
+- **conversa e mensagem** (conteudo protegido): schema `omnichannel`, pela tela Atendimento 360;
+- **evento que entrou pelo webhook**: `integrations.provider_webhook_receipts`, um recibo por
+  evento reconhecido, com ambiente, tenant, canal, provider e `correlation_id` da execucao que
+  produziu o efeito.
 
 ## 15. Principais erros confirmados no codigo
 
@@ -719,7 +725,7 @@ Passos:
 
 - `src/api/routers/channel_router.py`
   - Motivo da leitura: borda HTTP de webhook, envio manual, historico e teste.
-  - Simbolos relevantes: `register_channel`, `submit_message`, `submit_instagram_message`, `list_channel_end_users`, `upsert_channel_end_user`, `send_instagram_message`, `instagram_history`, `test_instagram_webhook`.
+  - Simbolos relevantes: `register_channel`, `submit_message`, `submit_instagram_message`, `list_channel_end_users`, `upsert_channel_end_user`, `send_instagram_message`, `test_instagram_webhook`.
   - Comportamento confirmado: o app expoe registro/upsert de canal, webhook generico, governanca de remetentes, teste seguro do parser e operacao manual Instagram.
 
 - `src/security/channel_repository.py`
